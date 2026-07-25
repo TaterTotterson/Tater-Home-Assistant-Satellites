@@ -28,15 +28,23 @@ def envelope(
     payload: dict[str, Any] | None = None,
     *,
     message_id: str = "",
+    include_metadata: bool = True,
 ) -> dict[str, Any]:
     """Create a versioned protocol envelope."""
-    return {
+    message = {
         "v": PROTOCOL_VERSION,
         "type": text(message_type),
         "id": message_id or uuid.uuid4().hex,
         "ts": time.time(),
         "payload": payload or {},
     }
+    if not include_metadata:
+        # The native firmware only needs v/type/payload for one-way commands.
+        # Leaving request metadata off large settings messages keeps them below
+        # the ESP32 WebSocket receive window.
+        message.pop("id")
+        message.pop("ts")
+    return message
 
 
 def parse_text_message(raw: str | bytes) -> dict[str, Any]:

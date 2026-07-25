@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 _MAX_MODEL_BYTES = 512 * 1024
 _MAX_SOUND_BYTES = 512 * 1024
+_MAX_DEVICE_TEXT_FRAME_BYTES = 1000
 _GLOBAL_WAKE_VERIFIER_KEYS = {
     "wake_verifier_mode",
     "wake_verifier_phrase",
@@ -88,6 +89,46 @@ _WAKE_SOUND_SETTING_KEYS = {
     "wake_sound_url",
     "wake_sound_asset_id",
 }
+_SETTINGS_WIRE_GROUPS = (
+    (
+        "wake_engine",
+        "wake_word",
+        "wake_word_url",
+        "wake_sensitivity",
+        "wake_environment",
+        "wake_threshold",
+        "wake_sliding_window",
+    ),
+    (
+        "capture_wake_audio",
+        "capture_close_misses",
+        "close_miss_threshold",
+        "trainer_app_url",
+        "wake_verifier_mode",
+        "wake_verifier_window_ms",
+        "wake_verifier_timeout_ms",
+    ),
+    (
+        "wake_sound_enabled",
+        "wake_sound",
+        "wake_sound_url",
+        "aec_enabled",
+        "aec_strength_percent",
+        "aec_delay_ms",
+        "continued_chat",
+        "barge_in_enabled",
+        "muted",
+    ),
+    (
+        "led_brightness",
+        "led_color",
+        "led_listening_animation",
+        "led_thinking_animation",
+        "led_tool_call_animation",
+        "led_replying_animation",
+        "logging_level",
+    ),
+)
 EntityFactory = Callable[["SatelliteRuntime"], list[Any]]
 
 
@@ -107,6 +148,39 @@ def _json_copy(value: Any, default: Any) -> Any:
         return json.loads(json.dumps(value))
     except (TypeError, ValueError):
         return default
+
+
+def _compact_json(message: dict[str, Any]) -> str:
+    """Serialize a device message without avoidable wire bytes."""
+    return json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+
+
+def _settings_messages(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build settings frames that fit older native firmware receive windows."""
+
+    def _message(payload: dict[str, Any]) -> dict[str, Any]:
+        return envelope("settings", payload, include_metadata=False)
+
+    complete = _message(settings)
+    if len(_compact_json(complete).encode("utf-8")) <= _MAX_DEVICE_TEXT_FRAME_BYTES:
+        return [complete]
+
+    messages: list[dict[str, Any]] = []
+    included: set[str] = set()
+    for keys in _SETTINGS_WIRE_GROUPS:
+        payload = {key: settings[key] for key in keys if key in settings}
+        if payload:
+            messages.append(_message(payload))
+            included.update(payload)
+
+    # Preserve forward compatibility if a newer integration adds a setting
+    # before it is assigned to a logical wire group.
+    remainder = {
+        key: value for key, value in settings.items() if key not in included
+    }
+    if remainder:
+        messages.append(_message(remainder))
+    return messages
 
 
 def _as_int(value: Any) -> int:
@@ -213,13 +287,7 @@ class SatelliteRuntime:
             async with self.send_lock:
                 if websocket.closed:
                     return False
-                # Match Tater's compact WebSocket JSON. The ESP32 receive
-                # window is 1024 bytes; aiohttp's default spaced encoding can
-                # fragment otherwise valid settings packets, which older
-                # native firmware treats as separate incomplete JSON frames.
-                await websocket.send_str(
-                    json.dumps(message, ensure_ascii=False, separators=(",", ":"))
-                )
+                await websocket.send_str(_compact_json(message))
             return True
         except (ConnectionError, RuntimeError) as err:
             self.last_error = text(err) or type(err).__name__
@@ -492,6 +560,8 @@ class SatelliteRuntime:
                 "fail_open": verifier_fail_open,
                 "last": dict(self.wake_verifier_last),
                 "device": dict(device_verifier),
+                "mode": text(desired_settings.get("wake_verifier_mode")) or "off",
+                "applied_mode": text(live.get("wake_verifier_mode")),
                 "target_phrase": self.manager.wake_verifier_phrase(self),
                 "pipeline": self.manager.pipeline_info(self),
             },
@@ -796,9 +866,13 @@ class TaterSatelliteManager:
         runtime.settings_push_count += 1
         runtime.settings_sync_state = "sending"
         runtime.settings_sync_message = "Sending live settings to the satellite."
-        sent = await runtime.async_send(
-            "settings", self.firmware_settings(runtime.device_id)
-        )
+        settings = self.firmware_settings(runtime.device_id)
+        messages = _settings_messages(settings)
+        sent = True
+        for message in messages:
+            if not await runtime.async_send_json(message):
+                sent = False
+                break
         if not sent:
             runtime.settings_sync_state = "failed"
             runtime.settings_sync_message = "The settings message could not be sent."

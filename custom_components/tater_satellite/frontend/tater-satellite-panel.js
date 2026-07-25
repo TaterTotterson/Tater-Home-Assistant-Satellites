@@ -723,12 +723,25 @@ class TaterSatellitePanel extends HTMLElement {
     const verifier = device.wake_verifier || {};
     const last = verifier.last || {};
     const pipeline = verifier.pipeline || {};
+    const mode = String(verifier.mode || "off");
+    const appliedMode = String(verifier.applied_mode || "");
     const hasLast = Boolean(last.reason);
     const failOpen = hasLast && last.available === false;
     const rejected = hasLast && last.available !== false && last.accepted === false;
-    const lastLabel = !hasLast ? "No result" : failOpen ? "Fail-open" : rejected ? "Rejected" : "Accepted";
-    const lastClass = failOpen ? "fail-open" : rejected ? "rejected" : "online";
-    const status = !device.connected ? "Offline" : verifier.supported ? "Ready" : "Firmware update needed";
+    const lastLabel =
+      mode === "off" ? "Verification off" : !hasLast ? "No result" : failOpen ? "Fail-open" : rejected ? "Rejected" : "Accepted";
+    const lastClass = mode === "off" ? "" : failOpen ? "fail-open" : rejected ? "rejected" : "online";
+    const modePending = mode !== "off" && appliedMode !== mode;
+    const status =
+      !device.connected
+        ? "Offline"
+        : !verifier.supported
+          ? "Firmware update needed"
+          : mode === "off"
+            ? "Disabled"
+            : modePending
+              ? "Applying settings"
+              : "Ready";
     const reason = String(last.reason || "—").replaceAll("_", " ");
     return `
       <article class="card verifier-device ${failOpen ? "fail-open" : rejected ? "rejected" : ""}">

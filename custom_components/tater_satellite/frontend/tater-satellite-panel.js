@@ -583,12 +583,6 @@ class TaterSatellitePanel extends HTMLElement {
           `
           : ""
       }
-      <div class="editor-head">
-        <div>
-          <h2>Trainer Feedback</h2>
-          <div class="muted">Choose what wake audio satellites send back to the linked trainer.</div>
-        </div>
-      </div>
       ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["feedback"] })}
       <div class="sticky-actions">
         <button data-action="reset-draft">Discard changes</button>

@@ -204,9 +204,9 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
-        "section": "feedback",
-        "title": "Wake Feedback",
-        "description": "Wake acknowledgement sound and optional trainer captures.",
+        "section": "wake_sound",
+        "title": "Wake Sound",
+        "description": "Choose the acknowledgement sound played after a wake word.",
         "fields": [
             {
                 "key": "wake_sound_enabled",
@@ -231,6 +231,13 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "type": "url",
                 "show_when": {"key": "wake_sound", "equals": "custom"},
             },
+        ],
+    },
+    {
+        "section": "feedback",
+        "title": "Trainer Feedback",
+        "description": "Choose what wake audio satellites send back to the trainer.",
+        "fields": [
             {
                 "key": "capture_wake_audio",
                 "label": "Send good wakes to trainer",

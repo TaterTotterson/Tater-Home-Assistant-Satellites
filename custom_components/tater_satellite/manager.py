@@ -213,7 +213,13 @@ class SatelliteRuntime:
             async with self.send_lock:
                 if websocket.closed:
                     return False
-                await websocket.send_json(message)
+                # Match Tater's compact WebSocket JSON. The ESP32 receive
+                # window is 1024 bytes; aiohttp's default spaced encoding can
+                # fragment otherwise valid settings packets, which older
+                # native firmware treats as separate incomplete JSON frames.
+                await websocket.send_str(
+                    json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+                )
             return True
         except (ConnectionError, RuntimeError) as err:
             self.last_error = text(err) or type(err).__name__

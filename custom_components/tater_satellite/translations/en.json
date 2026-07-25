@@ -1,0 +1,14 @@
+{
+  "title": "Tater Satellite",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Tater Satellite",
+        "description": "Connect Tater Native voice satellites directly to Home Assistant Assist. Tater does not need to be installed or running."
+      }
+    },
+    "abort": {
+      "already_configured": "Tater Satellite is already configured."
+    }
+  }
+}

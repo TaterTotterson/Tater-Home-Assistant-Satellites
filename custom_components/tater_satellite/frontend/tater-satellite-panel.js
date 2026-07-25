@@ -11,6 +11,27 @@ const escapeHtml = (value) =>
 
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
 
+const formatApiError = (error) => {
+  const seen = new Set();
+  const extract = (value) => {
+    if (typeof value === "string") return value.trim();
+    if (!value || typeof value !== "object" || seen.has(value)) return "";
+    seen.add(value);
+    for (const key of ["message", "detail", "error", "body", "statusText"]) {
+      const message = extract(value[key]);
+      if (message) return message;
+    }
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized && serialized !== "{}") return serialized;
+    } catch (_error) {
+      // Fall through to the generic request error.
+    }
+    return "";
+  };
+  return extract(error) || "The request failed. Check the satellite diagnostics and try again.";
+};
+
 const formatAge = (timestamp) => {
   const seconds = Math.max(0, Math.round(Date.now() / 1000 - Number(timestamp || 0)));
   if (!timestamp) return "Never";
@@ -108,7 +129,7 @@ class TaterSatellitePanel extends HTMLElement {
         this.prepareDeviceDraft(this._selectedDeviceId, false);
       }
     } catch (error) {
-      this._error = error?.message || String(error);
+      this._error = formatApiError(error);
     } finally {
       this._loading = false;
       this.render();
@@ -127,7 +148,7 @@ class TaterSatellitePanel extends HTMLElement {
       this._loading = false;
       await this.load(true);
     } catch (error) {
-      this._error = error?.message || String(error);
+      this._error = formatApiError(error);
       this._loading = false;
       this.render();
     }
@@ -955,7 +976,7 @@ class TaterSatellitePanel extends HTMLElement {
       button.addEventListener("click", () =>
         this.run(
           () => this.api("POST", `command/${button.dataset.syncSettings}/sync-settings`, {}),
-          "Satellite confirmed the live settings.",
+          "Live settings sent. Wake-model downloads continue in the background.",
         ),
       ),
     );
@@ -1067,7 +1088,7 @@ class TaterSatellitePanel extends HTMLElement {
         this._notice = `${label} uploaded. Save settings to publish it to satellites.`;
         this.render();
       } catch (error) {
-        this._error = error?.message || String(error);
+        this._error = formatApiError(error);
         this._loading = false;
         this.render();
       }

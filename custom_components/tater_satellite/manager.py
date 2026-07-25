@@ -88,8 +88,6 @@ _WAKE_SOUND_SETTING_KEYS = {
     "wake_sound_url",
     "wake_sound_asset_id",
 }
-_SETTINGS_CONFIRM_TIMEOUT_SECONDS = 7.0
-
 EntityFactory = Callable[["SatelliteRuntime"], list[Any]]
 
 
@@ -778,10 +776,8 @@ class TaterSatelliteManager:
     async def async_push_settings(
         self,
         runtime: SatelliteRuntime,
-        *,
-        confirm: bool = False,
     ) -> bool:
-        """Push current live settings and wait for firmware confirmation."""
+        """Push current live settings; track firmware confirmation asynchronously."""
         if not runtime.connected:
             runtime.settings_sync_state = "offline"
             runtime.settings_sync_message = (
@@ -806,29 +802,7 @@ class TaterSatelliteManager:
         runtime.settings_sync_state = "sent"
         runtime.settings_sync_message = "Waiting for the satellite to confirm settings."
         runtime.notify()
-        if not confirm:
-            return True
-        deadline = asyncio.get_running_loop().time() + _SETTINGS_CONFIRM_TIMEOUT_SECONDS
-        while asyncio.get_running_loop().time() < deadline:
-            runtime.note_settings_status()
-            if runtime.settings_sync_state == "confirmed":
-                runtime.notify()
-                return True
-            if not runtime.connected:
-                runtime.settings_sync_state = "failed"
-                runtime.settings_sync_message = (
-                    "Satellite disconnected before confirming settings."
-                )
-                runtime.notify()
-                return False
-            await asyncio.sleep(0.1)
-
-        runtime.settings_sync_state = "timeout"
-        runtime.settings_sync_message = (
-            "Settings were sent, but the satellite did not confirm them."
-        )
-        runtime.notify()
-        return False
+        return True
 
     async def _async_wake_phrase_from_url(self, url: str) -> str:
         """Read the wake phrase from a microWakeWord JSON manifest."""
@@ -925,7 +899,7 @@ class TaterSatelliteManager:
         await self.async_save()
         connected = [runtime for runtime in self.runtimes.values() if runtime.connected]
         results = await asyncio.gather(
-            *(self.async_push_settings(runtime, confirm=True) for runtime in connected),
+            *(self.async_push_settings(runtime) for runtime in connected),
             return_exceptions=True,
         )
         for runtime in self.runtimes.values():
@@ -937,7 +911,7 @@ class TaterSatelliteManager:
         ]
         if failed:
             raise RuntimeError(
-                "Settings were saved, but these satellites did not confirm them: "
+                "Settings were saved, but they could not be sent to these satellites: "
                 + ", ".join(failed)
             )
         return dict(self.data["global_settings"])
@@ -979,7 +953,7 @@ class TaterSatelliteManager:
         await self.async_save()
         connected = [runtime for runtime in self.runtimes.values() if runtime.connected]
         results = await asyncio.gather(
-            *(self.async_push_settings(runtime, confirm=True) for runtime in connected),
+            *(self.async_push_settings(runtime) for runtime in connected),
             return_exceptions=True,
         )
         for runtime in self.runtimes.values():
@@ -991,7 +965,7 @@ class TaterSatelliteManager:
         ]
         if failed:
             raise RuntimeError(
-                "Wake word was saved, but these satellites did not confirm it: "
+                "Wake word was saved, but it could not be sent to these satellites: "
                 + ", ".join(failed)
             )
         return {
@@ -1070,12 +1044,9 @@ class TaterSatelliteManager:
                 value if value in {"default", "relaxed", "aggressive"} else "default"
             )
         await self.async_save()
-        if runtime.connected and not await self.async_push_settings(
-            runtime,
-            confirm=True,
-        ):
+        if runtime.connected and not await self.async_push_settings(runtime):
             raise RuntimeError(
-                f"Settings were saved, but {runtime.name} did not confirm them."
+                f"Settings were saved, but they could not be sent to {runtime.name}."
             )
         runtime.notify()
         return runtime.public_snapshot()
@@ -1089,54 +1060,22 @@ class TaterSatelliteManager:
         runtime.record.pop("wake_verifier_phrase", None)
         runtime.record.pop("wake_verifier_phrase_url", None)
         await self.async_save()
-        if runtime.connected and not await self.async_push_settings(
-            runtime,
-            confirm=True,
-        ):
+        if runtime.connected and not await self.async_push_settings(runtime):
             raise RuntimeError(
-                f"Settings were reset, but {runtime.name} did not confirm them."
+                f"Settings were reset, but they could not be sent to {runtime.name}."
             )
         runtime.notify()
         return runtime.public_snapshot()
 
     async def async_resync_settings(self, device_id: str) -> dict[str, Any]:
-        """Force-send current settings and require firmware confirmation."""
+        """Force-send current settings using the same live path as Tater."""
         runtime = self.runtimes.get(device_id)
         if runtime is None:
             raise KeyError("Satellite not found")
         if not runtime.connected:
             raise RuntimeError(f"{runtime.name} is offline")
-        settings = runtime.effective_settings()
-        if (
-            settings.get("wake_word") == "custom_url"
-            and text(settings.get("wake_word_url"))
-            and not text(settings.get("wake_model_asset_id"))
-        ):
-            url = text(settings.get("wake_word_url"))
-            phrase = await self._async_wake_phrase_from_url(url)
-            global_settings = normalize_settings(self.data.get("global_settings"))
-            if url == text(global_settings.get("wake_word_url")):
-                if not phrase and url == text(
-                    global_settings.get("wake_verifier_phrase_url")
-                ):
-                    phrase = normalize_phrase(
-                        global_settings.get("wake_verifier_phrase")
-                    )
-                global_settings["wake_verifier_phrase"] = phrase
-                global_settings["wake_verifier_phrase_url"] = url
-                self.data["global_settings"] = global_settings
-            else:
-                if not phrase and url == text(
-                    runtime.record.get("wake_verifier_phrase_url")
-                ):
-                    phrase = normalize_phrase(
-                        runtime.record.get("wake_verifier_phrase")
-                    )
-                runtime.record["wake_verifier_phrase"] = phrase
-                runtime.record["wake_verifier_phrase_url"] = url
-            await self.async_save()
-        if not await self.async_push_settings(runtime, confirm=True):
-            raise RuntimeError(f"{runtime.name} did not confirm the settings update.")
+        if not await self.async_push_settings(runtime):
+            raise RuntimeError(f"Live settings could not be sent to {runtime.name}.")
         return runtime.public_snapshot()
 
     async def async_upload_asset(

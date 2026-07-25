@@ -379,7 +379,7 @@ class SettingsResyncView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
-        """Send settings and wait for the firmware generation to advance."""
+        """Send settings while firmware confirmation continues asynchronously."""
         try:
             device = await _manager(request).async_resync_settings(device_id)
         except (KeyError, RuntimeError) as err:

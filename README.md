@@ -94,13 +94,21 @@ already selected in each satellite's Assist pipeline:
 - **Observe** transcribes and scores the wake clip but never delays or blocks
   listening. Use this first to review accuracy and latency.
 - **Enabled** opens listening only when the transcript matches. STT timeouts,
-  provider errors, missing STT configuration, and an unknown custom wake phrase
-  always fail open so the satellite remains usable.
+  provider errors, and missing STT configuration fail open so transient service
+  problems do not disable the satellite. An unknown custom wake phrase is
+  blocked until it can be verified.
 
 The expected phrase follows the active built-in wake word or the latest secure
-trainer publish automatically. The tab shows each satellite's latest transcript,
-match score, latency, accepted/rejected totals, and fail-open results. Wake audio
-is processed as a transient in-memory clip and is not stored by this integration.
+trainer publish automatically. For manually entered microWakeWord URLs, Home
+Assistant reads the `wake_word` value from the model's JSON manifest and binds it
+to that exact URL. The tab shows each satellite's latest transcript, match score,
+latency, accepted/rejected totals, and fail-open results. Wake audio is processed
+as a transient in-memory clip and is not stored by this integration.
+
+Settings saves now wait for the connected satellite's reported settings
+generation to advance. The per-satellite diagnostics show the desired and active
+wake model, download state, settings generation, and confirmation status. Use
+**Resend live settings** to force another model download and settings sync.
 
 ## Firmware updates and recovery
 

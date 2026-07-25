@@ -158,11 +158,22 @@ async def async_verify_packet(
 
     normalized_phrase = normalize_phrase(phrase)
     if not normalized_phrase:
-        return unavailable_result(
+        result = unavailable_result(
             data,
-            "wake_phrase_unknown_fail_open",
+            (
+                "wake_phrase_unknown_blocked"
+                if mode == "enforce"
+                else "wake_phrase_unknown_observed"
+            ),
             mode=mode,
         )
+        if mode == "enforce":
+            # Firmware treats available=false as fail-open. Unknown configuration
+            # is different from a transient STT failure: Enabled mode must not
+            # allow an unverified wake through.
+            result["accepted"] = False
+            result["available"] = True
+        return result
 
     threshold = max(0.5, min(1.0, float(threshold)))
     timeout_ms = max(100, min(2000, int(timeout_ms)))

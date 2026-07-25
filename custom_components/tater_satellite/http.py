@@ -371,6 +371,22 @@ class IdentifyView(HomeAssistantView):
         return self.json({"ok": True})
 
 
+class SettingsResyncView(HomeAssistantView):
+    """Force a connected satellite to reapply its effective settings."""
+
+    url = f"{API_BASE_PATH}/command/{{device_id}}/sync-settings"
+    name = "api:tater_satellite:sync_settings"
+    requires_auth = True
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        """Send settings and wait for the firmware generation to advance."""
+        try:
+            device = await _manager(request).async_resync_settings(device_id)
+        except (KeyError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "device": device})
+
+
 class ForgetView(HomeAssistantView):
     """Forget an offline satellite."""
 
@@ -409,5 +425,6 @@ VIEWS = (
     FirmwareRecoveryView,
     FirmwareFileView,
     IdentifyView,
+    SettingsResyncView,
     ForgetView,
 )

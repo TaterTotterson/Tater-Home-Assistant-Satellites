@@ -473,6 +473,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this.renderSettingsSections(this._deviceDraft, "device", device)}
       ${this.renderDeviceDiagnostics(device)}
       <div class="sticky-actions">
+        <button data-sync-settings="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>Resend live settings</button>
         <button data-action="reset-device">Use all shared defaults</button>
         <button class="primary" data-action="save-device" ${this._loading ? "disabled" : ""}>Save satellite</button>
       </div>
@@ -482,6 +483,26 @@ class TaterSatellitePanel extends HTMLElement {
   renderDeviceDiagnostics(device) {
     const xmos = device.xmos_firmware || {};
     const transport = device.transport || {};
+    const sync = device.settings_sync || {};
+    const wake = device.wake_model || {};
+    const syncLabel = {
+      never: "Not sent",
+      sending: "Sending",
+      sent: "Awaiting confirmation",
+      confirmed: "Confirmed",
+      timeout: "Not confirmed",
+      failed: "Failed",
+      offline: "Offline",
+    }[sync.state] || String(sync.state || "Unknown");
+    const wakeState = wake.downloading
+      ? "Downloading"
+      : wake.matches
+        ? "Active"
+        : wake.last_error
+          ? `Not active — ${wake.last_error}`
+          : "Not active";
+    const appliedWakeSound =
+      wake.wake_sound_enabled == null ? "Not reported by this board" : wake.wake_sound_enabled ? "Enabled" : "Disabled";
     const logs = (device.logs || [])
       .map((row) => {
         const when = row.ts ? new Date(Number(row.ts) * 1000).toLocaleTimeString() : "";
@@ -496,9 +517,17 @@ class TaterSatellitePanel extends HTMLElement {
           <div class="fact"><label>Wi-Fi</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
           <div class="fact"><label>Free memory</label><span>${formatBytes(device.free_heap)}</span></div>
           <div class="fact"><label>Audio drops</label><span>${Number(device.audio_drops || 0)}</span></div>
+          <div class="fact"><label>Settings sync</label><span>${escapeHtml(syncLabel)}</span></div>
+          <div class="fact"><label>Settings generation</label><span>${Number(sync.generation || 0)}</span></div>
+          <div class="fact"><label>Desired wake word</label><span>${escapeHtml(wake.desired || "Unknown")}</span></div>
+          <div class="fact"><label>Active wake model</label><span>${escapeHtml(wake.active_label || wake.active || "None")}</span></div>
+          <div class="fact"><label>Wake model state</label><span>${escapeHtml(wakeState)}</span></div>
+          <div class="fact"><label>Desired wake sound</label><span>${wake.desired_wake_sound_enabled ? "Enabled" : "Disabled"}</span></div>
+          <div class="fact"><label>Applied wake sound</label><span>${escapeHtml(appliedWakeSound)}</span></div>
           <div class="fact"><label>XMOS firmware</label><span>${escapeHtml(xmos.installed_version || "Not reported")}</span></div>
           <div class="fact"><label>TX queue</label><span>${escapeHtml(transport.audio_tx_queue_depth ?? "—")}</span></div>
         </div>
+        ${sync.message ? `<div class="verifier-note">${escapeHtml(sync.message)}</div>` : ""}
         <details>
           <summary>Recent satellite log</summary>
           <pre>${escapeHtml(logs || "No satellite log messages have been received.")}</pre>
@@ -512,7 +541,7 @@ class TaterSatellitePanel extends HTMLElement {
       <div class="editor-head">
         <div>
           <h2>${escapeHtml(title)}</h2>
-          <div class="muted">Changes are pushed live to every connected satellite. Device overrides remain intact.</div>
+          <div class="muted">Changes are pushed live and confirmed by every connected satellite. A changed shared wake model or wake sound replaces conflicting per-satellite overrides.</div>
         </div>
       </div>
       ${this.renderSettingsSections(values || {}, scope, null, sectionFilter)}
@@ -647,7 +676,7 @@ class TaterSatellitePanel extends HTMLElement {
           <div class="fact"><label>Fail-open</label><span>${totals.failOpen}</span></div>
         </div>
         <div class="verifier-note">
-          <strong>Observe</strong> records results without blocking wakes. <strong>Enabled</strong> rejects transcript mismatches, but still opens listening if STT is unavailable, errors, or misses the 500 ms deadline. The expected phrase follows the active wake word or the latest trainer publish automatically.
+          <strong>Observe</strong> records results without blocking wakes. <strong>Enabled</strong> rejects transcript mismatches and blocks custom models whose phrase is unknown, but still opens listening for transient STT errors or a missed 500 ms deadline. The expected phrase follows the active wake word, a custom JSON manifest, or the latest trainer publish automatically.
         </div>
       </section>
       ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["verifier"] })}
@@ -694,7 +723,7 @@ class TaterSatellitePanel extends HTMLElement {
           <span class="badge">${Number(verifier.count || 0)} checks</span>
         </div>
         <div class="facts">
-          <div class="fact"><label>Expected phrase</label><span>${escapeHtml(verifier.target_phrase || "Unknown — fails open")}</span></div>
+          <div class="fact"><label>Expected phrase</label><span>${escapeHtml(verifier.target_phrase || "Unknown — blocked when Enabled")}</span></div>
           <div class="fact"><label>STT engine</label><span>${escapeHtml(pipeline.stt_engine || "Not configured")}</span></div>
           <div class="fact"><label>Accepted</label><span>${Number(verifier.accepted || 0)}</span></div>
           <div class="fact"><label>Rejected</label><span>${Number(verifier.rejections || 0)}</span></div>
@@ -921,6 +950,14 @@ class TaterSatellitePanel extends HTMLElement {
           "OTA update started. The satellite will reconnect after flashing.",
         );
       }),
+    );
+    root.querySelectorAll("[data-sync-settings]").forEach((button) =>
+      button.addEventListener("click", () =>
+        this.run(
+          () => this.api("POST", `command/${button.dataset.syncSettings}/sync-settings`, {}),
+          "Satellite confirmed the live settings.",
+        ),
+      ),
     );
     root.querySelectorAll("[data-setting]").forEach((input) => {
       input.addEventListener("change", () => {

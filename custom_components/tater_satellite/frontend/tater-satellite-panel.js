@@ -234,6 +234,26 @@ class TaterSatellitePanel extends HTMLElement {
       }
       .trainer-steps { margin: 14px 0 0; padding-left: 22px; color: var(--secondary-text-color); }
       .trainer-steps li { margin: 7px 0; padding-left: 4px; }
+      .verifier-note {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid color-mix(in srgb, #1cb8f2 38%, var(--divider-color));
+        background: color-mix(in srgb, #1cb8f2 9%, transparent);
+        color: var(--secondary-text-color);
+      }
+      .verifier-device.rejected { border-color: color-mix(in srgb, var(--error-color) 55%, var(--divider-color)); }
+      .verifier-device.fail-open { border-color: color-mix(in srgb, #e5a323 55%, var(--divider-color)); }
+      .badge.rejected { color: var(--error-color); background: color-mix(in srgb, var(--error-color) 14%, transparent); }
+      .badge.fail-open { color: #b57800; background: color-mix(in srgb, #e5a323 16%, transparent); }
+      .transcript {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 9px;
+        background: var(--secondary-background-color);
+        font-style: italic;
+        overflow-wrap: anywhere;
+      }
       .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; }
       .device-card { position: relative; overflow: hidden; }
       .device-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--divider-color); }
@@ -335,10 +355,12 @@ class TaterSatellitePanel extends HTMLElement {
       <nav class="tabs">
         ${this.tabButton("satellites", "Satellites")}
         ${this.tabButton("defaults", "Voice Defaults")}
+        ${this.tabButton("verifier", "STT Wake Check")}
         ${this.tabButton("trainer", "Wake Word Trainer")}
         ${this.tabButton("firmware", "Firmware & Recovery")}
       </nav>
-      ${this._tab === "defaults" ? this.renderSettingsEditor("Shared Satellite Voice Settings", this._globalDraft, "global", { exclude: ["feedback"] }) : ""}
+      ${this._tab === "defaults" ? this.renderSettingsEditor("Shared Satellite Voice Settings", this._globalDraft, "global", { exclude: ["feedback", "verifier"] }) : ""}
+      ${this._tab === "verifier" ? this.renderVerifier() : ""}
       ${this._tab === "trainer" ? this.renderTrainer() : ""}
       ${this._tab === "firmware" ? this.renderFirmware() : ""}
       ${this._tab === "satellites" ? this.renderSatellites() : ""}
@@ -591,6 +613,101 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  renderVerifier() {
+    const devices = this._data.devices || [];
+    const mode = String(this._globalDraft?.wake_verifier_mode || "off");
+    const labels = { off: "Disabled", observe: "Observe", enforce: "Enabled" };
+    const totals = devices.reduce(
+      (summary, device) => {
+        const verifier = device.wake_verifier || {};
+        summary.checks += Number(verifier.count || 0);
+        summary.accepted += Number(verifier.accepted || 0);
+        summary.rejected += Number(verifier.rejections || 0);
+        summary.failOpen += Number(verifier.fail_open || 0);
+        return summary;
+      },
+      { checks: 0, accepted: 0, rejected: 0, failOpen: 0 },
+    );
+    return `
+      <section class="card section-card trainer-hero">
+        <div class="trainer-head">
+          <div class="trainer-identity">
+            <div class="trainer-mark" aria-hidden="true">STT</div>
+            <div>
+              <h2>STT Wake Verification</h2>
+              <div class="muted">Use each satellite’s selected Assist pipeline to confirm the locally detected wake word before listening starts.</div>
+            </div>
+          </div>
+          <span class="badge ${mode !== "off" ? "online" : ""}">${escapeHtml(labels[mode] || "Disabled")}</span>
+        </div>
+        <div class="facts trainer-status-grid">
+          <div class="fact"><label>Checks</label><span>${totals.checks}</span></div>
+          <div class="fact"><label>Accepted</label><span>${totals.accepted}</span></div>
+          <div class="fact"><label>Rejected</label><span>${totals.rejected}</span></div>
+          <div class="fact"><label>Fail-open</label><span>${totals.failOpen}</span></div>
+        </div>
+        <div class="verifier-note">
+          <strong>Observe</strong> records results without blocking wakes. <strong>Enabled</strong> rejects transcript mismatches, but still opens listening if STT is unavailable, errors, or misses the 500 ms deadline. The expected phrase follows the active wake word or the latest trainer publish automatically.
+        </div>
+      </section>
+      ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["verifier"] })}
+      <div class="editor-head">
+        <div>
+          <h2>Results by Satellite</h2>
+          <div class="muted">Results refresh automatically. Counts reset when the satellite and Home Assistant runtime counters both restart.</div>
+        </div>
+      </div>
+      ${
+        devices.length
+          ? `<div class="grid">${devices.map((device) => this.renderVerifierDevice(device)).join("")}</div>`
+          : `<section class="card empty"><h3>No satellites paired yet</h3><p class="muted">Pair a satellite to begin observing wake checks.</p></section>`
+      }
+      <div class="sticky-actions">
+        <button data-action="reset-draft">Discard changes</button>
+        <button class="primary" data-action="save-global" ${this._loading ? "disabled" : ""}>Apply to all satellites</button>
+      </div>
+    `;
+  }
+
+  renderVerifierDevice(device) {
+    const verifier = device.wake_verifier || {};
+    const last = verifier.last || {};
+    const pipeline = verifier.pipeline || {};
+    const hasLast = Boolean(last.reason);
+    const failOpen = hasLast && last.available === false;
+    const rejected = hasLast && last.available !== false && last.accepted === false;
+    const lastLabel = !hasLast ? "No result" : failOpen ? "Fail-open" : rejected ? "Rejected" : "Accepted";
+    const lastClass = failOpen ? "fail-open" : rejected ? "rejected" : "online";
+    const status = !device.connected ? "Offline" : verifier.supported ? "Ready" : "Firmware update needed";
+    const reason = String(last.reason || "—").replaceAll("_", " ");
+    return `
+      <article class="card verifier-device ${failOpen ? "fail-open" : rejected ? "rejected" : ""}">
+        <div class="device-head">
+          <div>
+            <h3>${escapeHtml(device.name)}</h3>
+            <div class="muted">${escapeHtml(pipeline.name || "Preferred Assist pipeline")}</div>
+          </div>
+          <span class="badge ${device.connected && verifier.supported ? "online" : ""}">${escapeHtml(status)}</span>
+        </div>
+        <div class="badges">
+          <span class="badge ${lastClass}">${escapeHtml(lastLabel)}</span>
+          <span class="badge">${Number(verifier.count || 0)} checks</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><label>Expected phrase</label><span>${escapeHtml(verifier.target_phrase || "Unknown — fails open")}</span></div>
+          <div class="fact"><label>STT engine</label><span>${escapeHtml(pipeline.stt_engine || "Not configured")}</span></div>
+          <div class="fact"><label>Accepted</label><span>${Number(verifier.accepted || 0)}</span></div>
+          <div class="fact"><label>Rejected</label><span>${Number(verifier.rejections || 0)}</span></div>
+          <div class="fact"><label>Fail-open</label><span>${Number(verifier.fail_open || 0)}</span></div>
+          <div class="fact"><label>Last score</label><span>${hasLast && last.available !== false ? Number(last.score || 0).toFixed(3) : "—"}</span></div>
+          <div class="fact"><label>STT latency</label><span>${hasLast ? `${Number(last.stt_ms || 0).toFixed(1)} ms` : "—"}</span></div>
+          <div class="fact"><label>Reason</label><span>${escapeHtml(reason)}</span></div>
+        </div>
+        <div class="transcript">${escapeHtml(last.transcript ? `“${last.transcript}”` : "No transcript yet")}</div>
+      </article>
+    `;
+  }
+
   fieldVisible(field, values) {
     const condition = field.show_when;
     if (!condition) return true;
@@ -812,7 +929,7 @@ class TaterSatellitePanel extends HTMLElement {
         if (input.type === "number") value = Number(value);
         target[input.dataset.setting] = value;
         this._dirty = true;
-        if (["wake_word", "wake_sound", "aec_enabled"].includes(input.dataset.setting)) this.render();
+        if (["wake_word", "wake_sound", "aec_enabled", "wake_verifier_mode"].includes(input.dataset.setting)) this.render();
       });
     });
     root.querySelector('[data-special="pipeline"]')?.addEventListener("change", (event) => {
@@ -829,7 +946,9 @@ class TaterSatellitePanel extends HTMLElement {
     root.querySelector('[data-action="save-global"]')?.addEventListener("click", () =>
       this.run(
         () => this.api("POST", "settings/global", { settings: this._globalDraft }),
-        "Shared satellite settings saved and pushed live.",
+        this._tab === "verifier"
+          ? "STT wake verification updated for all satellites."
+          : "Shared satellite settings saved and pushed live.",
       ),
     );
     root.querySelector('[data-action="reset-draft"]')?.addEventListener("click", () => {

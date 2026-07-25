@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import WSMsgType, web
-from homeassistant.components.assist_pipeline import async_get_pipelines
+from homeassistant.components.assist_pipeline import (
+    async_get_pipeline,
+    async_get_pipelines,
+)
+from homeassistant.components.assist_pipeline.error import PipelineNotFound
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.network import get_url
@@ -38,7 +42,6 @@ from .protocol import (
     message_type,
     parse_text_message,
     text,
-    wake_verifier_unavailable,
 )
 from .settings import (
     DEFAULT_SETTINGS,
@@ -48,6 +51,11 @@ from .settings import (
     normalize_settings,
 )
 from .trainer import TrainerLinkManager
+from .wake_verifier import (
+    async_verify_packet,
+    normalize_phrase,
+    unavailable_result,
+)
 
 if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -55,6 +63,14 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 _MAX_MODEL_BYTES = 512 * 1024
 _MAX_SOUND_BYTES = 512 * 1024
+_GLOBAL_WAKE_VERIFIER_KEYS = {
+    "wake_verifier_mode",
+    "wake_verifier_phrase",
+    "wake_verifier_phrase_url",
+    "wake_verifier_threshold",
+    "wake_verifier_window_ms",
+    "wake_verifier_timeout_ms",
+}
 
 EntityFactory = Callable[["SatelliteRuntime"], list[Any]]
 
@@ -75,6 +91,14 @@ def _json_copy(value: Any, default: Any) -> Any:
         return json.loads(json.dumps(value))
     except (TypeError, ValueError):
         return default
+
+
+def _as_int(value: Any) -> int:
+    """Return an integer without trusting device-provided status values."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 class SatelliteRuntime:
@@ -111,6 +135,10 @@ class SatelliteRuntime:
         self.ota_in_progress = False
         self.ota_progress: int | None = None
         self.ota_message = ""
+        self.wake_verifier_count = 0
+        self.wake_verifier_rejections = 0
+        self.wake_verifier_fail_open = 0
+        self.wake_verifier_last: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -200,6 +228,16 @@ class SatelliteRuntime:
             except asyncio.QueueEmpty:
                 break
 
+    def record_wake_verifier_result(self, result: dict[str, Any]) -> None:
+        """Record one server-side wake-verifier decision."""
+        self.wake_verifier_count += 1
+        if not bool(result.get("accepted")):
+            self.wake_verifier_rejections += 1
+        if not bool(result.get("available", True)):
+            self.wake_verifier_fail_open += 1
+        self.wake_verifier_last = _json_copy(result, {})
+        self.notify()
+
     def add_log(self, level: str, message: str, *, kind: str = "log") -> None:
         """Append a device log entry."""
         self.logs.append(
@@ -281,6 +319,34 @@ class SatelliteRuntime:
             if isinstance(status.get("live_settings"), dict)
             else {}
         )
+        wake_engine = (
+            status.get("wake_engine")
+            if isinstance(status.get("wake_engine"), dict)
+            else {}
+        )
+        device_verifier = (
+            wake_engine.get("verifier")
+            if isinstance(wake_engine.get("verifier"), dict)
+            else {}
+        )
+        verifier_checks = max(
+            self.wake_verifier_count,
+            _as_int(device_verifier.get("completed")),
+        )
+        verifier_rejections = min(
+            verifier_checks,
+            max(
+                self.wake_verifier_rejections,
+                _as_int(device_verifier.get("rejections")),
+            ),
+        )
+        verifier_fail_open = min(
+            verifier_checks,
+            max(
+                self.wake_verifier_fail_open,
+                _as_int(device_verifier.get("fail_open")),
+            ),
+        )
         available = self.manager.firmware.info_for_board(self.board)
         installed = self.firmware_version
         latest = text(available.get("firmware_version"))
@@ -314,6 +380,21 @@ class SatelliteRuntime:
             "pipeline_id": text(self.record.get("pipeline_id")),
             "vad_sensitivity": text(self.record.get("vad_sensitivity")) or "default",
             "audio_drops": self.audio_drops,
+            "wake_verifier": {
+                "supported": (
+                    "wake_verifier_mode" in live
+                    or bool(device_verifier)
+                    or bool(self.wake_verifier_last)
+                ),
+                "count": verifier_checks,
+                "accepted": max(0, verifier_checks - verifier_rejections),
+                "rejections": verifier_rejections,
+                "fail_open": verifier_fail_open,
+                "last": dict(self.wake_verifier_last),
+                "device": dict(device_verifier),
+                "target_phrase": self.manager.wake_verifier_phrase(self),
+                "pipeline": self.manager.pipeline_info(self),
+            },
             "ota": {
                 "in_progress": self.ota_in_progress,
                 "progress": self.ota_progress,
@@ -593,6 +674,16 @@ class TaterSatelliteManager:
         current = normalize_settings(self.data.get("global_settings"))
         patch = normalize_settings(values, base=current, partial=True)
         self.data["global_settings"] = normalize_settings({**current, **patch})
+        if _GLOBAL_WAKE_VERIFIER_KEYS.intersection(patch):
+            for runtime in self.runtimes.values():
+                overrides = runtime.record.get("overrides")
+                if not isinstance(overrides, dict):
+                    continue
+                runtime.record["overrides"] = {
+                    key: value
+                    for key, value in overrides.items()
+                    if key not in _GLOBAL_WAKE_VERIFIER_KEYS
+                }
         await self.async_save()
         await asyncio.gather(
             *(
@@ -619,12 +710,16 @@ class TaterSatelliteManager:
                 "wake_word": "custom_url",
                 "wake_word_url": wake_word_url,
                 "wake_model_asset_id": "",
+                "wake_verifier_phrase": wake_word,
+                "wake_verifier_phrase_url": wake_word_url,
             }
         )
         wake_override_keys = {
             "wake_word",
             "wake_word_url",
             "wake_model_asset_id",
+            "wake_verifier_phrase",
+            "wake_verifier_phrase_url",
         }
         for runtime in self.runtimes.values():
             overrides = runtime.record.get("overrides")
@@ -670,7 +765,12 @@ class TaterSatelliteManager:
             else {}
         )
         base = self.effective_settings(device_id)
-        patch = normalize_settings(values, base=base, partial=True)
+        device_values = {
+            key: value
+            for key, value in values.items()
+            if key not in _GLOBAL_WAKE_VERIFIER_KEYS
+        }
+        patch = normalize_settings(device_values, base=base, partial=True)
         existing.update(patch)
         runtime.record["overrides"] = existing
         if pipeline_id is not None:
@@ -851,6 +951,113 @@ class TaterSatelliteManager:
             {"id": pipeline.id, "name": pipeline.name}
             for pipeline in async_get_pipelines(self.hass)
         ]
+
+    def pipeline_info(self, runtime: SatelliteRuntime) -> dict[str, Any]:
+        """Return the Assist pipeline and STT engine selected for a satellite."""
+        selected_id = text(runtime.record.get("pipeline_id")) or None
+        try:
+            pipeline = async_get_pipeline(self.hass, pipeline_id=selected_id)
+        except PipelineNotFound:
+            return {
+                "id": selected_id or "",
+                "name": "Unavailable",
+                "stt_engine": "",
+                "stt_language": "",
+                "stt_ready": False,
+            }
+        return {
+            "id": pipeline.id,
+            "name": pipeline.name,
+            "stt_engine": text(pipeline.stt_engine),
+            "stt_language": text(pipeline.stt_language or pipeline.language),
+            "stt_ready": bool(pipeline.stt_engine),
+        }
+
+    def wake_verifier_phrase(self, runtime: SatelliteRuntime) -> str:
+        """Resolve the current wake phrase without maintaining alias lists."""
+        settings = runtime.effective_settings()
+        wake_word = text(settings.get("wake_word"))
+        if wake_word and wake_word != "custom_url":
+            return normalize_phrase(wake_word)
+
+        asset_id = text(settings.get("wake_model_asset_id"))
+        assets = self.data.get("assets")
+        asset = assets.get(asset_id) if asset_id and isinstance(assets, dict) else None
+        if isinstance(asset, dict):
+            phrase = normalize_phrase(asset.get("label"))
+            if phrase:
+                return phrase
+
+        effective_url = text(settings.get("wake_word_url"))
+        global_settings = normalize_settings(self.data.get("global_settings"))
+        global_url = text(global_settings.get("wake_word_url"))
+        phrase_url = text(global_settings.get("wake_verifier_phrase_url"))
+        explicit = normalize_phrase(global_settings.get("wake_verifier_phrase"))
+        if (
+            explicit
+            and effective_url
+            and effective_url == global_url
+            and effective_url == phrase_url
+        ):
+            return explicit
+
+        trainer = self.trainer.status()
+        trainer_url = text(trainer.get("last_wake_word_url"))
+        if effective_url and effective_url == trainer_url:
+            return normalize_phrase(trainer.get("last_wake_word"))
+        return ""
+
+    async def _async_handle_wake_verifier_packet(
+        self,
+        runtime: SatelliteRuntime,
+        data: bytes,
+        websocket: web.WebSocketResponse,
+    ) -> None:
+        """Verify one pre-wake audio clip without blocking the socket reader."""
+        settings = runtime.effective_settings()
+        mode = text(settings.get("wake_verifier_mode")).lower()
+        phrase = self.wake_verifier_phrase(runtime)
+        if mode not in {"observe", "enforce"}:
+            result = unavailable_result(
+                data,
+                "wake_verifier_disabled_fail_open",
+                phrase=phrase,
+                mode="off",
+            )
+        else:
+            result = await async_verify_packet(
+                self.hass,
+                data,
+                pipeline_id=text(runtime.record.get("pipeline_id")) or None,
+                phrase=phrase,
+                mode=mode,
+                threshold=float(settings.get("wake_verifier_threshold") or 0.85),
+                timeout_ms=int(settings.get("wake_verifier_timeout_ms") or 500),
+            )
+
+        try:
+            async with runtime.send_lock:
+                if runtime.websocket is not websocket or websocket.closed:
+                    return
+                await websocket.send_json(envelope("wake.verify.result", result))
+        except (ConnectionError, RuntimeError):
+            return
+        runtime.record_wake_verifier_result(result)
+        _LOGGER.info(
+            "Wake verifier device=%s request=%s mode=%s accepted=%s "
+            "available=%s score=%.3f stt_ms=%.1f total_ms=%.1f "
+            "transcript=%r reason=%s",
+            runtime.device_id,
+            result.get("request_id"),
+            mode,
+            bool(result.get("accepted")),
+            bool(result.get("available")),
+            float(result.get("score") or 0),
+            float(result.get("stt_ms") or 0),
+            float(result.get("total_ms") or 0),
+            text(result.get("transcript")),
+            text(result.get("reason")),
+        )
 
     def snapshot(self) -> dict[str, Any]:
         """Return the complete management-panel payload."""
@@ -1081,6 +1288,7 @@ class TaterSatelliteManager:
                     "play_url": True,
                     "voice_stream": True,
                     "pcm_binary": True,
+                    "wake_verifier": True,
                     "timers": True,
                     "ota": True,
                 },
@@ -1125,7 +1333,15 @@ class TaterSatelliteManager:
                 elif frame.type == WSMsgType.BINARY:
                     data = bytes(frame.data or b"")
                     if is_wake_verifier_packet(data):
-                        await runtime.async_send_json(wake_verifier_unavailable(data))
+                        self.entry.async_create_background_task(
+                            self.hass,
+                            self._async_handle_wake_verifier_packet(
+                                runtime,
+                                data,
+                                websocket,
+                            ),
+                            f"tater_satellite_wake_verifier_{runtime.device_id}",
+                        )
                     elif runtime.assist_entity is not None:
                         runtime.assist_entity.device_audio(data)
                 elif frame.type in {

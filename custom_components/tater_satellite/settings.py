@@ -15,6 +15,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "wake_environment": "balanced",
     "wake_threshold": 0.97,
     "wake_sliding_window": 5,
+    "wake_verifier_mode": "off",
+    "wake_verifier_phrase": "",
+    "wake_verifier_phrase_url": "",
+    "wake_verifier_threshold": 0.85,
+    "wake_verifier_window_ms": 1000,
+    "wake_verifier_timeout_ms": 500,
     "capture_wake_audio": False,
     "capture_close_misses": False,
     "close_miss_threshold": 0.78,
@@ -46,6 +52,9 @@ FIRMWARE_SETTING_KEYS = {
     "wake_environment",
     "wake_threshold",
     "wake_sliding_window",
+    "wake_verifier_mode",
+    "wake_verifier_window_ms",
+    "wake_verifier_timeout_ms",
     "capture_wake_audio",
     "capture_close_misses",
     "close_miss_threshold",
@@ -200,6 +209,27 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "min": 1,
                 "max": 10,
                 "step": 1,
+            },
+        ],
+    },
+    {
+        "section": "verifier",
+        "title": "Verification Mode",
+        "description": (
+            "Choose whether Home Assistant observes or blocks wake-word "
+            "transcript mismatches."
+        ),
+        "scopes": ["global"],
+        "fields": [
+            {
+                "key": "wake_verifier_mode",
+                "label": "STT wake check",
+                "type": "select",
+                "options": [
+                    {"value": "off", "label": "Disabled"},
+                    {"value": "observe", "label": "Observe"},
+                    {"value": "enforce", "label": "Enabled"},
+                ],
             },
         ],
     },
@@ -372,6 +402,7 @@ _ALLOWED = {
     "wake_word": {row["value"] for row in WAKE_WORD_OPTIONS},
     "wake_sensitivity": {"conservative", "normal", "high"},
     "wake_environment": {"balanced", "tv_nearby", "strict", "far_field"},
+    "wake_verifier_mode": {"off", "observe", "enforce"},
     "wake_sound": {row["value"] for row in WAKE_SOUND_OPTIONS},
     "logging_level": {"error", "warning", "info", "debug"},
     "led_listening_animation": {row["value"] for row in ANIMATION_OPTIONS},
@@ -390,17 +421,22 @@ _BOOL_KEYS = {
 }
 _INT_RANGES = {
     "wake_sliding_window": (1, 10),
+    "wake_verifier_window_ms": (500, 2000),
+    "wake_verifier_timeout_ms": (100, 2000),
     "aec_strength_percent": (0, 100),
     "aec_delay_ms": (0, 220),
     "led_brightness": (0, 100),
 }
 _FLOAT_RANGES = {
     "wake_threshold": (0.01, 0.99),
+    "wake_verifier_threshold": (0.5, 1.0),
     "close_miss_threshold": (0.01, 0.99),
 }
 _TEXT_LIMITS = {
     "wake_word_url": 255,
     "wake_model_asset_id": 128,
+    "wake_verifier_phrase": 120,
+    "wake_verifier_phrase_url": 255,
     "trainer_app_url": 127,
     "wake_sound_url": 191,
     "wake_sound_asset_id": 128,
@@ -521,15 +557,5 @@ def firmware_payload(settings: dict[str, Any]) -> dict[str, Any]:
     )
     payload["wake_threshold"] = round(
         max(0.01, min(0.99, base_threshold + adjustment)), 3
-    )
-    # The Home Assistant adapter does not currently run the optional Tater STT
-    # wake verifier. Explicitly fail open/off so enabling a stale device value
-    # cannot add wake latency.
-    payload.update(
-        {
-            "wake_verifier_mode": "off",
-            "wake_verifier_window_ms": 1000,
-            "wake_verifier_timeout_ms": 500,
-        }
     )
     return payload

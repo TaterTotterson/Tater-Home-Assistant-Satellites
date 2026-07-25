@@ -39,6 +39,8 @@ integration from **Devices & services**.
 - A Home Assistant Assist satellite entity for every paired device
 - Local wake-word activation with 16 kHz mono PCM sent into the selected Assist
   pipeline
+- Optional STT wake verification through each satellite's selected Assist
+  pipeline, with Disabled, Observe, and Enabled modes plus per-satellite results
 - Announcements, continued conversations, timers, TTS playback, and diagnostics
 - Secure six-digit first pairing followed by a per-device credential
 - Shared voice defaults and per-satellite settings for wake models, sensitivity,
@@ -82,6 +84,23 @@ Assistant stores only its hash. A published wake-word URL must belong to the
 linked trainer and point to its trained wake-word API. Publishing updates the
 shared wake word, clears conflicting per-satellite wake-word overrides, and
 pushes the new model URL to every connected satellite.
+
+## STT wake verification
+
+The **STT Wake Check** tab can send the short wake-word clip to the STT engine
+already selected in each satellite's Assist pipeline:
+
+- **Disabled** performs no STT check.
+- **Observe** transcribes and scores the wake clip but never delays or blocks
+  listening. Use this first to review accuracy and latency.
+- **Enabled** opens listening only when the transcript matches. STT timeouts,
+  provider errors, missing STT configuration, and an unknown custom wake phrase
+  always fail open so the satellite remains usable.
+
+The expected phrase follows the active built-in wake word or the latest secure
+trainer publish automatically. The tab shows each satellite's latest transcript,
+match score, latency, accepted/rejected totals, and fail-open results. Wake audio
+is processed as a transient in-memory clip and is not stored by this integration.
 
 ## Firmware updates and recovery
 

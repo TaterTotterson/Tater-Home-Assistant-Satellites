@@ -12,6 +12,10 @@ from .const import PROTOCOL_VERSION
 
 WAKE_VERIFY_MAGIC = b"TWV1"
 WAKE_VERIFY_HEADER = struct.Struct("<4sBBHIII")
+WAKE_VERIFY_VERSION = 1
+WAKE_VERIFY_CODEC_PCM16_LE = 1
+WAKE_VERIFY_SAMPLE_RATE = 16000
+WAKE_VERIFY_MAX_SAMPLES = WAKE_VERIFY_SAMPLE_RATE * 2
 
 
 def text(value: Any) -> str:
@@ -68,24 +72,34 @@ def is_wake_verifier_packet(data: bytes) -> bool:
     return len(data) >= WAKE_VERIFY_HEADER.size and data[:4] == WAKE_VERIFY_MAGIC
 
 
-def wake_verifier_request_id(data: bytes) -> int:
-    """Extract a request id from a wake-verifier packet."""
-    if not is_wake_verifier_packet(data):
-        return 0
-    _magic, _version, _codec, _flags, request_id, _rate, _samples = (
-        WAKE_VERIFY_HEADER.unpack_from(data)
+def parse_wake_verifier_packet(data: bytes) -> dict[str, Any]:
+    """Validate and unpack a Tater PCM16 wake-verifier packet."""
+    raw = bytes(data or b"")
+    if len(raw) < WAKE_VERIFY_HEADER.size:
+        raise ValueError("Wake verifier packet is shorter than its header")
+    magic, version, codec, flags, request_id, sample_rate, sample_count = (
+        WAKE_VERIFY_HEADER.unpack_from(raw)
     )
-    return int(request_id)
-
-
-def wake_verifier_unavailable(data: bytes) -> dict[str, Any]:
-    """Build a fail-open result when no verifier service is configured."""
-    return envelope(
-        "wake.verify.result",
-        {
-            "request_id": wake_verifier_request_id(data),
-            "accepted": True,
-            "available": False,
-            "reason": "home_assistant_verifier_unavailable_fail_open",
-        },
-    )
+    if magic != WAKE_VERIFY_MAGIC:
+        raise ValueError("Wake verifier packet magic does not match")
+    if version != WAKE_VERIFY_VERSION:
+        raise ValueError(f"Unsupported wake verifier packet version: {version}")
+    if codec != WAKE_VERIFY_CODEC_PCM16_LE:
+        raise ValueError(f"Unsupported wake verifier codec: {codec}")
+    if sample_rate != WAKE_VERIFY_SAMPLE_RATE:
+        raise ValueError(f"Unsupported wake verifier sample rate: {sample_rate}")
+    if sample_count < 1 or sample_count > WAKE_VERIFY_MAX_SAMPLES:
+        raise ValueError(f"Invalid wake verifier sample count: {sample_count}")
+    expected_size = WAKE_VERIFY_HEADER.size + (sample_count * 2)
+    if len(raw) != expected_size:
+        raise ValueError(
+            f"Wake verifier packet size mismatch: expected {expected_size}, "
+            f"received {len(raw)}"
+        )
+    return {
+        "request_id": int(request_id),
+        "sample_rate": int(sample_rate),
+        "sample_count": int(sample_count),
+        "enforce": bool(flags & 0x01),
+        "pcm": raw[WAKE_VERIFY_HEADER.size :],
+    }

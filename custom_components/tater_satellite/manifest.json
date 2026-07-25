@@ -1,15 +1,17 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "codeowners": [
     "@TaterTotterson"
   ],
   "config_flow": true,
   "dependencies": [
+    "assist_pipeline",
     "assist_satellite",
     "intent",
-    "panel_custom"
+    "panel_custom",
+    "stt"
   ],
   "documentation": "https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites",
   "integration_type": "hub",

@@ -26,6 +26,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .manager import SatelliteRuntime, TaterSatelliteManager
 
 _LOGGER = logging.getLogger(__name__)
+_PLAYBACK_COMMAND_SETTLE_SECONDS = 0.075
 
 _EVENT_NAMES = {
     PipelineEventType.RUN_START: "RUN_START",
@@ -92,6 +93,7 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         self._attr_unique_id = f"{runtime.device_id}_assist_satellite"
         self._attr_name = "Voice Assistant"
         self._bridge_task: asyncio.Task[None] | None = None
+        self._pipeline_event_lock = asyncio.Lock()
         self._attr_tts_options = {
             tts.ATTR_PREFERRED_FORMAT: "wav",
             tts.ATTR_PREFERRED_SAMPLE_RATE: 16000,
@@ -360,21 +362,30 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
     async def _async_forward_pipeline_event(
         self, event_name: str, data: dict[str, Any]
     ) -> None:
-        await self.runtime.async_send(
-            "voice.event", {"event": event_name, "data": data}
-        )
-        state = _STATE_BY_EVENT.get(event_name)
-        if state:
+        # Home Assistant delivers pipeline callbacks as independent tasks.
+        # Keep each event's command group together, as Tater's single outbound
+        # queue does, so RUN_END cannot race the firmware's playback-start log.
+        async with self._pipeline_event_lock:
             await self.runtime.async_send(
-                "state", {"state": state, "event": event_name}
+                "voice.event", {"event": event_name, "data": data}
             )
-        if event_name == "STT_VAD_END":
-            self.runtime.finish_audio()
-        if event_name == "TTS_END" and data.get("url"):
-            await self.runtime.async_send(
-                "play.url",
-                {"url": data["url"], "tts_kind": "response"},
-            )
+            state = _STATE_BY_EVENT.get(event_name)
+            if state:
+                await self.runtime.async_send(
+                    "state", {"state": state, "event": event_name}
+                )
+            if event_name == "STT_VAD_END":
+                self.runtime.finish_audio()
+            if event_name == "TTS_END" and data.get("url"):
+                await self.runtime.async_send(
+                    "play.url",
+                    {"url": data["url"], "tts_kind": "response"},
+                )
+                # The firmware starts playback from its WebSocket receive
+                # callback and immediately sends a playback-started log. Leave
+                # that callback a small window to release the client lock
+                # before the independently scheduled RUN_END event is sent.
+                await asyncio.sleep(_PLAYBACK_COMMAND_SETTLE_SECONDS)
 
     async def _play_announcement_parts(
         self,

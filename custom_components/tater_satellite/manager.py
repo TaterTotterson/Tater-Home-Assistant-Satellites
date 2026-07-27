@@ -27,6 +27,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import (
     MAX_AUDIO_QUEUE_CHUNKS,
@@ -47,6 +48,7 @@ from .protocol import (
 from .settings import (
     DEFAULT_SETTINGS,
     SETTINGS_SCHEMA,
+    board_supports_screen_settings,
     firmware_payload,
     merged_settings,
     normalize_settings,
@@ -127,6 +129,14 @@ _SETTINGS_WIRE_GROUPS = (
         "led_tool_call_animation",
         "led_replying_animation",
         "logging_level",
+    ),
+    (
+        "screen_brightness",
+        "screen_night_mode_enabled",
+        "screen_night_brightness",
+        "screen_night_start",
+        "screen_night_end",
+        "screen_local_time_seconds",
     ),
 )
 EntityFactory = Callable[["SatelliteRuntime"], list[Any]]
@@ -453,7 +463,7 @@ class SatelliteRuntime:
         desired_settings = (
             self.manager.firmware_settings(self.device_id)
             if self.server_base_url
-            else firmware_payload(self.effective_settings())
+            else firmware_payload(self.effective_settings(), board=self.board)
         )
         desired_wake_word = text(desired_settings.get("wake_word"))
         active_wake_word = text(wake_engine.get("active_wake_word"))
@@ -847,7 +857,20 @@ class TaterSatelliteManager:
                 "filename",
                 base_url=base_url,
             )
-        return firmware_payload(settings)
+        board = runtime.board if runtime is not None else ""
+        local_time_seconds: int | None = None
+        if board_supports_screen_settings(board):
+            local_now = dt_util.now()
+            local_time_seconds = (
+                (local_now.hour * 60 * 60)
+                + (local_now.minute * 60)
+                + local_now.second
+            )
+        return firmware_payload(
+            settings,
+            board=board,
+            local_time_seconds=local_time_seconds,
+        )
 
     async def async_push_settings(
         self,
@@ -1551,8 +1574,8 @@ class TaterSatelliteManager:
             )
             return
         if kind == "timer.event":
-            # Device-side expiry/stop is reflected locally. Home Assistant's
-            # timer manager remains authoritative and will issue its next sync.
+            # The satellite owns the countdown and alarm. Home Assistant keeps
+            # only the transient mirror required by its built-in timer intents.
             runtime.add_log(
                 "info",
                 f"Timer {text(payload.get('event')) or 'event'}: "

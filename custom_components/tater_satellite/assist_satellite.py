@@ -24,6 +24,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .manager import SatelliteRuntime, TaterSatelliteManager
+from .timers import timer_event_command
 
 _LOGGER = logging.getLogger(__name__)
 _PLAYBACK_COMMAND_SETTLE_SECONDS = 0.075
@@ -429,25 +430,11 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
 
     @callback
     def _handle_timer_event(self, event_type: TimerEventType, timer: TimerInfo) -> None:
-        """Forward Home Assistant timer changes to the device."""
-        if event_type in {TimerEventType.STARTED, TimerEventType.UPDATED}:
-            if timer.is_active:
-                command = "timer.arm"
-                payload = {
-                    "id": timer.id,
-                    "label": timer.name,
-                    "remaining_s": timer.seconds_left,
-                    "duration_s": timer.created_seconds,
-                }
-            else:
-                command = "timer.clear"
-                payload = {"id": timer.id}
-        elif event_type is TimerEventType.FINISHED:
-            command = "timer.alarm"
-            payload = {"id": timer.id, "label": timer.name}
-        else:
-            command = "timer.clear"
-            payload = {"id": timer.id}
+        """Forward built-in Home Assistant timer intents to the satellite."""
+        message = timer_event_command(event_type, timer)
+        if message is None:
+            return
+        command, payload = message
         self.hass.async_create_task(
             self.runtime.async_send(command, payload),
             f"tater_satellite_timer_{self.runtime.device_id}",

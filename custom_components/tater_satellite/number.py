@@ -10,7 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
-from .settings import board_supports_led_settings
+from .settings import board_supports_led_settings, board_supports_screen_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,24 @@ class NumberDefinition:
 
 
 DEFINITIONS = (
+    NumberDefinition(
+        "screen_brightness",
+        "Screen brightness",
+        0,
+        100,
+        1,
+        "%",
+        "mdi:brightness-6",
+    ),
+    NumberDefinition(
+        "screen_night_brightness",
+        "Night screen brightness",
+        0,
+        100,
+        1,
+        "%",
+        "mdi:brightness-4",
+    ),
     NumberDefinition(
         "led_brightness", "LED brightness", 0, 100, 1, "%", "mdi:brightness-6"
     ),
@@ -90,8 +108,16 @@ async def async_setup_entry(
         lambda runtime: [
             TaterSettingsNumber(runtime, definition)
             for definition in DEFINITIONS
-            if definition.key != "led_brightness"
-            or board_supports_led_settings(runtime.board)
+            if (
+                (
+                    not definition.key.startswith("screen_")
+                    or board_supports_screen_settings(runtime.board)
+                )
+                and (
+                    definition.key != "led_brightness"
+                    or board_supports_led_settings(runtime.board)
+                )
+            )
         ],
         async_add_entities,
     )

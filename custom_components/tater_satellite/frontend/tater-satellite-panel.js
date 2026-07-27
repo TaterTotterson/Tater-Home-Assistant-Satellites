@@ -580,6 +580,11 @@ class TaterSatellitePanel extends HTMLElement {
       .replaceAll("-", "_");
     return (this._data.settings_schema || [])
       .filter((section) => !section.scopes || section.scopes.includes(scope))
+      .filter(
+        (section) =>
+          !(section.include_boards || []).length ||
+          section.include_boards.includes(boardKey),
+      )
       .filter((section) => !(section.exclude_boards || []).includes(boardKey))
       .filter((section) => !(sectionFilter.exclude || []).includes(section.section))
       .filter((section) => !(sectionFilter.include || []).length || sectionFilter.include.includes(section.section))
@@ -814,7 +819,14 @@ class TaterSatellitePanel extends HTMLElement {
         </label>
       `;
     }
-    const type = field.type === "color" ? "color" : field.type === "number" ? "number" : "text";
+    const type =
+      field.type === "color"
+        ? "color"
+        : field.type === "number"
+          ? "number"
+          : field.type === "time"
+            ? "time"
+            : "text";
     return `
       <label class="field">
         <span>${escapeHtml(field.label)}</span>
@@ -1000,7 +1012,20 @@ class TaterSatellitePanel extends HTMLElement {
         if (input.type === "number") value = Number(value);
         target[input.dataset.setting] = value;
         this._dirty = true;
-        if (["wake_word", "wake_sound", "aec_enabled", "wake_verifier_mode"].includes(input.dataset.setting)) this.render();
+        const controlsConditionalFields = (this._data.settings_schema || []).some(
+          (section) =>
+            (section.fields || []).some(
+              (field) => field.show_when?.key === input.dataset.setting,
+            ),
+        );
+        if (
+          controlsConditionalFields ||
+          ["wake_word", "wake_sound", "aec_enabled", "wake_verifier_mode"].includes(
+            input.dataset.setting,
+          )
+        ) {
+          this.render();
+        }
       });
     });
     root.querySelector('[data-special="pipeline"]')?.addEventListener("change", (event) => {

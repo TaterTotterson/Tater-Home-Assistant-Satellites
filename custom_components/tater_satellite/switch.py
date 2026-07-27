@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
+from .settings import board_supports_screen_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,11 @@ class SwitchDefinition:
 
 
 DEFINITIONS = (
+    SwitchDefinition(
+        "screen_night_mode_enabled",
+        "Scheduled night dimming",
+        "mdi:theme-light-dark",
+    ),
     SwitchDefinition("muted", "Microphone mute", "mdi:microphone-off"),
     SwitchDefinition("continued_chat", "Continued conversation", "mdi:account-voice"),
     SwitchDefinition("barge_in_enabled", "Reply barge-in", "mdi:account-voice"),
@@ -47,7 +53,12 @@ async def async_setup_entry(
     manager.register_platform(
         "switch",
         lambda runtime: [
-            TaterSettingsSwitch(runtime, definition) for definition in DEFINITIONS
+            TaterSettingsSwitch(runtime, definition)
+            for definition in DEFINITIONS
+            if (
+                definition.key != "screen_night_mode_enabled"
+                or board_supports_screen_settings(runtime.board)
+            )
         ],
         async_add_entities,
     )

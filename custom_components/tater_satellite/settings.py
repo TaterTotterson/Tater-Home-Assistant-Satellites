@@ -35,6 +35,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "continued_chat": True,
     "barge_in_enabled": False,
     "muted": False,
+    "screen_brightness": 80,
+    "screen_night_mode_enabled": False,
+    "screen_night_brightness": 10,
+    "screen_night_start": "22:00",
+    "screen_night_end": "07:00",
     "led_brightness": 80,
     "led_color": "#ff5a1f",
     "led_listening_animation": "directional",
@@ -68,6 +73,11 @@ FIRMWARE_SETTING_KEYS = {
     "continued_chat",
     "barge_in_enabled",
     "muted",
+    "screen_brightness",
+    "screen_night_mode_enabled",
+    "screen_night_brightness",
+    "screen_night_start",
+    "screen_night_end",
     "led_brightness",
     "led_color",
     "led_listening_animation",
@@ -336,6 +346,61 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "section": "display",
+        "title": "S3 Box Display",
+        "description": (
+            "Set this S3 Box screen brightness and optionally dim it on a "
+            "daily local-time schedule."
+        ),
+        "scopes": ["device"],
+        "include_boards": ["s3_box"],
+        "fields": [
+            {
+                "key": "screen_brightness",
+                "label": "Screen brightness",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+                "step": 1,
+            },
+            {
+                "key": "screen_night_mode_enabled",
+                "label": "Scheduled night dimming",
+                "type": "boolean",
+            },
+            {
+                "key": "screen_night_start",
+                "label": "Dim at",
+                "type": "time",
+                "show_when": {
+                    "key": "screen_night_mode_enabled",
+                    "equals": True,
+                },
+            },
+            {
+                "key": "screen_night_end",
+                "label": "Restore at",
+                "type": "time",
+                "show_when": {
+                    "key": "screen_night_mode_enabled",
+                    "equals": True,
+                },
+            },
+            {
+                "key": "screen_night_brightness",
+                "label": "Night brightness",
+                "type": "number",
+                "min": 0,
+                "max": 100,
+                "step": 1,
+                "show_when": {
+                    "key": "screen_night_mode_enabled",
+                    "equals": True,
+                },
+            },
+        ],
+    },
+    {
         "section": "led",
         "title": "LEDs",
         "description": "Brightness, voice color, and animation for each stage.",
@@ -418,6 +483,7 @@ _BOOL_KEYS = {
     "continued_chat",
     "barge_in_enabled",
     "muted",
+    "screen_night_mode_enabled",
 }
 _INT_RANGES = {
     "wake_sliding_window": (1, 10),
@@ -425,6 +491,8 @@ _INT_RANGES = {
     "wake_verifier_timeout_ms": (100, 2000),
     "aec_strength_percent": (0, 100),
     "aec_delay_ms": (0, 220),
+    "screen_brightness": (0, 100),
+    "screen_night_brightness": (0, 100),
     "led_brightness": (0, 100),
 }
 _FLOAT_RANGES = {
@@ -440,6 +508,10 @@ _TEXT_LIMITS = {
     "trainer_app_url": 127,
     "wake_sound_url": 191,
     "wake_sound_asset_id": 128,
+}
+_TIME_KEYS = {
+    "screen_night_start",
+    "screen_night_end",
 }
 _HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -459,6 +531,38 @@ def board_supports_led_settings(board: Any) -> bool:
         "esp32s3box",
         "esp32s3box3",
     }
+
+
+def board_supports_screen_settings(board: Any) -> bool:
+    """Return whether a board has the configurable S3 Box display."""
+    token = str(board or "").strip().lower().replace("_", "-").replace(" ", "-")
+    compact = token.replace("-", "")
+    return token in {
+        "s3-box",
+        "s3-box-3",
+        "esp32-s3-box",
+        "esp32-s3-box-3",
+    } or compact in {
+        "s3box",
+        "s3box3",
+        "esp32s3box",
+        "esp32s3box3",
+    }
+
+
+def _time_value(value: Any, default: str) -> str:
+    """Return a normalized 24-hour HH:MM value."""
+    parts = str(value or "").strip().split(":")
+    if len(parts) != 2:
+        return default
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except (TypeError, ValueError):
+        return default
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return default
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _boolean(value: Any, default: bool) -> bool:
@@ -521,6 +625,8 @@ def normalize_settings(
         elif key == "led_color":
             color = str(value or "").strip().lower()
             result[key] = color if _HEX_COLOR.fullmatch(color) else default
+        elif key in _TIME_KEYS:
+            result[key] = _time_value(value, str(default))
         elif key in _TEXT_LIMITS:
             result[key] = str(value or "").strip()[: _TEXT_LIMITS[key]]
 
@@ -545,12 +651,32 @@ def merged_settings(
     return normalize_settings({**global_values, **override_values})
 
 
-def firmware_payload(settings: dict[str, Any]) -> dict[str, Any]:
+def firmware_payload(
+    settings: dict[str, Any],
+    *,
+    board: Any = "",
+    local_time_seconds: int | None = None,
+) -> dict[str, Any]:
     """Return only values understood by the firmware."""
     normalized = normalize_settings(settings)
     payload = {
         key: value for key, value in normalized.items() if key in FIRMWARE_SETTING_KEYS
     }
+    if board_supports_screen_settings(board):
+        if local_time_seconds is not None:
+            payload["screen_local_time_seconds"] = max(
+                0,
+                min((24 * 60 * 60) - 1, int(local_time_seconds)),
+            )
+    else:
+        for key in (
+            "screen_brightness",
+            "screen_night_mode_enabled",
+            "screen_night_brightness",
+            "screen_night_start",
+            "screen_night_end",
+        ):
+            payload.pop(key, None)
     base_threshold = float(normalized["wake_threshold"])
     adjustment = WAKE_SENSITIVITY_ADJUSTMENTS.get(
         str(normalized["wake_sensitivity"]), 0.0

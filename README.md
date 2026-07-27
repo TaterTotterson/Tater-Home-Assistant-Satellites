@@ -45,7 +45,7 @@ integration from **Devices & services**.
 - Secure six-digit first pairing followed by a per-device credential
 - Shared voice defaults and per-satellite settings for wake models, sensitivity,
   wake sounds, trainer captures, conversation behavior, AEC, microphone mute,
-  LEDs, and firmware logging
+  LEDs, S3 Box screen brightness and night dimming, and firmware logging
 - Device-owned speaker volume, so changing volume on a satellite is not
   overwritten by Home Assistant
 - Custom microWakeWord TFLite and WAV uploads stored inside Home Assistant
@@ -109,6 +109,18 @@ Settings saves now wait for the connected satellite's reported settings
 generation to advance. The per-satellite diagnostics show the desired and active
 wake model, download state, settings generation, and confirmation status. Use
 **Resend live settings** to force another model download and settings sync.
+
+## Voice timers
+
+Tater satellites use Home Assistant's built-in timer intents, including starting
+multiple named timers, checking timer status, cancelling one or all timers,
+pausing or resuming, and increasing or decreasing a timer. No custom sentences
+or intent scripts are required.
+
+Home Assistant recognizes the request and keeps a transient intent-side mirror.
+The satellite owns the actual countdown and alarm, so it continues through a
+temporary Home Assistant or network disconnect and rings locally. The timer is
+intentionally lost if the satellite reboots or loses power.
 
 ## Firmware updates and recovery
 

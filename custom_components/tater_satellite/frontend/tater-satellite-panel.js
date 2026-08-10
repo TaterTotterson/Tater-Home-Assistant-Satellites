@@ -82,6 +82,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._dirty = false;
     this._loading = false;
     this._recovery = null;
+    this._recoveryBoard = "";
     this._pollTimer = null;
   }
 
@@ -844,6 +845,10 @@ class TaterSatellitePanel extends HTMLElement {
     const catalog = this._data.firmware || {};
     const devices = this._data.devices || [];
     const boardRows = Object.values(catalog.devices || {});
+    const boardValues = boardRows.map((row) => String(row.board || row.key));
+    if (!boardValues.includes(this._recoveryBoard)) {
+      this._recoveryBoard = boardValues[0] || "";
+    }
     return `
       <section class="card section-card">
         <div class="firmware-board">
@@ -865,7 +870,10 @@ class TaterSatellitePanel extends HTMLElement {
           <label class="field">
             <span>Satellite hardware</span>
             <select data-recovery-board>
-              ${boardRows.map((row) => `<option value="${escapeHtml(row.board || row.key)}">${escapeHtml(row.label)} · ${escapeHtml(row.flash_size)}</option>`).join("")}
+              ${boardRows.map((row) => {
+                const board = String(row.board || row.key);
+                return `<option value="${escapeHtml(board)}" ${board === this._recoveryBoard ? "selected" : ""}>${escapeHtml(row.label)} · ${escapeHtml(row.flash_size)}</option>`;
+              }).join("")}
             </select>
           </label>
           <div class="field">
@@ -874,7 +882,7 @@ class TaterSatellitePanel extends HTMLElement {
           </div>
         </div>
         ${
-          this._recovery?.blobUrl
+          this._recovery?.blobUrl && this._recovery.board === this._recoveryBoard
             ? `<div style="margin-top:16px"><esp-web-install-button manifest="${escapeHtml(this._recovery.blobUrl)}"></esp-web-install-button><div class="muted" style="margin-top:7px">Select Connect, choose the satellite USB serial port, then follow the installer.</div></div>`
             : ""
         }
@@ -1086,6 +1094,15 @@ class TaterSatellitePanel extends HTMLElement {
         "Firmware catalog refreshed.",
       ),
     );
+    const recoveryBoard = root.querySelector("[data-recovery-board]");
+    recoveryBoard?.addEventListener("change", () => {
+      this._recoveryBoard = recoveryBoard.value;
+      if (this._recovery && this._recovery.board !== this._recoveryBoard) {
+        if (this._recovery.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
+        this._recovery = null;
+        this.render();
+      }
+    });
     root.querySelector('[data-action="prepare-recovery"]')?.addEventListener("click", () =>
       this.prepareRecovery(),
     );
@@ -1137,11 +1154,12 @@ class TaterSatellitePanel extends HTMLElement {
   async prepareRecovery() {
     const board = this.shadowRoot.querySelector("[data-recovery-board]")?.value;
     if (!board) return;
+    this._recoveryBoard = board;
     await this.run(async () => {
       const result = await this.api("POST", `firmware/recovery/${encodeURIComponent(board)}`, {});
       if (this._recovery?.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
       const blob = new Blob([JSON.stringify(result.manifest)], { type: "application/json" });
-      this._recovery = { blobUrl: URL.createObjectURL(blob) };
+      this._recovery = { board, blobUrl: URL.createObjectURL(blob) };
       const sources = [
         "https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module",
         "https://cdn.jsdelivr.net/npm/esp-web-tools@10/dist/web/install-button.js",

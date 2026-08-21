@@ -8,7 +8,6 @@ from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DATA_MANAGER,
@@ -49,16 +48,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: TaterConfigEntry) -> boo
     await manager.async_setup()
     entry.runtime_data = manager
     hass.data[DOMAIN][DATA_MANAGER] = manager
-
-    registry = er.async_get(hass)
-    for registry_entry in er.async_entries_for_config_entry(
-        registry,
-        entry.entry_id,
-    ):
-        if registry_entry.domain == "number" and registry_entry.unique_id.endswith(
-            "_volume_percent"
-        ):
-            registry.async_remove(registry_entry.entity_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

@@ -119,6 +119,7 @@ _SETTINGS_WIRE_GROUPS = (
         "aec_delay_ms",
         "continued_chat",
         "barge_in_enabled",
+        "volume_percent",
         "muted",
     ),
     (
@@ -827,7 +828,7 @@ class TaterSatelliteManager:
         )
         if "volume_percent" not in live:
             return False
-        volume = max(0, min(100, _as_int(live.get("volume_percent"), 80)))
+        volume = max(0, min(100, _as_int(live.get("volume_percent"))))
         if volume == int(runtime.effective_settings().get("volume_percent") or 0):
             return False
         overrides = (

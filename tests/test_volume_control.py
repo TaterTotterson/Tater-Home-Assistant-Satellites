@@ -56,8 +56,28 @@ class VolumeControlTests(unittest.TestCase):
         self.assertIn('"volume_percent",', numbers)
         self.assertIn('"mdi:volume-high",', numbers)
         self.assertIn("def _adopt_reported_device_volume(", manager)
+        self.assertIn('_as_int(live.get("volume_percent"))', manager)
+        self.assertNotIn('_as_int(live.get("volume_percent"), 80)', manager)
         self.assertIn('overrides["volume_percent"] = volume', manager)
         self.assertIn("self.store.async_delay_save(lambda: self.data, 1.0)", manager)
+
+    def test_volume_entity_is_not_removed_during_setup(self) -> None:
+        setup = (
+            ROOT / "custom_components" / "tater_satellite" / "__init__.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn('unique_id.endswith("_volume_percent")', setup)
+        self.assertNotIn("registry.async_remove", setup)
+
+    def test_volume_is_sent_with_the_audio_settings_group(self) -> None:
+        manager = (
+            ROOT / "custom_components" / "tater_satellite" / "manager.py"
+        ).read_text(encoding="utf-8")
+        audio_group = manager.split('_SETTINGS_WIRE_GROUPS = (', 1)[1].split(
+            '    ),', 3
+        )[2]
+
+        self.assertIn('"volume_percent"', audio_group)
 
     def test_manifest_version_is_bumped(self) -> None:
         manifest = json.loads(
@@ -69,7 +89,7 @@ class VolumeControlTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
 
-        self.assertEqual(manifest["version"], "0.3.8")
+        self.assertEqual(manifest["version"], "0.3.9")
 
 
 if __name__ == "__main__":

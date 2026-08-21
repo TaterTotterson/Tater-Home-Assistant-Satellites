@@ -46,8 +46,8 @@ integration from **Devices & services**.
 - Shared voice defaults and per-satellite settings for wake models, sensitivity,
   wake sounds, trainer captures, conversation behavior, AEC, microphone mute,
   LEDs, S3 Box screen brightness and night dimming, and firmware logging
-- Device-owned speaker volume, so changing volume on a satellite is not
-  overwritten by Home Assistant
+- Per-satellite speaker volume with a main-card slider and a standard Home
+  Assistant number entity
 - Custom microWakeWord TFLite and WAV uploads stored inside Home Assistant
 - Secure Wake Word Trainer pairing and automatic wake-word publishing
 - Board-aware OTA updates and browser USB recovery for Voice PE, Satellite1,

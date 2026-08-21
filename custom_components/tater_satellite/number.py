@@ -28,6 +28,15 @@ class NumberDefinition:
 
 DEFINITIONS = (
     NumberDefinition(
+        "volume_percent",
+        "Speaker volume",
+        0,
+        100,
+        1,
+        "%",
+        "mdi:volume-high",
+    ),
+    NumberDefinition(
         "screen_brightness",
         "Screen brightness",
         0,
@@ -116,6 +125,10 @@ async def async_setup_entry(
                 and (
                     definition.key != "led_brightness"
                     or board_supports_led_settings(runtime.board)
+                )
+                and (
+                    definition.key != "volume_percent"
+                    or runtime.capabilities.get("speaker", True)
                 )
             )
         ],

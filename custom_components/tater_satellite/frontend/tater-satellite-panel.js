@@ -304,6 +304,119 @@ class TaterSatellitePanel extends HTMLElement {
         font: inherit;
       }
       input[type="color"] { padding: 4px; }
+      .device-volume {
+        --device-volume-progress: 80%;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        margin: 14px 0 16px;
+        padding: 11px 12px;
+        border: 1px solid color-mix(in srgb, var(--tater-accent) 30%, var(--divider-color));
+        border-radius: 12px;
+        background:
+          radial-gradient(circle at 0 50%, var(--tater-accent-soft), transparent 44%),
+          var(--secondary-background-color);
+      }
+      .device-volume-icon {
+        display: grid;
+        place-items: center;
+        flex: 0 0 37px;
+        width: 37px;
+        height: 37px;
+        border: 1px solid color-mix(in srgb, var(--tater-accent) 38%, var(--divider-color));
+        border-radius: 11px;
+        color: var(--tater-accent);
+        background: var(--tater-accent-soft);
+      }
+      .device-volume-icon svg { width: 21px; height: 21px; fill: currentColor; }
+      .device-volume-main { display: grid; flex: 1 1 auto; gap: 7px; min-width: 0; }
+      .device-volume-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+      .device-volume-head strong { font-size: 13px; }
+      .device-volume-head output {
+        min-width: 40px;
+        color: var(--tater-accent);
+        text-align: right;
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+      }
+      .device-volume-feedback {
+        flex: 1 1 auto;
+        color: var(--secondary-text-color);
+        text-align: right;
+        font-size: 11px;
+      }
+      .device-volume-feedback.error { color: var(--error-color); }
+      .device-volume-range {
+        display: grid;
+        grid-template-columns: auto minmax(90px, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        color: var(--secondary-text-color);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      .device-volume input[type="range"] {
+        width: 100%;
+        min-height: 18px;
+        height: 18px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        border-radius: 0;
+        appearance: none;
+        -webkit-appearance: none;
+        background: transparent;
+        cursor: pointer;
+      }
+      .device-volume input[type="range"]::-webkit-slider-runnable-track {
+        height: 6px;
+        border-radius: 99px;
+        background: linear-gradient(
+          to right,
+          var(--tater-accent) 0,
+          var(--tater-accent) var(--device-volume-progress),
+          color-mix(in srgb, var(--primary-text-color) 15%, transparent) var(--device-volume-progress),
+          color-mix(in srgb, var(--primary-text-color) 15%, transparent) 100%
+        );
+      }
+      .device-volume input[type="range"]::-moz-range-track {
+        height: 6px;
+        border-radius: 99px;
+        background: color-mix(in srgb, var(--primary-text-color) 15%, transparent);
+      }
+      .device-volume input[type="range"]::-moz-range-progress {
+        height: 6px;
+        border-radius: 99px;
+        background: var(--tater-accent);
+      }
+      .device-volume input[type="range"]::-webkit-slider-thumb {
+        width: 18px;
+        height: 18px;
+        margin-top: -6px;
+        border: 3px solid var(--tater-accent);
+        border-radius: 50%;
+        appearance: none;
+        -webkit-appearance: none;
+        background: var(--card-background-color);
+        box-shadow: 0 2px 7px rgba(0, 0, 0, .28);
+      }
+      .device-volume input[type="range"]::-moz-range-thumb {
+        width: 13px;
+        height: 13px;
+        border: 3px solid var(--tater-accent);
+        border-radius: 50%;
+        background: var(--card-background-color);
+        box-shadow: 0 2px 7px rgba(0, 0, 0, .28);
+      }
+      .device-volume input[type="range"]:focus-visible::-webkit-slider-thumb {
+        box-shadow: 0 0 0 4px var(--tater-accent-soft), 0 2px 7px rgba(0, 0, 0, .28);
+      }
+      .device-volume input[type="range"]:focus-visible::-moz-range-thumb {
+        box-shadow: 0 0 0 4px var(--tater-accent-soft), 0 2px 7px rgba(0, 0, 0, .28);
+      }
+      .device-volume input[type="range"]:disabled { opacity: .55; cursor: wait; }
       .toggle-field { flex-direction: row; align-items: center; justify-content: space-between; min-height: 42px; padding: 8px 10px; border: 1px solid var(--divider-color); border-radius: 9px; }
       .toggle-field input { width: 42px; min-height: 22px; accent-color: var(--tater-accent); }
       .asset-row { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
@@ -433,6 +546,7 @@ class TaterSatellitePanel extends HTMLElement {
           <div class="fact"><label>Free memory</label><span>${formatBytes(device.free_heap)}</span></div>
           <div class="fact"><label>Last seen</label><span>${formatAge(device.last_seen)}</span></div>
         </div>
+        ${this.renderDeviceVolume(device)}
         <div class="row-actions">
           <button class="primary" data-configure="${escapeHtml(device.device_id)}">Configure</button>
           <button data-identify="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>Identify</button>
@@ -449,6 +563,35 @@ class TaterSatellitePanel extends HTMLElement {
             : ""
         }
       </article>
+    `;
+  }
+
+  renderDeviceVolume(device) {
+    if (device.capabilities?.speaker === false) return "";
+    const rawValue = Number(device.settings?.volume_percent ?? 80);
+    const value = Math.max(0, Math.min(100, Number.isFinite(rawValue) ? Math.round(rawValue) : 80));
+    return `
+      <div class="device-volume" style="--device-volume-progress:${value}%">
+        <span class="device-volume-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.1-3.8v7.6a4.5 4.5 0 0 0 2.1-3.8zm-2.1-8.2v2.1a7 7 0 0 1 0 12.2v2.1a9 9 0 0 0 0-16.4z"></path>
+          </svg>
+        </span>
+        <label class="device-volume-main">
+          <span class="device-volume-head">
+            <strong>Volume</strong>
+            <span class="device-volume-feedback" data-volume-feedback></span>
+            <output data-volume-output>${value}%</output>
+          </span>
+          <span class="device-volume-range">
+            <span aria-hidden="true">0</span>
+            <input type="range" min="0" max="100" step="1" value="${value}"
+              aria-label="${escapeHtml(device.name)} speaker volume"
+              data-device-volume="${escapeHtml(device.device_id)}" data-volume-last="${value}">
+            <span aria-hidden="true">100</span>
+          </span>
+        </label>
+      </div>
     `;
   }
 
@@ -910,6 +1053,57 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  async saveDeviceVolume(input) {
+    const deviceId = input.dataset.deviceVolume || "";
+    const wrap = input.closest(".device-volume");
+    const output = wrap?.querySelector("[data-volume-output]");
+    const feedback = wrap?.querySelector("[data-volume-feedback]");
+    const previous = Number(input.dataset.volumeLast ?? input.value ?? 80);
+    const volume = Math.max(0, Math.min(100, Math.round(Number(input.value || 0))));
+    if (!deviceId || input.disabled || volume === previous) return;
+    input.disabled = true;
+    if (feedback) {
+      feedback.textContent = "Saving…";
+      feedback.classList.remove("error");
+    }
+    try {
+      const response = await this.api("POST", `settings/device/${deviceId}`, {
+        settings: { volume_percent: volume },
+      });
+      const updated = response?.device;
+      if (updated?.device_id) {
+        this._data.devices = (this._data.devices || []).map((device) =>
+          device.device_id === updated.device_id ? updated : device,
+        );
+      }
+      const savedValue = Math.max(
+        0,
+        Math.min(100, Math.round(Number(updated?.settings?.volume_percent ?? volume))),
+      );
+      input.value = String(savedValue);
+      input.dataset.volumeLast = String(savedValue);
+      wrap?.style.setProperty("--device-volume-progress", `${savedValue}%`);
+      if (output) output.textContent = `${savedValue}%`;
+      if (feedback) {
+        feedback.textContent = "Saved";
+        window.setTimeout(() => {
+          if (feedback.isConnected && feedback.textContent === "Saved") feedback.textContent = "";
+        }, 2200);
+      }
+    } catch (error) {
+      input.value = String(previous);
+      wrap?.style.setProperty("--device-volume-progress", `${previous}%`);
+      if (output) output.textContent = `${previous}%`;
+      if (feedback) {
+        feedback.textContent = "Couldn’t save";
+        feedback.classList.add("error");
+      }
+      this._error = `Could not save satellite volume: ${formatApiError(error)}`;
+    } finally {
+      if (input.isConnected) input.disabled = false;
+    }
+  }
+
   bindEvents() {
     const root = this.shadowRoot;
     root.querySelectorAll("[data-tab]").forEach((button) => {
@@ -931,6 +1125,18 @@ class TaterSatellitePanel extends HTMLElement {
         }, "Pairing mode started. Enter the code during satellite setup."),
       ),
     );
+    root.querySelectorAll("[data-device-volume]").forEach((input) => {
+      const updateVisual = () => {
+        const value = Math.max(0, Math.min(100, Math.round(Number(input.value || 0))));
+        const wrap = input.closest(".device-volume");
+        const output = wrap?.querySelector("[data-volume-output]");
+        wrap?.style.setProperty("--device-volume-progress", `${value}%`);
+        if (output) output.textContent = `${value}%`;
+      };
+      input.addEventListener("input", updateVisual);
+      input.addEventListener("change", () => this.saveDeviceVolume(input));
+      updateVisual();
+    });
     root.querySelectorAll('[data-action="trainer-pair"]').forEach((button) =>
       button.addEventListener("click", () =>
         this.run(async () => {

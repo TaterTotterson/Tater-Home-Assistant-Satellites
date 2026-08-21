@@ -814,6 +814,32 @@ class TaterSatelliteManager:
         )
         return merged_settings(self.data.get("global_settings"), overrides)
 
+    def _adopt_reported_device_volume(
+        self, runtime: SatelliteRuntime, status: dict[str, Any]
+    ) -> bool:
+        """Keep physical satellite volume changes in Home Assistant."""
+        if runtime.settings_sync_state != "confirmed":
+            return False
+        live = (
+            status.get("live_settings")
+            if isinstance(status.get("live_settings"), dict)
+            else {}
+        )
+        if "volume_percent" not in live:
+            return False
+        volume = max(0, min(100, _as_int(live.get("volume_percent"), 80)))
+        if volume == int(runtime.effective_settings().get("volume_percent") or 0):
+            return False
+        overrides = (
+            dict(runtime.record.get("overrides"))
+            if isinstance(runtime.record.get("overrides"), dict)
+            else {}
+        )
+        overrides["volume_percent"] = volume
+        runtime.record["overrides"] = overrides
+        self.store.async_delay_save(lambda: self.data, 1.0)
+        return True
+
     def _asset_url(
         self,
         asset_id: str,
@@ -1508,6 +1534,7 @@ class TaterSatelliteManager:
         if kind == "status":
             runtime.last_status = payload
             runtime.note_settings_status()
+            self._adopt_reported_device_volume(runtime, payload)
             runtime.notify()
             return
         if kind in {"log", "ota.status"}:

@@ -53,6 +53,15 @@ integration from **Devices & services**.
 - Board-aware OTA updates and browser USB recovery for Voice PE, Satellite1,
   Satellite1 Beta.1/rev4.1, ReSpeaker XVF3800, and ESP32-S3-BOX-3
 
+## What's New in 0.3.11
+
+- Adds a dedicated `Satellite1 Beta.1 / rev4.1` firmware choice for Public
+  Batch #1 hardware.
+- Routes production and legacy Satellite1 board identities to separate firmware
+  manifest entries so their OTA updates cannot be mixed.
+- Documents that the first legacy firmware installation must be selected
+  explicitly over USB; subsequent updates follow the saved board identity.
+
 ## What's New in 0.3.10
 
 - Physical volume changes from Satellite1 buttons and the Voice PE encoder now

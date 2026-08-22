@@ -55,6 +55,9 @@ BOARD_MANIFEST_KEYS: Final = {
     "voicepe": "voicepe",
     "satellite1": "satellite1",
     "sat1": "satellite1",
+    "satellite1-beta-rev41": "satellite1_beta_rev41",
+    "satellite1_beta_rev41": "satellite1_beta_rev41",
+    "sat1-beta-rev41": "satellite1_beta_rev41",
     "respeaker-xvf3800": "respeaker_xvf3800",
     "respeaker_xvf3800": "respeaker_xvf3800",
     "s3-box": "s3_box",
@@ -65,6 +68,7 @@ BOARD_MANIFEST_KEYS: Final = {
 BOARD_LABELS: Final = {
     "voicepe": "Voice PE",
     "satellite1": "Satellite1",
+    "satellite1_beta_rev41": "Satellite1 Beta.1 / rev4.1",
     "respeaker_xvf3800": "ReSpeaker XVF3800",
     "s3_box": "ESP32-S3-BOX-3",
 }

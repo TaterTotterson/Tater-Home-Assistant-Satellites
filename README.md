@@ -51,7 +51,7 @@ integration from **Devices & services**.
 - Custom microWakeWord TFLite and WAV uploads stored inside Home Assistant
 - Secure Wake Word Trainer pairing and automatic wake-word publishing
 - Board-aware OTA updates and browser USB recovery for Voice PE, Satellite1,
-  ReSpeaker XVF3800, and ESP32-S3-BOX-3
+  Satellite1 Beta.1/rev4.1, ReSpeaker XVF3800, and ESP32-S3-BOX-3
 
 ## What's New in 0.3.10
 
@@ -144,6 +144,12 @@ SHA-256 hash, and exposes it through a short-lived URL.
 
 USB recovery writes the release's merged factory image. OTA writes only the
 application image and preserves the satellite's Wi-Fi and pairing data.
+
+Satellite1 Public Batch #1 / Beta.1 HAT and Core rev4.1 uses its own
+`Satellite1 Beta.1 / rev4.1` firmware choice. Select it explicitly for the
+first USB install; Public Batch #2 and later hardware should use `Satellite1`.
+After pairing, the distinct board IDs keep OTA updates on their matching
+firmware channels.
 
 ## Related projects
 

@@ -53,6 +53,13 @@ integration from **Devices & services**.
 - Board-aware OTA updates and browser USB recovery for Voice PE, Satellite1,
   ReSpeaker XVF3800, and ESP32-S3-BOX-3
 
+## What's New in 0.3.10
+
+- Physical volume changes from Satellite1 buttons and the Voice PE encoder now
+  update the main-card slider and Home Assistant volume entity.
+- Hardware volume changes are persisted with the same per-satellite setting used
+  by the integration UI, keeping the device and Home Assistant synchronized.
+
 ## Pair a satellite
 
 1. Open **Tater Satellites** in the Home Assistant sidebar.

@@ -821,11 +821,11 @@ class TaterSatelliteManager:
         """Keep physical satellite volume changes in Home Assistant."""
         if runtime.settings_sync_state != "confirmed":
             return False
-        live = (
-            status.get("live_settings")
-            if isinstance(status.get("live_settings"), dict)
-            else {}
-        )
+        live = status.get("live_settings")
+        if not isinstance(live, dict):
+            live = status.get("settings")
+        if not isinstance(live, dict):
+            live = {}
         if "volume_percent" not in live:
             return False
         volume = max(0, min(100, _as_int(live.get("volume_percent"))))
@@ -1535,6 +1535,10 @@ class TaterSatelliteManager:
         if kind == "status":
             runtime.last_status = payload
             runtime.note_settings_status()
+            self._adopt_reported_device_volume(runtime, payload)
+            runtime.notify()
+            return
+        if kind == "settings.changed":
             self._adopt_reported_device_volume(runtime, payload)
             runtime.notify()
             return

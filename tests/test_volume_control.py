@@ -49,6 +49,9 @@ class VolumeControlTests(unittest.TestCase):
         manager = (
             ROOT / "custom_components" / "tater_satellite" / "manager.py"
         ).read_text(encoding="utf-8")
+        volume_adoption = manager.split(
+            "def _adopt_reported_device_volume(", 1
+        )[1].split("\n    def ", 1)[0]
 
         self.assertIn("${this.renderDeviceVolume(device)}", panel)
         self.assertIn('settings: { volume_percent: volume }', panel)
@@ -60,6 +63,9 @@ class VolumeControlTests(unittest.TestCase):
         self.assertNotIn('_as_int(live.get("volume_percent"), 80)', manager)
         self.assertIn('overrides["volume_percent"] = volume', manager)
         self.assertIn("self.store.async_delay_save(lambda: self.data, 1.0)", manager)
+        self.assertIn('if kind == "settings.changed":', manager)
+        self.assertIn("self._adopt_reported_device_volume(runtime, payload)", manager)
+        self.assertIn('live = status.get("settings")', volume_adoption)
 
     def test_volume_entity_is_not_removed_during_setup(self) -> None:
         setup = (
@@ -89,7 +95,7 @@ class VolumeControlTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
 
-        self.assertEqual(manifest["version"], "0.3.9")
+        self.assertEqual(manifest["version"], "0.3.10")
 
 
 if __name__ == "__main__":

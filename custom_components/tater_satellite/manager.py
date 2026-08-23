@@ -119,7 +119,6 @@ _SETTINGS_WIRE_GROUPS = (
         "aec_delay_ms",
         "continued_chat",
         "barge_in_enabled",
-        "volume_percent",
         "muted",
     ),
     (
@@ -821,14 +820,19 @@ class TaterSatelliteManager:
         """Keep physical satellite volume changes in Home Assistant."""
         if runtime.settings_sync_state != "confirmed":
             return False
-        live = status.get("live_settings")
-        if not isinstance(live, dict):
-            live = status.get("settings")
-        if not isinstance(live, dict):
-            live = {}
+        live = (
+            status.get("live_settings")
+            if isinstance(status.get("live_settings"), dict)
+            else {}
+        )
         if "volume_percent" not in live:
             return False
-        volume = max(0, min(100, _as_int(live.get("volume_percent"))))
+        '''volume = max(0, min(100, _as_int(live.get("volume_percent"), 80)))'''
+        raw_volume = live.get("volume_percent")
+        try:
+            volume = max(0, min(100, _as_int(raw_volume)))
+        except (TypeError, ValueError):
+            volume = 80
         if volume == int(runtime.effective_settings().get("volume_percent") or 0):
             return False
         overrides = (
@@ -1535,10 +1539,6 @@ class TaterSatelliteManager:
         if kind == "status":
             runtime.last_status = payload
             runtime.note_settings_status()
-            self._adopt_reported_device_volume(runtime, payload)
-            runtime.notify()
-            return
-        if kind == "settings.changed":
             self._adopt_reported_device_volume(runtime, payload)
             runtime.notify()
             return

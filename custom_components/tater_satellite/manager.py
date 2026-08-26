@@ -37,6 +37,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
+from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .protocol import (
     envelope,
     is_wake_verifier_packet,
@@ -233,9 +234,8 @@ class SatelliteRuntime:
         self.created_platforms: set[str] = set()
         self._entities: list[Any] = []
         self.playback_waiters: deque[asyncio.Future[bool]] = deque()
-        self.ota_in_progress = False
-        self.ota_progress: int | None = None
-        self.ota_message = ""
+        self.ota = OtaState()
+        self.connection_generation = 0
         self.wake_verifier_count = 0
         self.wake_verifier_rejections = 0
         self.wake_verifier_fail_open = 0
@@ -270,6 +270,21 @@ class SatelliteRuntime:
     def room(self) -> str:
         """Return the suggested Home Assistant area."""
         return text(self.record.get("room"))
+
+    @property
+    def ota_in_progress(self) -> bool:
+        """Return whether an OTA attempt is awaiting verified completion."""
+        return self.ota.in_progress
+
+    @property
+    def ota_progress(self) -> int | None:
+        """Return OTA progress, reserving 100% for reboot verification."""
+        return self.ota.progress
+
+    @property
+    def ota_message(self) -> str:
+        """Return the latest OTA status for entities and the custom panel."""
+        return self.ota.message
 
     @property
     def capabilities(self) -> dict[str, bool]:
@@ -1331,19 +1346,44 @@ class TaterSatelliteManager:
         if not runtime.connected:
             raise RuntimeError("Satellite is offline")
         signed = await self.firmware.async_prepare(runtime.board, "ota")
+        expected_version = text(
+            self.firmware.info_for_board(runtime.board).get("firmware_version")
+        )
+        if not expected_version:
+            raise RuntimeError("The firmware catalog did not report a target version")
         base_url = runtime.server_base_url or self.public_base_url()
         url = (
             f"{base_url}/api/tater/satellite/v1/firmware/file/"
             f"{signed.filename}?token={signed.token}"
         )
-        runtime.ota_in_progress = True
-        runtime.ota_progress = 0
-        runtime.ota_message = "OTA command sent"
+        attempt = runtime.ota.begin(
+            expected_version,
+            runtime.connection_generation,
+        )
         runtime.notify()
         if not await runtime.async_send("ota.url", {"url": url}):
-            runtime.ota_in_progress = False
+            runtime.ota.fail("Unable to send OTA command")
+            runtime.last_error = runtime.ota.message
+            runtime.notify()
             raise RuntimeError("Unable to send OTA command")
+        self.entry.async_create_background_task(
+            self.hass,
+            self._async_verify_ota_timeout(runtime, attempt),
+            f"tater_satellite_ota_verify_{runtime.device_id}_{attempt}",
+        )
         return {"ok": True, "url": url, "device": runtime.public_snapshot()}
+
+    async def _async_verify_ota_timeout(
+        self,
+        runtime: SatelliteRuntime,
+        attempt: int,
+    ) -> None:
+        """Turn a missing post-reboot hello into a visible OTA failure."""
+        await asyncio.sleep(OTA_VERIFY_TIMEOUT_SECONDS)
+        if runtime.ota.expire(attempt):
+            runtime.last_error = runtime.ota.message
+            runtime.add_log("error", runtime.ota.message, kind="ota.status")
+            runtime.notify()
 
     async def async_identify(self, device_id: str) -> None:
         """Play a short local tone to identify a satellite."""
@@ -1549,22 +1589,9 @@ class TaterSatelliteManager:
             message_text = text(payload.get("message"))
             if kind == "ota.status":
                 status = text(payload.get("status")).lower()
-                progress = payload.get("progress")
-                runtime.ota_progress = (
-                    int(progress)
-                    if isinstance(progress, (int, float))
-                    else runtime.ota_progress
-                )
-                runtime.ota_message = message_text or status
-                runtime.ota_in_progress = status not in {
-                    "done",
-                    "complete",
-                    "success",
-                    "error",
-                    "failed",
-                }
+                runtime.ota.apply_status(payload)
                 if status in {"error", "failed"}:
-                    runtime.last_error = runtime.ota_message
+                    runtime.last_error = runtime.ota.message
             runtime.add_log(level, message_text, kind=kind)
             runtime.notify()
             return
@@ -1688,6 +1715,7 @@ class TaterSatelliteManager:
                     await old_socket.close(code=1012, message=b"Replaced by reconnect")
             runtime.websocket = websocket
             runtime.connected = True
+            runtime.connection_generation += 1
             runtime.last_status = {}
             runtime.server_base_url = f"{request.scheme}://{request.host}".rstrip("/")
             runtime.remote = request.remote or (
@@ -1698,6 +1726,28 @@ class TaterSatelliteManager:
             runtime.last_seen = time.time()
             runtime.last_error = ""
             await self._update_record_from_hello(runtime, payload)
+            ota_was_in_progress = runtime.ota.in_progress
+            runtime.ota.note_reconnect(
+                runtime.connection_generation,
+                payload.get("firmware_version"),
+            )
+            if (
+                ota_was_in_progress
+                and not runtime.ota.in_progress
+                and runtime.ota.progress == 100
+            ):
+                runtime.add_log(
+                    "info",
+                    runtime.ota.message,
+                    kind="ota.status",
+                )
+            elif ota_was_in_progress and not runtime.ota.in_progress:
+                runtime.last_error = runtime.ota.message
+                runtime.add_log(
+                    "error",
+                    runtime.ota.message,
+                    kind="ota.status",
+                )
             ack_payload: dict[str, Any] = {
                 "ok": True,
                 "protocol": 1,
@@ -1804,6 +1854,7 @@ class TaterSatelliteManager:
                         )
                 runtime.websocket = None
                 runtime.connected = False
+                runtime.ota.note_disconnect()
                 runtime.finish_audio()
                 runtime.fail_playback_waiters()
                 runtime.notify()

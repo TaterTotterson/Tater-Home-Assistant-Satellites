@@ -136,12 +136,13 @@ SHA-256 hash, and exposes it through a short-lived URL.
 
 - Use **Install update** for a connected satellite. The integration sends the
   board-matched OTA image and tracks progress through the satellite entity.
-- Use **Browser USB Recovery** for a first flash or a satellite that cannot
-  reconnect. Select the hardware and use Chrome or Edge over a secure Home
-  Assistant connection.
+- Use **Browser USB Flasher** for a first flash, recovery, or a wired update.
+  Select the hardware and use Chrome or Edge from your normal Home Assistant
+  page—there is no separate HTTPS requirement in the integration.
 
-USB recovery writes the release's merged factory image. OTA writes only the
-application image and preserves the satellite's Wi-Fi and pairing data.
+The USB flasher offers two choices. **Factory** writes the release's merged
+image and erases the satellite. **OTA Update · Keep Settings** writes only the
+application slots and preserves Wi-Fi, pairing, and saved settings.
 
 Satellite1 Public Batch #1 / Beta.1 HAT and Core rev4.1 uses its own
 `Satellite1 Beta.1 / rev4.1` firmware choice. Select it explicitly for the

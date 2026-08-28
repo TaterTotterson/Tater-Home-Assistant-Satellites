@@ -314,11 +314,15 @@ class FirmwareRecoveryView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request, board: str) -> web.Response:
-        """Prepare a signed factory image and ESP Web Tools manifest."""
+        """Prepare a signed factory or keep-settings ESP Web Tools manifest."""
         manager = _manager(request)
+        body = await _json_body(request)
+        flash_kind = str(body.get("flash_kind") or "factory").strip().lower()
         try:
             manifest, signed = await manager.firmware.async_web_install_manifest(
-                board, f"{request.scheme}://{request.host}"
+                board,
+                f"{request.scheme}://{request.host}",
+                flash_kind,
             )
         except (KeyError, ValueError, RuntimeError) as err:
             raise web.HTTPBadRequest(text=str(err)) from err
@@ -326,6 +330,8 @@ class FirmwareRecoveryView(HomeAssistantView):
             {
                 "ok": True,
                 "manifest": manifest,
+                "flash_kind": flash_kind,
+                "preserves_settings": flash_kind == "ota",
                 "expires_at": signed.expires_at,
             }
         )

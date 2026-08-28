@@ -83,6 +83,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._loading = false;
     this._recovery = null;
     this._recoveryBoard = "";
+    this._recoveryFlashKind = "factory";
     this._pollTimer = null;
   }
 
@@ -423,6 +424,52 @@ class TaterSatellitePanel extends HTMLElement {
       .editor-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 15px; }
       .sticky-actions { position: sticky; bottom: 12px; z-index: 3; margin-top: 15px; padding: 12px; display: flex; justify-content: flex-end; gap: 9px; background: color-mix(in srgb, var(--card-background-color) 92%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--divider-color); border-radius: 12px; }
       .firmware-board { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
+      .firmware-recovery-grid { display: grid; gap: 15px; margin-top: 16px; }
+      .firmware-recovery-step { display: grid; gap: 8px; }
+      .firmware-recovery-step-head { display: flex; align-items: center; gap: 8px; }
+      .firmware-recovery-step-head b {
+        display: inline-grid;
+        place-items: center;
+        min-width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        color: var(--tater-accent);
+        background: var(--tater-accent-soft);
+        font-size: 12px;
+      }
+      .firmware-mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .firmware-mode-option {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        padding: 12px;
+        text-align: left;
+      }
+      .firmware-mode-option.active {
+        border-color: var(--tater-accent);
+        background: var(--tater-accent-soft);
+      }
+      .firmware-mode-icon {
+        display: grid;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        color: var(--tater-accent);
+        background: color-mix(in srgb, var(--tater-accent) 14%, var(--card-background-color));
+        font-weight: 800;
+      }
+      .firmware-mode-copy { display: grid; gap: 4px; min-width: 0; }
+      .firmware-mode-copy strong { font-size: 14px; }
+      .firmware-mode-copy small { color: var(--secondary-text-color); line-height: 1.35; }
+      .firmware-installer-ready {
+        margin-top: 16px;
+        padding: 14px;
+        border: 1px solid color-mix(in srgb, var(--tater-accent) 42%, var(--divider-color));
+        border-radius: 11px;
+        background: var(--tater-accent-soft);
+      }
       .progress { height: 7px; border-radius: 99px; overflow: hidden; background: var(--secondary-background-color); margin-top: 10px; }
       .progress > span { display: block; height: 100%; background: var(--tater-accent); }
       details { margin-top: 12px; }
@@ -445,6 +492,7 @@ class TaterSatellitePanel extends HTMLElement {
       @media (max-width: 700px) {
         main { padding: 18px 12px 70px; }
         .topbar, .pair-card, .firmware-board { grid-template-columns: 1fr; display: grid; }
+        .firmware-mode-grid { grid-template-columns: 1fr; }
         .pair-code { font-size: 25px; }
         .facts { grid-template-columns: 1fr; }
       }
@@ -992,6 +1040,16 @@ class TaterSatellitePanel extends HTMLElement {
     if (!boardValues.includes(this._recoveryBoard)) {
       this._recoveryBoard = boardValues[0] || "";
     }
+    const recoveryBoardInfo = boardRows.find(
+      (row) => String(row.board || row.key) === this._recoveryBoard,
+    ) || {};
+    if (
+      (this._recoveryFlashKind === "ota" && !recoveryBoardInfo.has_ota) ||
+      (this._recoveryFlashKind === "factory" && !recoveryBoardInfo.has_factory)
+    ) {
+      this._recoveryFlashKind = recoveryBoardInfo.has_factory ? "factory" : "ota";
+    }
+    const keepsSettings = this._recoveryFlashKind === "ota";
     return `
       <section class="card section-card">
         <div class="firmware-board">
@@ -1007,26 +1065,56 @@ class TaterSatellitePanel extends HTMLElement {
         ${devices.map((device) => this.renderFirmwareDevice(device)).join("")}
       </div>
       <section class="card section-card" style="margin-top:14px">
-        <h2>Browser USB Recovery</h2>
-        <p class="muted">Use this for first flash or recovery. Web Serial requires Chrome or Edge on a secure Home Assistant connection.</p>
-        <div class="settings-grid">
-          <label class="field">
-            <span>Satellite hardware</span>
-            <select data-recovery-board>
-              ${boardRows.map((row) => {
-                const board = String(row.board || row.key);
-                return `<option value="${escapeHtml(board)}" ${board === this._recoveryBoard ? "selected" : ""}>${escapeHtml(row.label)} · ${escapeHtml(row.flash_size)}</option>`;
-              }).join("")}
-            </select>
-          </label>
-          <div class="field">
-            <span>Factory installer</span>
-            <button class="primary" data-action="prepare-recovery">Prepare USB installer</button>
+        <h2>Browser USB Flasher</h2>
+        <p class="muted">Connect the satellite directly to this computer and use Chrome or Edge to open its USB device picker.</p>
+        <div class="firmware-recovery-grid">
+          <div class="firmware-recovery-step">
+            <div class="firmware-recovery-step-head"><b>1</b><strong>Choose the satellite hardware</strong></div>
+            <label class="field">
+              <span>Satellite hardware</span>
+              <select data-recovery-board>
+                ${boardRows.map((row) => {
+                  const board = String(row.board || row.key);
+                  return `<option value="${escapeHtml(board)}" ${board === this._recoveryBoard ? "selected" : ""}>${escapeHtml(row.label)} · ${escapeHtml(row.flash_size)}</option>`;
+                }).join("")}
+              </select>
+            </label>
+          </div>
+          <div class="firmware-recovery-step">
+            <div class="firmware-recovery-step-head"><b>2</b><strong>Choose the USB flash type</strong></div>
+            <div class="firmware-mode-grid" role="radiogroup" aria-label="USB flash type">
+              <button
+                class="firmware-mode-option ${this._recoveryFlashKind === "factory" ? "active" : ""}"
+                data-recovery-kind="factory"
+                role="radio"
+                aria-checked="${this._recoveryFlashKind === "factory" ? "true" : "false"}"
+                ${recoveryBoardInfo.has_factory ? "" : "disabled"}>
+                <span class="firmware-mode-icon">↻</span>
+                <span class="firmware-mode-copy"><strong>Factory</strong><small>Fresh installation. Erases Wi-Fi, pairing, and saved settings.</small></span>
+              </button>
+              <button
+                class="firmware-mode-option ${this._recoveryFlashKind === "ota" ? "active" : ""}"
+                data-recovery-kind="ota"
+                role="radio"
+                aria-checked="${this._recoveryFlashKind === "ota" ? "true" : "false"}"
+                ${recoveryBoardInfo.has_ota ? "" : "disabled"}>
+                <span class="firmware-mode-icon">✓</span>
+                <span class="firmware-mode-copy"><strong>OTA Update · Keep Settings</strong><small>Updates over USB without erasing Wi-Fi, pairing, or saved settings.</small></span>
+              </button>
+            </div>
+          </div>
+          <div class="firmware-recovery-step">
+            <div class="firmware-recovery-step-head"><b>3</b><strong>Prepare the verified installer</strong></div>
+            <button class="primary" data-action="prepare-recovery">
+              ${keepsSettings ? "Prepare OTA USB Update" : "Prepare Factory USB Installer"}
+            </button>
           </div>
         </div>
         ${
-          this._recovery?.blobUrl && this._recovery.board === this._recoveryBoard
-            ? `<div style="margin-top:16px"><esp-web-install-button manifest="${escapeHtml(this._recovery.blobUrl)}"></esp-web-install-button><div class="muted" style="margin-top:7px">Select Connect, choose the satellite USB serial port, then follow the installer.</div></div>`
+          this._recovery?.blobUrl &&
+          this._recovery.board === this._recoveryBoard &&
+          this._recovery.flashKind === this._recoveryFlashKind
+            ? `<div class="firmware-installer-ready"><esp-web-install-button manifest="${escapeHtml(this._recovery.blobUrl)}"></esp-web-install-button><div class="muted" style="margin-top:7px">Select Connect, choose the satellite USB serial port, then follow the ${keepsSettings ? "keep-settings update" : "factory installation"}.</div></div>`
             : ""
         }
       </section>
@@ -1306,8 +1394,20 @@ class TaterSatellitePanel extends HTMLElement {
       if (this._recovery && this._recovery.board !== this._recoveryBoard) {
         if (this._recovery.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
         this._recovery = null;
-        this.render();
       }
+      this.render();
+    });
+    root.querySelectorAll("[data-recovery-kind]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        const flashKind = button.dataset.recoveryKind === "ota" ? "ota" : "factory";
+        this._recoveryFlashKind = flashKind;
+        if (this._recovery && this._recovery.flashKind !== flashKind) {
+          if (this._recovery.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
+          this._recovery = null;
+        }
+        this.render();
+      });
     });
     root.querySelector('[data-action="prepare-recovery"]')?.addEventListener("click", () =>
       this.prepareRecovery(),
@@ -1361,11 +1461,14 @@ class TaterSatellitePanel extends HTMLElement {
     const board = this.shadowRoot.querySelector("[data-recovery-board]")?.value;
     if (!board) return;
     this._recoveryBoard = board;
+    const flashKind = this._recoveryFlashKind === "ota" ? "ota" : "factory";
     await this.run(async () => {
-      const result = await this.api("POST", `firmware/recovery/${encodeURIComponent(board)}`, {});
+      const result = await this.api("POST", `firmware/recovery/${encodeURIComponent(board)}`, {
+        flash_kind: flashKind,
+      });
       if (this._recovery?.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
       const blob = new Blob([JSON.stringify(result.manifest)], { type: "application/json" });
-      this._recovery = { board, blobUrl: URL.createObjectURL(blob) };
+      this._recovery = { board, flashKind, blobUrl: URL.createObjectURL(blob) };
       const sources = [
         "https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module",
         "https://cdn.jsdelivr.net/npm/esp-web-tools@10/dist/web/install-button.js",
@@ -1381,7 +1484,9 @@ class TaterSatellitePanel extends HTMLElement {
         }
       }
       if (!loaded) throw new Error("The browser USB installer could not be loaded.");
-    }, "Verified factory firmware is ready for browser USB recovery.");
+    }, flashKind === "ota"
+      ? "Verified OTA firmware is ready for a USB update that keeps settings."
+      : "Verified factory firmware is ready for browser USB recovery.");
   }
 }
 

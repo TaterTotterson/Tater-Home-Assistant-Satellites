@@ -27,6 +27,11 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:[-+.]([A-Za-z0-9_.-]+))?$")
+USB_APP_PARTITION_SIZE = 0x300000
+USB_APP_PARTITION_OFFSETS = {
+    "8mb": (0x20000, 0x320000),
+    "16mb": (0x20000, 0x320000, 0x620000),
+}
 
 
 def board_manifest_key(board: Any) -> str:
@@ -40,6 +45,17 @@ def display_version(value: Any) -> str:
     token = str(value or "").strip()
     match = _VERSION.search(token)
     return match.group(0) if match else token
+
+
+def usb_app_partition_offsets(flash_size: Any) -> tuple[int, ...]:
+    """Return the native app slots that can be updated without erasing setup."""
+    token = str(flash_size or "").strip().lower()
+    offsets = USB_APP_PARTITION_OFFSETS.get(token)
+    if offsets is None:
+        raise ValueError(
+            f"USB keep-settings updates do not support flash size {flash_size!r}"
+        )
+    return offsets
 
 
 def version_tuple(value: Any) -> tuple[int, int, int, int, str]:
@@ -308,23 +324,47 @@ class FirmwareCatalog:
         return row
 
     async def async_web_install_manifest(
-        self, board: Any, base_url: str
+        self,
+        board: Any,
+        base_url: str,
+        flash_kind: str = "factory",
     ) -> tuple[dict[str, Any], SignedArtifact]:
-        """Prepare an ESP Web Tools manifest for a merged factory image."""
-        signed = await self.async_prepare(board, "factory")
+        """Prepare an ESP Web Tools manifest for factory or app-only USB flash."""
+        kind = str(flash_kind or "factory").strip().lower()
+        if kind not in {"factory", "ota"}:
+            raise ValueError(f"Unsupported USB flash type: {flash_kind!r}")
+        signed = await self.async_prepare(board, kind)
         info = self.info_for_board(board)
+        artifact = self._artifact_row(board, kind)
+        flash_size = str(artifact.get("flash_size") or info.get("flash_size") or "")
+        if kind == "ota" and signed.path.stat().st_size > USB_APP_PARTITION_SIZE:
+            raise ValueError(
+                "The OTA image is too large for the satellite app partition"
+            )
         binary_url = (
             f"{base_url}/api/tater/satellite/v1/firmware/file/"
             f"{signed.filename}?token={signed.token}"
         )
+        offsets = (
+            (0,)
+            if kind == "factory"
+            else usb_app_partition_offsets(flash_size)
+        )
         manifest = {
-            "name": f"Tater Native - {info.get('label') or board}",
+            "name": (
+                f"Tater Native Factory - {info.get('label') or board}"
+                if kind == "factory"
+                else f"Tater Native OTA Update - {info.get('label') or board}"
+            ),
             "version": info.get("display_version") or "latest",
-            "new_install_prompt_erase": True,
+            "new_install_prompt_erase": kind == "factory",
             "builds": [
                 {
                     "chipFamily": "ESP32-S3",
-                    "parts": [{"path": binary_url, "offset": 0}],
+                    "parts": [
+                        {"path": binary_url, "offset": offset}
+                        for offset in offsets
+                    ],
                 }
             ],
         }

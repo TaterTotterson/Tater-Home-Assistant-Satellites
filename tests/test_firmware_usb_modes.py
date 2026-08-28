@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import subprocess
+import textwrap
 import unittest
 
 
@@ -62,8 +64,49 @@ class FirmwareUsbModeTests(unittest.TestCase):
         self.assertIn('data-recovery-kind="ota"', panel_source)
         self.assertIn("OTA Update · Keep Settings", panel_source)
         self.assertIn("flash_kind: flashKind", panel_source)
-        self.assertNotIn("secure Home Assistant connection", panel_source)
-        self.assertNotIn("window.isSecureContext", panel_source)
+        self.assertIn("browserUsbCapability()", panel_source)
+        self.assertIn("window.isSecureContext", panel_source)
+        self.assertIn("typeof serial.requestPort", panel_source)
+
+    def test_browser_usb_capability_distinguishes_context_and_web_serial(self) -> None:
+        script = textwrap.dedent(
+            r"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+            const source = fs.readFileSync(process.argv[1], "utf8");
+            const start = source.indexOf("const browserUsbCapability =");
+            const end = source.indexOf("\n\nconst formatApiError", start);
+            assert.notStrictEqual(start, -1, "Missing browserUsbCapability");
+            assert.notStrictEqual(end, -1, "Missing capability function boundary");
+
+            function capability(windowValue, navigatorValue) {
+              const context = { window: windowValue, navigator: navigatorValue };
+              vm.createContext(context);
+              vm.runInContext(`${source.slice(start, end)}\nthis.checkBrowserUsb = browserUsbCapability;`, context);
+              return context.checkBrowserUsb();
+            }
+
+            const insecure = capability({ isSecureContext: false }, { serial: { requestPort() {} } });
+            assert.strictEqual(insecure.available, false);
+            assert.match(insecure.message, /secure/i);
+
+            const missingSerial = capability({ isSecureContext: true }, {});
+            assert.strictEqual(missingSerial.available, false);
+            assert.match(missingSerial.message, /does not expose Web Serial/i);
+
+            const ready = capability({ isSecureContext: true }, { serial: { requestPort() {} } });
+            assert.strictEqual(ready.available, true);
+            """
+        )
+        result = subprocess.run(
+            ["node", "-e", script, str(PANEL_PATH)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
 
 if __name__ == "__main__":

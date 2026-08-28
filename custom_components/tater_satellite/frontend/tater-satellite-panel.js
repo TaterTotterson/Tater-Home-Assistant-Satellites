@@ -11,6 +11,26 @@ const escapeHtml = (value) =>
 
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
 
+const browserUsbCapability = () => {
+  if (typeof window === "undefined" || !window.isSecureContext) {
+    return {
+      available: false,
+      message: "Browser USB needs a secure Home Assistant page opened over HTTPS or localhost.",
+    };
+  }
+  const serial = typeof navigator === "undefined" ? null : navigator.serial;
+  if (!serial || typeof serial.requestPort !== "function") {
+    return {
+      available: false,
+      message: "This browser session does not expose Web Serial. Open Home Assistant in Chrome or Edge and try again.",
+    };
+  }
+  return {
+    available: true,
+    message: "Browser USB is ready. The browser will ask you to choose the connected ESP satellite.",
+  };
+};
+
 const formatApiError = (error) => {
   const seen = new Set();
   const extract = (value) => {
@@ -1034,6 +1054,7 @@ class TaterSatellitePanel extends HTMLElement {
 
   renderFirmware() {
     const catalog = this._data.firmware || {};
+    const browserCapability = browserUsbCapability();
     const devices = this._data.devices || [];
     const boardRows = Object.values(catalog.devices || {});
     const boardValues = boardRows.map((row) => String(row.board || row.key));
@@ -1067,6 +1088,7 @@ class TaterSatellitePanel extends HTMLElement {
       <section class="card section-card" style="margin-top:14px">
         <h2>Browser USB Flasher</h2>
         <p class="muted">Connect the satellite directly to this computer and use Chrome or Edge to open its USB device picker.</p>
+        <p class="muted">${escapeHtml(browserCapability.message)}</p>
         <div class="firmware-recovery-grid">
           <div class="firmware-recovery-step">
             <div class="firmware-recovery-step-head"><b>1</b><strong>Choose the satellite hardware</strong></div>
@@ -1463,6 +1485,8 @@ class TaterSatellitePanel extends HTMLElement {
     this._recoveryBoard = board;
     const flashKind = this._recoveryFlashKind === "ota" ? "ota" : "factory";
     await this.run(async () => {
+      const capability = browserUsbCapability();
+      if (!capability.available) throw new Error(capability.message);
       const result = await this.api("POST", `firmware/recovery/${encodeURIComponent(board)}`, {
         flash_kind: flashKind,
       });

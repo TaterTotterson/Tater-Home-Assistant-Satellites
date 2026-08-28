@@ -67,6 +67,9 @@ class FirmwareUsbModeTests(unittest.TestCase):
         self.assertIn("browserUsbCapability()", panel_source)
         self.assertIn("window.isSecureContext", panel_source)
         self.assertIn("typeof serial.requestPort", panel_source)
+        self.assertIn("https://taterassistant.com/usb-flasher/", panel_source)
+        self.assertIn("Secure Tater USB Flasher", panel_source)
+        self.assertIn('target="_blank"', panel_source)
 
     def test_browser_usb_capability_distinguishes_context_and_web_serial(self) -> None:
         script = textwrap.dedent(

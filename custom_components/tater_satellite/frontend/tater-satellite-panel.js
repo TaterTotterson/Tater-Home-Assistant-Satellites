@@ -1,5 +1,6 @@
 const API = "tater/satellite/v1";
 const ACCENT = "#ff5a1f";
+const TATER_HOSTED_USB_FLASHER_URL = "https://taterassistant.com/usb-flasher/";
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -490,6 +491,30 @@ class TaterSatellitePanel extends HTMLElement {
         border-radius: 11px;
         background: var(--tater-accent-soft);
       }
+      .firmware-hosted-flasher {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-top: 14px;
+        padding: 13px 14px;
+        border: 1px solid color-mix(in srgb, var(--tater-accent) 38%, var(--divider-color));
+        border-radius: 11px;
+        background: var(--tater-accent-soft);
+      }
+      .firmware-hosted-flasher-copy { display: grid; gap: 4px; min-width: 0; }
+      .firmware-hosted-flasher-copy small { color: var(--secondary-text-color); line-height: 1.4; }
+      .firmware-hosted-flasher-link {
+        flex: 0 0 auto;
+        padding: 9px 14px;
+        border: 1px solid var(--tater-accent);
+        border-radius: 9px;
+        color: #fff;
+        background: var(--tater-accent);
+        font-weight: 650;
+        text-decoration: none;
+      }
+      .firmware-hosted-flasher-link:hover { filter: brightness(1.06); }
       .progress { height: 7px; border-radius: 99px; overflow: hidden; background: var(--secondary-background-color); margin-top: 10px; }
       .progress > span { display: block; height: 100%; background: var(--tater-accent); }
       details { margin-top: 12px; }
@@ -513,6 +538,8 @@ class TaterSatellitePanel extends HTMLElement {
         main { padding: 18px 12px 70px; }
         .topbar, .pair-card, .firmware-board { grid-template-columns: 1fr; display: grid; }
         .firmware-mode-grid { grid-template-columns: 1fr; }
+        .firmware-hosted-flasher { align-items: stretch; flex-direction: column; }
+        .firmware-hosted-flasher-link { text-align: center; }
         .pair-code { font-size: 25px; }
         .facts { grid-template-columns: 1fr; }
       }
@@ -1089,6 +1116,18 @@ class TaterSatellitePanel extends HTMLElement {
         <h2>Browser USB Flasher</h2>
         <p class="muted">Connect the satellite directly to this computer and use Chrome or Edge to open its USB device picker.</p>
         <p class="muted">${escapeHtml(browserCapability.message)}</p>
+        <div class="firmware-hosted-flasher">
+          <span class="firmware-hosted-flasher-copy">
+            <strong>Secure Tater USB Flasher</strong>
+            <small>Use Tater’s HTTPS website to install the latest Factory or Keep Settings firmware when this Home Assistant page cannot access Browser USB.</small>
+          </span>
+          <a
+            class="firmware-hosted-flasher-link"
+            href="${escapeHtml(TATER_HOSTED_USB_FLASHER_URL)}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Open Web Flasher ↗</a>
+        </div>
         <div class="firmware-recovery-grid">
           <div class="firmware-recovery-step">
             <div class="firmware-recovery-step-head"><b>1</b><strong>Choose the satellite hardware</strong></div>

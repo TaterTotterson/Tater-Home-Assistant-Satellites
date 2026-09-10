@@ -69,7 +69,9 @@ integration from **Devices & services**.
 
 The firmware automatically appends `/api/tater/satellite/v1/ws`. After the
 first connection, Home Assistant replaces the short pairing code with a
-device-specific credential. Existing satellites can be returned to setup mode
+device-specific credential. If that first acknowledgement is interrupted, the
+same hardware can recover the pending credential with the same pairing code
+during a brief retry window. Existing satellites can be returned to setup mode
 using the physical setup-reset gesture documented in the
 [Tater Native firmware guide](https://github.com/TaterTotterson/Tater-Native-Firmware#physical-setup-reset).
 

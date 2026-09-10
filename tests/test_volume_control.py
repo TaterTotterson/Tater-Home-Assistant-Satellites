@@ -95,7 +95,7 @@ class VolumeControlTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
 
-        self.assertEqual(manifest["version"], "0.3.15")
+        self.assertEqual(manifest["version"], "0.3.16")
 
 
 if __name__ == "__main__":

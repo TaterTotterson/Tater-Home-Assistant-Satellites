@@ -38,6 +38,11 @@ from .const import (
 )
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
 from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
+from .pairing import (
+    PAIRING_RETRY_GRACE_SECONDS,
+    normalize_hardware_id,
+    pairing_retry_token,
+)
 from .protocol import (
     envelope,
     is_wake_verifier_packet,
@@ -622,6 +627,9 @@ class TaterSatelliteManager:
         self._pairing_code = ""
         self._pairing_expires = 0.0
         self._pairing_claimed_device = ""
+        self._pairing_claimed_hardware = ""
+        self._pairing_retry_device_token = ""
+        self._pairing_retry_expires = 0.0
         self._platforms: dict[str, tuple[EntityFactory, AddEntitiesCallback]] = {}
         self._assets_root = Path(hass.config.path("tater_satellite", "assets"))
         self._shutting_down = False
@@ -699,6 +707,9 @@ class TaterSatelliteManager:
         self._pairing_code = code
         self._pairing_expires = time.time() + PAIRING_CODE_TTL_SECONDS
         self._pairing_claimed_device = ""
+        self._pairing_claimed_hardware = ""
+        self._pairing_retry_device_token = ""
+        self._pairing_retry_expires = 0.0
         return self.pairing_snapshot()
 
     def pairing_snapshot(self) -> dict[str, Any]:
@@ -750,7 +761,23 @@ class TaterSatelliteManager:
                 and supplied
                 and hmac.compare_digest(expected, _token_hash(supplied))
             ):
+                if self._pairing_claimed_device == device_id:
+                    self._pairing_retry_device_token = ""
+                    self._pairing_retry_expires = 0.0
                 return True, ""
+            retry_token = pairing_retry_token(
+                supplied_code=supplied,
+                pairing_code=self._pairing_code,
+                claimed_device_id=self._pairing_claimed_device,
+                claimed_hardware_id=self._pairing_claimed_hardware,
+                device_token=self._pairing_retry_device_token,
+                retry_expires_at=self._pairing_retry_expires,
+                device_id=device_id,
+                hardware_id=message_payload(hello).get("hardware_id"),
+                now=time.time(),
+            )
+            if retry_token:
+                return True, retry_token
             return False, ""
 
         if not self._pairing_matches(supplied):
@@ -762,6 +789,7 @@ class TaterSatelliteManager:
             "token_hash": _token_hash(new_token),
             "name": text(payload.get("device_name")) or device_id,
             "board": text(payload.get("board")),
+            "hardware_id": normalize_hardware_id(payload.get("hardware_id")),
             "firmware_version": text(payload.get("firmware_version")),
             "room": text(payload.get("room")),
             "capabilities": (
@@ -778,6 +806,9 @@ class TaterSatelliteManager:
         runtime = SatelliteRuntime(self, device_id, record)
         self.runtimes[device_id] = runtime
         self._pairing_claimed_device = device_id
+        self._pairing_claimed_hardware = record["hardware_id"]
+        self._pairing_retry_device_token = new_token
+        self._pairing_retry_expires = time.time() + PAIRING_RETRY_GRACE_SECONDS
         await self.async_save()
         self._add_runtime_entities(runtime)
         return True, new_token

@@ -85,6 +85,7 @@ _WAKE_MODEL_SETTING_KEYS = {
     "wake_engine",
     "wake_word",
     "wake_word_url",
+    "wake_model_revision",
     "wake_model_asset_id",
     "wake_sensitivity",
     "wake_environment",
@@ -102,6 +103,7 @@ _SETTINGS_WIRE_GROUPS = (
         "wake_engine",
         "wake_word",
         "wake_word_url",
+        "wake_model_revision",
         "wake_sensitivity",
         "wake_environment",
         "wake_threshold",
@@ -924,6 +926,13 @@ class TaterSatelliteManager:
                 "manifest_filename",
                 base_url=base_url,
             )
+            assets = self.data.get("assets")
+            model_row = (
+                assets.get(model_asset) if isinstance(assets, dict) else None
+            )
+            settings["wake_model_revision"] = (
+                text(model_row.get("sha256")) if isinstance(model_row, dict) else ""
+            )
         if settings.get("wake_sound") == "custom" and sound_asset:
             settings["wake_sound_url"] = self._asset_url(
                 sound_asset,
@@ -1029,6 +1038,7 @@ class TaterSatelliteManager:
             current.get("wake_word_url")
         ):
             patch["wake_model_asset_id"] = ""
+            patch["wake_model_revision"] = ""
         if "wake_sound_url" in patch and text(patch.get("wake_sound_url")) != text(
             current.get("wake_sound_url")
         ):
@@ -1104,6 +1114,7 @@ class TaterSatelliteManager:
                 **current,
                 "wake_word": "custom_url",
                 "wake_word_url": wake_word_url,
+                "wake_model_revision": secrets.token_hex(16),
                 "wake_model_asset_id": "",
                 "wake_verifier_phrase": wake_word,
                 "wake_verifier_phrase_url": wake_word_url,
@@ -1112,6 +1123,7 @@ class TaterSatelliteManager:
         wake_override_keys = {
             "wake_word",
             "wake_word_url",
+            "wake_model_revision",
             "wake_model_asset_id",
             "wake_verifier_phrase",
             "wake_verifier_phrase_url",
@@ -1180,6 +1192,7 @@ class TaterSatelliteManager:
             device_values.get("wake_word_url")
         ) != text(base.get("wake_word_url")):
             device_values["wake_model_asset_id"] = ""
+            device_values["wake_model_revision"] = ""
         if "wake_sound_url" in device_values and text(
             device_values.get("wake_sound_url")
         ) != text(base.get("wake_sound_url")):
@@ -1739,6 +1752,40 @@ class TaterSatelliteManager:
                 )
                 await websocket.close(code=1008)
                 return websocket
+
+            # Finish the protocol handshake before replacing the previous
+            # socket or updating registry and OTA state. The acknowledgement
+            # may contain a newly paired device token that firmware must save
+            # before its recovery watchdog can safely reconnect.
+            ack_payload: dict[str, Any] = {
+                "ok": True,
+                "protocol": 1,
+                "selector": device_id,
+                "server": "home_assistant",
+                "capabilities": {
+                    "settings": True,
+                    "state": True,
+                    "led": True,
+                    "play_url": True,
+                    "voice_stream": True,
+                    "pcm_binary": True,
+                    "wake_verifier": True,
+                    "timers": True,
+                    "ota": True,
+                },
+            }
+            if new_token:
+                ack_payload["device_token"] = new_token
+            await websocket.send_str(
+                _compact_json(
+                    envelope(
+                        "hello.ack",
+                        ack_payload,
+                        message_id=text(hello.get("id")),
+                    )
+                )
+            )
+
             runtime = self.runtimes[device_id]
             old_socket = runtime.websocket
             if old_socket is not None and not old_socket.closed:
@@ -1779,32 +1826,6 @@ class TaterSatelliteManager:
                     runtime.ota.message,
                     kind="ota.status",
                 )
-            ack_payload: dict[str, Any] = {
-                "ok": True,
-                "protocol": 1,
-                "selector": device_id,
-                "server": "home_assistant",
-                "capabilities": {
-                    "settings": True,
-                    "state": True,
-                    "led": True,
-                    "play_url": True,
-                    "voice_stream": True,
-                    "pcm_binary": True,
-                    "wake_verifier": True,
-                    "timers": True,
-                    "ota": True,
-                },
-            }
-            if new_token:
-                ack_payload["device_token"] = new_token
-            await runtime.async_send_json(
-                envelope(
-                    "hello.ack",
-                    ack_payload,
-                    message_id=text(hello.get("id")),
-                )
-            )
             await runtime.async_send("state", {"state": "idle"})
             await self.async_push_settings(runtime)
             runtime.notify()

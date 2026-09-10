@@ -10,6 +10,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "wake_engine": "micro_wake_word",
     "wake_word": "hey_tater",
     "wake_word_url": "",
+    "wake_model_revision": "",
     "wake_model_asset_id": "",
     "wake_sensitivity": "normal",
     "wake_environment": "balanced",
@@ -54,6 +55,7 @@ FIRMWARE_SETTING_KEYS = {
     "wake_engine",
     "wake_word",
     "wake_word_url",
+    "wake_model_revision",
     "wake_sensitivity",
     "wake_environment",
     "wake_threshold",
@@ -505,6 +507,7 @@ _FLOAT_RANGES = {
 }
 _TEXT_LIMITS = {
     "wake_word_url": 255,
+    "wake_model_revision": 64,
     "wake_model_asset_id": 128,
     "wake_verifier_phrase": 120,
     "wake_verifier_phrase_url": 255,
@@ -636,6 +639,7 @@ def normalize_settings(
     if not partial:
         if result.get("wake_word") != "custom_url":
             result["wake_word_url"] = ""
+            result["wake_model_revision"] = ""
             result["wake_model_asset_id"] = ""
         if result.get("wake_sound") != "custom":
             result["wake_sound_url"] = ""

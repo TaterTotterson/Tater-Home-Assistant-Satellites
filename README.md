@@ -71,7 +71,10 @@ The firmware automatically appends `/api/tater/satellite/v1/ws`. After the
 first connection, Home Assistant replaces the short pairing code with a
 device-specific credential. If that first acknowledgement is interrupted, the
 same hardware can recover the pending credential with the same pairing code
-during a brief retry window. Existing satellites can be returned to setup mode
+during a brief retry window. The bridge sends that acknowledgement before
+performing device and Assist setup so the satellite can save its credential
+without waiting on the rest of the connection. Existing satellites can be
+returned to setup mode
 using the physical setup-reset gesture documented in the
 [Tater Native firmware guide](https://github.com/TaterTotterson/Tater-Native-Firmware#physical-setup-reset).
 
@@ -90,7 +93,7 @@ After pairing, the trainer stores a device-specific credential and Home
 Assistant stores only its hash. A published wake-word URL must belong to the
 linked trainer and point to its trained wake-word API. Publishing updates the
 shared wake word, clears conflicting per-satellite wake-word overrides, and
-pushes the new model URL to every connected satellite.
+pushes the new model URL and revision to every connected satellite.
 
 ## STT wake verification
 
@@ -115,7 +118,9 @@ as a transient in-memory clip and is not stored by this integration.
 Settings saves now wait for the connected satellite's reported settings
 generation to advance. The per-satellite diagnostics show the desired and active
 wake model, download state, settings generation, and confirmation status. Use
-**Resend live settings** to force another model download and settings sync.
+**Resend live settings** to resync settings. Reconnects and unchanged settings
+keep using the cached model; uploading or publishing a new model changes its
+revision and refreshes it.
 
 ## Voice timers
 

@@ -112,6 +112,21 @@ owner of Tater channel routing, scheduled starts, and ongoing clock correction.
 Older firmware without audio-session version 2 or newer remains available for
 voice use, but music playback reports that a firmware update is required.
 
+## Push-to-talk intercom
+
+The bridge recognizes the same held-button intercom turn used by the main Tater
+app. Hold the satellite action button, speak, and release it to broadcast the
+recording to every other connected Tater satellite. The source is excluded from
+playback.
+
+Intercom audio bypasses the Home Assistant Assist pipeline, remains only in
+bridge memory, and is exposed to target firmware through an opaque short-lived
+WAV URL. If a target is playing Tater Audio and supports overlays, its music is
+ducked for the message and then resumes. The bridge also fires a
+`tater_satellite_intercom` event for start, delivery, cancellation, and failure
+states so Home Assistant automations can observe the feature without receiving
+the recorded audio.
+
 ## Link the Wake Word Trainer
 
 The Apple Silicon and NVIDIA microWakeWord trainers can securely publish a newly

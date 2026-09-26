@@ -624,6 +624,8 @@ class TaterSatellitePanel extends HTMLElement {
   renderAudio() {
     const devices = this._data.devices || [];
     const pairs = this._data.stereo_pairs || [];
+    const intercom = this._data.intercom || {};
+    const latestIntercom = intercom.recent?.[0] || null;
     const options = (selected = "") => devices
       .map((device) => `<option value="${escapeHtml(device.device_id)}" ${device.device_id === selected ? "selected" : ""}>${escapeHtml(device.name)}${device.connected ? "" : " (offline)"}</option>`)
       .join("");
@@ -631,6 +633,19 @@ class TaterSatellitePanel extends HTMLElement {
       <section class="card section-card audio-hero">
         <h2>Tater Audio</h2>
         <p class="muted">Every compatible satellite now appears as a Home Assistant media player. Saved pairs decode the same URL, route its left and right channels separately, and continuously correct clock drift. Use Home Assistant’s Join action to synchronize pairs and individual satellites as a multi-room group.</p>
+      </section>
+      <section class="card section-card" style="margin-top:14px">
+        <div class="device-head">
+          <div><h3>Push-to-talk intercom</h3><div class="muted">Hold the satellite action button, speak, and release to broadcast to every other connected Tater satellite.</div></div>
+          <span class="badge ${intercom.ready ? "online" : ""}">${intercom.ready ? "Ready" : "Needs two satellites"}</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><label>Connected</label><span>${Number(intercom.connected_count || 0)} satellites</span></div>
+          <div class="fact"><label>Recording</label><span>${Number(intercom.active_count || 0) ? `${Number(intercom.active_count)} active` : "Idle"}</span></div>
+          <div class="fact"><label>Latest</label><span>${latestIntercom ? `${escapeHtml(latestIntercom.phase)} · ${Number(latestIntercom.sent_count || 0)} delivered` : "No broadcasts yet"}</span></div>
+          <div class="fact"><label>Privacy</label><span>Temporary memory only</span></div>
+        </div>
+        <p class="muted" style="margin-bottom:0">Intercom audio bypasses the Assist pipeline. Music is ducked with a firmware overlay when supported, and recordings expire automatically.</p>
       </section>
       <div class="grid">
         ${pairs.map((pair) => `

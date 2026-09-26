@@ -37,6 +37,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
+from .intercom import TaterIntercomCoordinator, is_intercom_request
 from .media import TaterMediaCoordinator
 from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .pairing import (
@@ -244,6 +245,7 @@ class SatelliteRuntime:
         self.playback_waiters: deque[asyncio.Future[bool]] = deque()
         self.pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.media_session: dict[str, Any] = {}
+        self.intercom_session: dict[str, Any] = {}
         self.ota = OtaState()
         self.connection_generation = 0
         self.wake_verifier_count = 0
@@ -639,6 +641,7 @@ class SatelliteRuntime:
             "vad_sensitivity": text(self.record.get("vad_sensitivity")) or "default",
             "audio_drops": self.audio_drops,
             "media_session": dict(self.media_session),
+            "intercom": self.manager.intercom.device_snapshot(self),
             "wake_verifier": {
                 "supported": (
                     "wake_verifier_mode" in live
@@ -684,6 +687,7 @@ class TaterSatelliteManager:
         self.firmware = FirmwareCatalog(hass)
         self.trainer = TrainerLinkManager(self)
         self.media = TaterMediaCoordinator(self)
+        self.intercom = TaterIntercomCoordinator(self)
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
         self._pairing_expires = 0.0
@@ -740,6 +744,7 @@ class TaterSatelliteManager:
     async def async_shutdown(self) -> None:
         """Close all device connections."""
         self._shutting_down = True
+        await self.intercom.async_shutdown()
         await self.media.async_shutdown()
         for runtime in tuple(self.runtimes.values()):
             runtime.finish_audio()
@@ -1650,6 +1655,7 @@ class TaterSatelliteManager:
             "settings_schema": _json_copy(SETTINGS_SCHEMA, []),
             "assets": assets,
             "stereo_pairs": self.media.list_pairs(),
+            "intercom": self.intercom.snapshot(),
             "pipelines": self.pipelines_snapshot(),
             "firmware": self.firmware.snapshot(),
             "devices": [
@@ -1719,6 +1725,16 @@ class TaterSatelliteManager:
             runtime.notify()
             return
         if kind in {"voice.start", "audio.start"}:
+            if is_intercom_request(payload):
+                ok, error = self.intercom.start_capture(runtime, payload)
+                await runtime.async_send_json(
+                    envelope(
+                        "voice.start.ack",
+                        {"ok": ok, "error": error},
+                        message_id=text(message.get("id")),
+                    )
+                )
+                return
             ok = False
             if runtime.assist_entity is not None:
                 ok = await runtime.assist_entity.async_device_voice_start(payload)
@@ -1731,6 +1747,25 @@ class TaterSatelliteManager:
             )
             return
         if kind in {"voice.stop", "audio.stop"}:
+            capture = self.intercom.finish_capture(
+                runtime,
+                abort=bool(payload.get("abort")),
+            )
+            if capture is not None:
+                await runtime.async_send_json(
+                    envelope(
+                        "voice.stop.ack",
+                        {"ok": True},
+                        message_id=text(message.get("id")),
+                    )
+                )
+                if not capture.get("aborted"):
+                    self.entry.async_create_background_task(
+                        self.hass,
+                        self.intercom.async_broadcast(runtime, capture),
+                        f"tater_intercom_broadcast_{runtime.device_id}",
+                    )
+                return
             if runtime.assist_entity is not None:
                 await runtime.assist_entity.async_device_voice_stop(payload)
             await runtime.async_send_json(
@@ -1854,6 +1889,7 @@ class TaterSatelliteManager:
                     "media_player": True,
                     "synchronized_media": True,
                     "stereo_pairs": True,
+                    "intercom": True,
                 },
             }
             if new_token:
@@ -1938,6 +1974,8 @@ class TaterSatelliteManager:
                         )
                 elif frame.type == WSMsgType.BINARY:
                     data = bytes(frame.data or b"")
+                    if self.intercom.add_audio(runtime, data):
+                        continue
                     if is_wake_verifier_packet(data):
                         self.entry.async_create_background_task(
                             self.hass,
@@ -1981,6 +2019,7 @@ class TaterSatelliteManager:
                 )
                 if abnormal_close and not self._shutting_down:
                     runtime.last_error = close_detail
+                self.intercom.handle_disconnect(runtime)
                 if runtime.assist_entity is not None:
                     with contextlib.suppress(Exception):
                         await runtime.assist_entity.async_device_voice_stop(

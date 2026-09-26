@@ -361,6 +361,32 @@ class FirmwareFileView(HomeAssistantView):
         )
 
 
+class IntercomClipView(HomeAssistantView):
+    """Serve a short-lived in-memory push-to-talk recording."""
+
+    url = f"{API_BASE_PATH}/intercom/{{clip_id}}.wav"
+    name = "api:tater_satellite:intercom_clip"
+    requires_auth = False
+
+    async def get(
+        self, request: web.Request, clip_id: str
+    ) -> web.StreamResponse:
+        """Return an opaque intercom WAV to connected satellite firmware."""
+        body = _manager(request).intercom.clip_bytes(
+            clip_id,
+            str(request.query.get("token") or ""),
+        )
+        if body is None:
+            raise web.HTTPNotFound()
+        return web.Response(
+            body=body,
+            headers={
+                "Content-Type": "audio/wav",
+                "Cache-Control": "private, no-store, max-age=0",
+            },
+        )
+
+
 class IdentifyView(HomeAssistantView):
     """Identify a connected satellite."""
 
@@ -468,6 +494,7 @@ VIEWS = (
     FirmwareInstallView,
     FirmwareRecoveryView,
     FirmwareFileView,
+    IntercomClipView,
     IdentifyView,
     SettingsResyncView,
     StereoPairView,

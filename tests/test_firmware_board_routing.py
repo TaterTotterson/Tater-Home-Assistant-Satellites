@@ -22,6 +22,26 @@ def _constant_mapping(name: str) -> dict[str, str]:
 
 
 class FirmwareBoardRoutingTests(unittest.TestCase):
+    def test_thirdreality_target_aliases_share_one_manifest_key(self) -> None:
+        keys = _constant_mapping("BOARD_MANIFEST_KEYS")
+        labels = _constant_mapping("BOARD_LABELS")
+
+        self.assertEqual(keys["thirdreality_s420"], "thirdreality_s420")
+        self.assertEqual(keys["thirdreality-s420"], "thirdreality_s420")
+        self.assertEqual(keys["s420"], "thirdreality_s420")
+        self.assertIn("ThirdReality", labels["thirdreality_s420"])
+
+    def test_echo_targets_have_distinct_manifest_keys_and_labels(self) -> None:
+        keys = _constant_mapping("BOARD_MANIFEST_KEYS")
+        labels = _constant_mapping("BOARD_LABELS")
+
+        self.assertEqual(keys["biscuit"], "biscuit")
+        self.assertEqual(keys["echo-dot-2"], "biscuit")
+        self.assertEqual(keys["checkers"], "checkers")
+        self.assertEqual(keys["echo-show-5"], "checkers")
+        self.assertIn("Echo Dot 2", labels["biscuit"])
+        self.assertIn("Echo Show 5", labels["checkers"])
+
     def test_sat1_production_and_beta_use_distinct_manifest_keys(self) -> None:
         keys = _constant_mapping("BOARD_MANIFEST_KEYS")
         self.assertEqual(keys["satellite1"], "satellite1")

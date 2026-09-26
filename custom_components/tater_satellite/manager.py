@@ -37,6 +37,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
+from .media import TaterMediaCoordinator
 from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .pairing import (
     PAIRING_RETRY_GRACE_SECONDS,
@@ -241,6 +242,8 @@ class SatelliteRuntime:
         self.created_platforms: set[str] = set()
         self._entities: list[Any] = []
         self.playback_waiters: deque[asyncio.Future[bool]] = deque()
+        self.pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.media_session: dict[str, Any] = {}
         self.ota = OtaState()
         self.connection_generation = 0
         self.wake_verifier_count = 0
@@ -269,6 +272,16 @@ class SatelliteRuntime:
         return text(self.record.get("board"))
 
     @property
+    def firmware_target(self) -> str:
+        """Return the release target reported by the firmware."""
+        return text(self.record.get("firmware_target"))
+
+    @property
+    def firmware_catalog_target(self) -> str:
+        """Return the most specific identifier used for release selection."""
+        return self.firmware_target or self.board
+
+    @property
     def firmware_version(self) -> str:
         """Return the installed firmware version."""
         return text(self.record.get("firmware_version"))
@@ -294,12 +307,12 @@ class SatelliteRuntime:
         return self.ota.message
 
     @property
-    def capabilities(self) -> dict[str, bool]:
+    def capabilities(self) -> dict[str, Any]:
         """Return declared capabilities."""
         value = self.record.get("capabilities")
         if not isinstance(value, dict):
             return {}
-        return {str(key): bool(item) for key, item in value.items()}
+        return {str(key): item for key, item in value.items()}
 
     def effective_settings(self) -> dict[str, Any]:
         """Return resolved settings for this satellite."""
@@ -325,6 +338,47 @@ class SatelliteRuntime:
         except (ConnectionError, RuntimeError) as err:
             self.last_error = text(err) or type(err).__name__
             return False
+
+    async def async_request(
+        self,
+        message_type_value: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 3.0,
+    ) -> dict[str, Any]:
+        """Send a command and wait for its firmware result message."""
+        if not self.connected:
+            raise RuntimeError(f"{self.name} is offline")
+        message = envelope(message_type_value, payload or {})
+        request_id = text(message.get("id"))
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.pending_requests[request_id] = future
+        if not await self.async_send_json(message):
+            self.pending_requests.pop(request_id, None)
+            raise RuntimeError(f"Unable to send {message_type_value} to {self.name}")
+        try:
+            async with asyncio.timeout(max(0.25, timeout)):
+                return await future
+        finally:
+            self.pending_requests.pop(request_id, None)
+
+    def resolve_request(self, payload: dict[str, Any]) -> bool:
+        """Resolve a pending command from its reply_to token."""
+        request_id = text(payload.get("reply_to"))
+        future = self.pending_requests.pop(request_id, None)
+        if future is None or future.done():
+            return False
+        future.set_result(dict(payload))
+        return True
+
+    def fail_pending_requests(self) -> None:
+        """Fail request waiters when the firmware transport closes."""
+        for future in self.pending_requests.values():
+            if not future.done():
+                future.set_exception(RuntimeError(f"{self.name} disconnected"))
+        self.pending_requests.clear()
 
     def add_audio(self, data: bytes) -> None:
         """Queue microphone audio without blocking the WebSocket reader."""
@@ -519,14 +573,17 @@ class SatelliteRuntime:
                 _as_int(device_verifier.get("fail_open")),
             ),
         )
-        available = self.manager.firmware.info_for_board(self.board)
+        available = self.manager.firmware.info_for_board(
+            self.firmware_catalog_target
+        )
         installed = self.firmware_version
         latest = text(available.get("firmware_version"))
         return {
             "device_id": self.device_id,
             "name": self.name,
             "board": self.board,
-            "board_key": board_manifest_key(self.board),
+            "firmware_target": self.firmware_target,
+            "board_key": board_manifest_key(self.firmware_catalog_target),
             "room": self.room,
             "firmware_version": installed,
             "connected": self.connected,
@@ -581,6 +638,7 @@ class SatelliteRuntime:
             "pipeline_id": text(self.record.get("pipeline_id")),
             "vad_sensitivity": text(self.record.get("vad_sensitivity")) or "default",
             "audio_drops": self.audio_drops,
+            "media_session": dict(self.media_session),
             "wake_verifier": {
                 "supported": (
                     "wake_verifier_mode" in live
@@ -625,6 +683,7 @@ class TaterSatelliteManager:
         self.runtimes: dict[str, SatelliteRuntime] = {}
         self.firmware = FirmwareCatalog(hass)
         self.trainer = TrainerLinkManager(self)
+        self.media = TaterMediaCoordinator(self)
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
         self._pairing_expires = 0.0
@@ -646,6 +705,7 @@ class TaterSatelliteManager:
         )
         self.data.setdefault("devices", {})
         self.data.setdefault("assets", {})
+        self.media.setup()
         self.trainer.setup()
         global_settings = self.data["global_settings"]
         if (
@@ -680,9 +740,11 @@ class TaterSatelliteManager:
     async def async_shutdown(self) -> None:
         """Close all device connections."""
         self._shutting_down = True
+        await self.media.async_shutdown()
         for runtime in tuple(self.runtimes.values()):
             runtime.finish_audio()
             runtime.fail_playback_waiters()
+            runtime.fail_pending_requests()
             websocket = runtime.websocket
             if websocket is not None and not websocket.closed:
                 with contextlib.suppress(Exception):
@@ -791,6 +853,7 @@ class TaterSatelliteManager:
             "token_hash": _token_hash(new_token),
             "name": text(payload.get("device_name")) or device_id,
             "board": text(payload.get("board")),
+            "firmware_target": text(payload.get("firmware_target")),
             "hardware_id": normalize_hardware_id(payload.get("hardware_id")),
             "firmware_version": text(payload.get("firmware_version")),
             "room": text(payload.get("room")),
@@ -848,6 +911,7 @@ class TaterSatelliteManager:
             if getattr(entity, "hass", None) is not None:
                 with contextlib.suppress(Exception):
                     entity.async_write_ha_state()
+        self.media.notify()
 
     def attach_entity(self, runtime: SatelliteRuntime, entity: Any) -> None:
         """Track an entity for state updates."""
@@ -1389,9 +1453,10 @@ class TaterSatelliteManager:
             raise KeyError("Satellite not found")
         if not runtime.connected:
             raise RuntimeError("Satellite is offline")
-        signed = await self.firmware.async_prepare(runtime.board, "ota")
+        target = runtime.firmware_catalog_target
+        signed = await self.firmware.async_prepare(target, "ota")
         expected_version = text(
-            self.firmware.info_for_board(runtime.board).get("firmware_version")
+            self.firmware.info_for_board(target).get("firmware_version")
         )
         if not expected_version:
             raise RuntimeError("The firmware catalog did not report a target version")
@@ -1405,7 +1470,14 @@ class TaterSatelliteManager:
             runtime.connection_generation,
         )
         runtime.notify()
-        if not await runtime.async_send("ota.url", {"url": url}):
+        if not await runtime.async_send(
+            "ota.url",
+            {
+                "url": url,
+                "sha256": signed.sha256,
+                "size_bytes": signed.size_bytes,
+            },
+        ):
             runtime.ota.fail("Unable to send OTA command")
             runtime.last_error = runtime.ota.message
             runtime.notify()
@@ -1577,6 +1649,7 @@ class TaterSatelliteManager:
             "global_settings": dict(self.data.get("global_settings") or {}),
             "settings_schema": _json_copy(SETTINGS_SCHEMA, []),
             "assets": assets,
+            "stereo_pairs": self.media.list_pairs(),
             "pipelines": self.pipelines_snapshot(),
             "firmware": self.firmware.snapshot(),
             "devices": [
@@ -1594,6 +1667,7 @@ class TaterSatelliteManager:
         for key, source in (
             ("name", "device_name"),
             ("board", "board"),
+            ("firmware_target", "firmware_target"),
             ("firmware_version", "firmware_version"),
             ("room", "room"),
         ):
@@ -1616,6 +1690,11 @@ class TaterSatelliteManager:
         kind = message_type(message)
         payload = message_payload(message)
         runtime.last_seen = time.time()
+        if kind.endswith(".result") and runtime.resolve_request(payload):
+            return
+        if self.media.handle_message(runtime, kind, payload):
+            runtime.notify()
+            return
         if kind == "status":
             runtime.last_status = payload
             runtime.note_settings_status()
@@ -1772,6 +1851,9 @@ class TaterSatelliteManager:
                     "wake_verifier": True,
                     "timers": True,
                     "ota": True,
+                    "media_player": True,
+                    "synchronized_media": True,
+                    "stereo_pairs": True,
                 },
             }
             if new_token:
@@ -1909,5 +1991,7 @@ class TaterSatelliteManager:
                 runtime.ota.note_disconnect()
                 runtime.finish_audio()
                 runtime.fail_playback_waiters()
+                runtime.fail_pending_requests()
+                await self.media.async_handle_disconnect(runtime)
                 runtime.notify()
         return websocket

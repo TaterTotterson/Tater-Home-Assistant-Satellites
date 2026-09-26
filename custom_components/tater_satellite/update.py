@@ -49,9 +49,9 @@ class TaterFirmwareUpdate(TaterSatelliteEntity, UpdateEntity):
     def available(self) -> bool:
         """Return whether release metadata is available."""
         return bool(
-            self.runtime.manager.firmware.info_for_board(self.runtime.board).get(
-                "firmware_version"
-            )
+            self.runtime.manager.firmware.info_for_board(
+                self.runtime.firmware_catalog_target
+            ).get("firmware_version")
         )
 
     @property
@@ -62,10 +62,18 @@ class TaterFirmwareUpdate(TaterSatelliteEntity, UpdateEntity):
     @property
     def latest_version(self) -> str | None:
         """Return latest board-matched firmware."""
-        value = self.runtime.manager.firmware.info_for_board(self.runtime.board).get(
-            "firmware_version"
-        )
+        value = self.runtime.manager.firmware.info_for_board(
+            self.runtime.firmware_catalog_target
+        ).get("firmware_version")
         return display_version(value) or None
+
+    @property
+    def release_url(self) -> str | None:
+        """Return the release page for this satellite's firmware family."""
+        value = self.runtime.manager.firmware.info_for_board(
+            self.runtime.firmware_catalog_target
+        ).get("release_url")
+        return str(value or LATEST_FIRMWARE_URL) or None
 
     @property
     def in_progress(self) -> bool:

@@ -45,6 +45,7 @@ class TaterSatelliteEntity(Entity):
         return {
             "device_id": self.runtime.device_id,
             "board": self.runtime.board,
+            "firmware_target": self.runtime.firmware_target,
             "room": self.runtime.room,
             "firmware_version": self.runtime.firmware_version,
             "remote": self.runtime.remote,

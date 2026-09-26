@@ -584,6 +584,7 @@ class TaterSatellitePanel extends HTMLElement {
       </section>
       <nav class="tabs">
         ${this.tabButton("satellites", "Satellites")}
+        ${this.tabButton("audio", "Tater Audio")}
         ${this.tabButton("defaults", "Voice Defaults")}
         ${this.tabButton("verifier", "STT Wake Check")}
         ${this.tabButton("trainer", "Wake Word Trainer")}
@@ -593,6 +594,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this._tab === "verifier" ? this.renderVerifier() : ""}
       ${this._tab === "trainer" ? this.renderTrainer() : ""}
       ${this._tab === "firmware" ? this.renderFirmware() : ""}
+      ${this._tab === "audio" ? this.renderAudio() : ""}
       ${this._tab === "satellites" ? this.renderSatellites() : ""}
     `;
   }
@@ -617,6 +619,53 @@ class TaterSatellitePanel extends HTMLElement {
       `;
     }
     return `<div class="grid">${devices.map((device) => this.renderDeviceCard(device)).join("")}</div>`;
+  }
+
+  renderAudio() {
+    const devices = this._data.devices || [];
+    const pairs = this._data.stereo_pairs || [];
+    const options = (selected = "") => devices
+      .map((device) => `<option value="${escapeHtml(device.device_id)}" ${device.device_id === selected ? "selected" : ""}>${escapeHtml(device.name)}${device.connected ? "" : " (offline)"}</option>`)
+      .join("");
+    return `
+      <section class="card section-card audio-hero">
+        <h2>Tater Audio</h2>
+        <p class="muted">Every compatible satellite now appears as a Home Assistant media player. Saved pairs decode the same URL, route its left and right channels separately, and continuously correct clock drift. Use Home Assistant’s Join action to synchronize pairs and individual satellites as a multi-room group.</p>
+      </section>
+      <div class="grid">
+        ${pairs.map((pair) => `
+          <article class="card device-card ${pair.ready ? "online" : ""}">
+            <div class="device-head">
+              <div><h2>${escapeHtml(pair.name)}</h2><div class="muted">Synchronized stereo pair</div></div>
+              <span class="badge ${pair.ready ? "online" : ""}">${pair.ready ? "Ready" : "Unavailable"}</span>
+            </div>
+            <div class="facts">
+              <div class="fact"><label>Left</label><span>${escapeHtml(pair.members?.[0]?.name || pair.left_device_id)}</span></div>
+              <div class="fact"><label>Right</label><span>${escapeHtml(pair.members?.[1]?.name || pair.right_device_id)}</span></div>
+              <div class="fact"><label>Left trim</label><span>${Number(pair.left_volume_percent ?? 100)}% · ${Number(pair.left_delay_ms || 0)} ms</span></div>
+              <div class="fact"><label>Right trim</label><span>${Number(pair.right_volume_percent ?? 100)}% · ${Number(pair.right_delay_ms || 0)} ms</span></div>
+            </div>
+            <div class="row-actions"><button class="danger" data-remove-stereo="${escapeHtml(pair.id)}">Delete pair</button></div>
+          </article>
+        `).join("")}
+      </div>
+      ${devices.length >= 2 ? `
+        <section class="card section-card" style="margin-top:14px">
+          <h3>Create a stereo pair</h3>
+          <div class="section-description">Choose the speaker that should reproduce each channel. Fine-tune delay only when the physical placement or hardware path needs compensation.</div>
+          <div class="settings-grid">
+            <label class="field"><span>Pair name</span><input data-stereo-name maxlength="80" placeholder="Office Stereo"></label>
+            <label class="field"><span>Left satellite</span><select data-stereo-left><option value="">Choose left speaker</option>${options()}</select></label>
+            <label class="field"><span>Right satellite</span><select data-stereo-right><option value="">Choose right speaker</option>${options()}</select></label>
+            <label class="field"><span>Left channel trim (%)</span><input data-stereo-left-volume type="number" min="0" max="100" value="100"></label>
+            <label class="field"><span>Right channel trim (%)</span><input data-stereo-right-volume type="number" min="0" max="100" value="100"></label>
+            <label class="field"><span>Left delay (ms)</span><input data-stereo-left-delay type="number" min="0" max="250" value="0"></label>
+            <label class="field"><span>Right delay (ms)</span><input data-stereo-right-delay type="number" min="0" max="250" value="0"></label>
+          </div>
+          <div class="row-actions" style="margin-top:15px"><button class="primary" data-action="save-stereo">Create stereo media player</button></div>
+        </section>
+      ` : `<section class="card empty" style="margin-top:14px"><h3>Pair two satellites first</h3><p class="muted">At least two paired satellites are required for stereo.</p></section>`}
+    `;
   }
 
   renderDeviceCard(device) {
@@ -1083,7 +1132,9 @@ class TaterSatellitePanel extends HTMLElement {
     const catalog = this._data.firmware || {};
     const browserCapability = browserUsbCapability();
     const devices = this._data.devices || [];
-    const boardRows = Object.values(catalog.devices || {});
+    const boardRows = Object.values(catalog.devices || {}).filter(
+      (row) => row.browser_usb_supported !== false,
+    );
     const boardValues = boardRows.map((row) => String(row.board || row.key));
     if (!boardValues.includes(this._recoveryBoard)) {
       this._recoveryBoard = boardValues[0] || "";
@@ -1102,8 +1153,8 @@ class TaterSatellitePanel extends HTMLElement {
       <section class="card section-card">
         <div class="firmware-board">
           <div>
-            <h2>Native Firmware</h2>
-            <div class="muted">Latest release: ${escapeHtml(catalog.version || "Unavailable")}</div>
+            <h2>Satellite Firmware</h2>
+            <div class="muted">Release catalogs: ${escapeHtml(catalog.version || "Unavailable")}</div>
             ${catalog.last_error ? `<div class="banner error">${escapeHtml(catalog.last_error)}</div>` : ""}
           </div>
           <button data-action="refresh-firmware">Check for updates</button>
@@ -1115,6 +1166,7 @@ class TaterSatellitePanel extends HTMLElement {
       <section class="card section-card" style="margin-top:14px">
         <h2>Browser USB Flasher</h2>
         <p class="muted">Connect the satellite directly to this computer and use Chrome or Edge to open its USB device picker.</p>
+        <p class="muted">Biscuit and Checkers use their model-specific Echo factory installers. ThirdReality S420 factory installation and recovery use Tater Local USB with the debug board. Their verified Wi-Fi OTA updates appear above.</p>
         <p class="muted">${escapeHtml(browserCapability.message)}</p>
         <div class="firmware-hosted-flasher">
           <span class="firmware-hosted-flasher-copy">
@@ -1273,6 +1325,45 @@ class TaterSatellitePanel extends HTMLElement {
           this._data.pairing = pairing;
         }, "Pairing mode started. Enter the code during satellite setup."),
       ),
+    );
+    root.querySelector('[data-action="save-stereo"]')?.addEventListener("click", () => {
+      const value = (selector) => root.querySelector(selector)?.value ?? "";
+      const name = String(value("[data-stereo-name]")).trim();
+      const left = String(value("[data-stereo-left]"));
+      const right = String(value("[data-stereo-right]"));
+      if (!name || !left || !right) {
+        this._error = "Enter a pair name and choose both satellites.";
+        this.render();
+        return;
+      }
+      if (left === right) {
+        this._error = "Left and right satellites must be different.";
+        this.render();
+        return;
+      }
+      this.run(
+        () => this.api("POST", "stereo-pairs", {
+          pair: {
+            name,
+            left_device_id: left,
+            right_device_id: right,
+            left_volume_percent: Number(value("[data-stereo-left-volume]") || 100),
+            right_volume_percent: Number(value("[data-stereo-right-volume]") || 100),
+            left_delay_ms: Number(value("[data-stereo-left-delay]") || 0),
+            right_delay_ms: Number(value("[data-stereo-right-delay]") || 0),
+          },
+        }),
+        "Stereo pair created. Its media player is ready in Home Assistant.",
+      );
+    });
+    root.querySelectorAll("[data-remove-stereo]").forEach((button) =>
+      button.addEventListener("click", () => {
+        if (!confirm("Delete this stereo pair? The physical satellite media players remain available.")) return;
+        this.run(
+          () => this.api("DELETE", `stereo-pairs/${encodeURIComponent(button.dataset.removeStereo)}`),
+          "Stereo pair deleted.",
+        );
+      }),
     );
     root.querySelectorAll("[data-device-volume]").forEach((input) => {
       const updateVisual = () => {

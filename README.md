@@ -16,6 +16,9 @@
 
 Connect satellites running
 [Tater Native firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
+or [Tater Echo firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware),
+as well as the
+[Tater ThirdReality S420 firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware),
 directly to Home Assistant and use them as native Assist satellites.
 
 This custom integration is a protocol adapter. It does not modify Home
@@ -47,6 +50,10 @@ integration from **Devices & services**.
 - Optional STT wake verification through each satellite's selected Assist
   pipeline, with Disabled, Observe, and Enabled modes plus per-satellite results
 - Announcements, continued conversations, timers, TTS playback, and diagnostics
+- Native Home Assistant media-player entities with URL and media-source music
+  playback, seek, stop, mute, volume, and dynamic grouping
+- Saved left/right stereo-pair media players plus clock-synchronized multi-room
+  playback with firmware playhead drift correction
 - Secure six-digit first pairing followed by a per-device credential
 - Shared voice defaults and per-satellite settings for wake models, sensitivity,
   wake sounds, trainer captures, conversation behavior, AEC, microphone mute,
@@ -77,6 +84,33 @@ without waiting on the rest of the connection. Existing satellites can be
 returned to setup mode
 using the physical setup-reset gesture documented in the
 [Tater Native firmware guide](https://github.com/TaterTotterson/Tater-Native-Firmware#physical-setup-reset).
+
+## Tater Audio, stereo, and multi-room playback
+
+Current Tater Native, Tater Echo, and Tater ThirdReality firmware expose the
+same synchronized media-session protocol. The bridge turns every compatible
+satellite into a `media_player` entity and coordinates its firmware render
+clock directly.
+
+Open **Tater Satellites -> Tater Audio** to save a stereo pair. The pair appears
+as its own media player, downloads one common media URL on both satellites,
+routes the left and right channels, schedules one future audible start, and
+uses playhead telemetry to correct drift. Per-channel trim and placement delay
+are available when a room needs them.
+
+Use Home Assistant's **Join media players** action to group any Tater satellite
+or saved stereo pair under a group leader. Standalone satellites in such a
+group play mono, while saved pairs retain left/right routing. Playing media on
+any member controls the synchronized group. **Unjoin media player** returns it
+to independent playback.
+
+For Music Assistant, add its **Home Assistant Plugin** and **Home Assistant
+Media Players** provider, then enable the Tater media-player entities there.
+Music Assistant can hand the bridge its flow URL while the bridge remains the
+owner of Tater channel routing, scheduled starts, and ongoing clock correction.
+
+Older firmware without audio-session version 2 or newer remains available for
+voice use, but music playback reports that a firmware update is required.
 
 ## Link the Wake Word Trainer
 
@@ -136,16 +170,30 @@ intentionally lost if the satellite reboots or loses power.
 
 ## Firmware updates and recovery
 
-The **Firmware & Recovery** tab reads the latest official Tater Native release
-manifest and matches images by the board ID reported by each satellite. Home
-Assistant downloads the requested image, verifies its published size and
-SHA-256 hash, and exposes it through a short-lived URL.
+The **Firmware & Recovery** tab reads the latest official Tater Native, Tater
+Echo, and Tater ThirdReality release manifests and matches images by the
+firmware target reported by each satellite. Home Assistant downloads the
+requested image, verifies its published size and SHA-256 hash, and exposes it
+through a short-lived local URL. Echo Dot 2 (`biscuit`), Echo Show 5 first
+generation (`checkers`), and ThirdReality Voice & Music Assistant
+(`thirdreality_s420`) receive the same update entity, availability check,
+progress, reboot verification, and OTA flow as the other satellites.
 
 - Use **Install update** for a connected satellite. The integration sends the
   board-matched OTA image and tracks progress through the satellite entity.
 - Use **Browser USB Flasher** for a first flash, recovery, or a wired update.
   Select the hardware and use Chrome or Edge from your normal Home Assistant
   page—there is no separate HTTPS requirement in the integration.
+
+Echo factory installation is intentionally not offered through ESP Web Tools.
+Use the model-specific factory archive and installer published by Tater Echo
+Firmware. After that first installation, normal Biscuit and Checkers updates
+are wireless from Home Assistant.
+
+ThirdReality S420 factory installation and recovery are also intentionally not
+offered through ESP Web Tools. They use the Amlogic Tater Local USB flow and
+require the ThirdReality debug board. Once Tater firmware is installed, signed
+S420 `.swu` updates are wireless from Home Assistant.
 
 The USB flasher offers two choices. **Factory** writes the release's merged
 image and erases the satellite. **OTA Update · Keep Settings** writes only the
@@ -161,4 +209,6 @@ firmware channels.
 
 - [Tater Assistant](https://github.com/TaterTotterson/Tater)
 - [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
+- [Tater Echo Firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware)
+- [Tater ThirdReality Voice Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware)
 - [Tater Home Assistant Add-ons](https://github.com/TaterTotterson/hassio-addons-tater)

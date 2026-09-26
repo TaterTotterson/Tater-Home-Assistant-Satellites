@@ -393,6 +393,44 @@ class SettingsResyncView(HomeAssistantView):
         return self.json({"ok": True, "device": device})
 
 
+class StereoPairView(HomeAssistantView):
+    """Create or update a saved Tater Audio stereo pair."""
+
+    url = f"{API_BASE_PATH}/stereo-pairs"
+    name = "api:tater_satellite:stereo_pairs"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Save a left/right satellite pair."""
+        manager = _manager(request)
+        body = await _json_body(request)
+        values = body.get("pair") if isinstance(body.get("pair"), dict) else body
+        try:
+            pair = await manager.media.async_save_pair(
+                values, str(body.get("id") or "")
+            )
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "pair": pair})
+
+
+class StereoPairDeleteView(HomeAssistantView):
+    """Delete a saved Tater Audio stereo pair."""
+
+    url = f"{API_BASE_PATH}/stereo-pairs/{{pair_id}}"
+    name = "api:tater_satellite:stereo_pair"
+    requires_auth = True
+
+    async def delete(self, request: web.Request, pair_id: str) -> web.Response:
+        """Remove a stereo pair and its virtual media player."""
+        manager = _manager(request)
+        try:
+            await manager.media.async_remove_pair(pair_id)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True})
+
+
 class ForgetView(HomeAssistantView):
     """Forget an offline satellite."""
 
@@ -432,5 +470,7 @@ VIEWS = (
     FirmwareFileView,
     IdentifyView,
     SettingsResyncView,
+    StereoPairView,
+    StereoPairDeleteView,
     ForgetView,
 )

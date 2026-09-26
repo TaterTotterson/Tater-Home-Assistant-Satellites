@@ -13,6 +13,7 @@ PLATFORMS: Final = (
     Platform.ASSIST_SATELLITE,
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
@@ -47,10 +48,35 @@ LATEST_FIRMWARE_URL: Final = (
     "https://github.com/TaterTotterson/"
     "Tater-Native-Firmware/releases/latest/download/latest.json"
 )
+ECHO_FIRMWARE_MANIFEST_URL: Final = (
+    "https://github.com/TaterTotterson/"
+    "Tater-Echo-Firmware/releases/latest/download/firmware-manifest.json"
+)
+ECHO_FIRMWARE_RELEASE_URL: Final = (
+    "https://github.com/TaterTotterson/Tater-Echo-Firmware/releases/latest"
+)
+THIRDREALITY_FIRMWARE_URL: Final = (
+    "https://github.com/TaterTotterson/"
+    "Tater-ThirdReality-Voice-Firmware/releases/latest/download/latest.json"
+)
+THIRDREALITY_FIRMWARE_RELEASE_URL: Final = (
+    "https://github.com/TaterTotterson/"
+    "Tater-ThirdReality-Voice-Firmware/releases/latest"
+)
 FIRMWARE_REFRESH_SECONDS: Final = 15 * 60
-FIRMWARE_DOWNLOAD_MAX_BYTES: Final = 16 * 1024 * 1024
+FIRMWARE_DOWNLOAD_MAX_BYTES: Final = 192 * 1024 * 1024
 
 BOARD_MANIFEST_KEYS: Final = {
+    "biscuit": "biscuit",
+    "echo-dot-2": "biscuit",
+    "echo_dot_2": "biscuit",
+    "checkers": "checkers",
+    "echo-show-5": "checkers",
+    "echo_show_5": "checkers",
+    "thirdreality-s420": "thirdreality_s420",
+    "thirdreality_s420": "thirdreality_s420",
+    "third-reality-s420": "thirdreality_s420",
+    "s420": "thirdreality_s420",
     "voice-pe": "voicepe",
     "voicepe": "voicepe",
     "satellite1": "satellite1",
@@ -66,6 +92,9 @@ BOARD_MANIFEST_KEYS: Final = {
 }
 
 BOARD_LABELS: Final = {
+    "biscuit": "Echo Dot 2 (Biscuit)",
+    "checkers": "Echo Show 5 1st Gen (Checkers)",
+    "thirdreality_s420": "ThirdReality Voice & Music Assistant (S420)",
     "voicepe": "Voice PE",
     "satellite1": "Satellite1",
     "satellite1_beta_rev41": "Satellite1 Beta.1 / rev4.1",

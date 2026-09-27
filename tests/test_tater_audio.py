@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +55,27 @@ class TaterAudioTests(unittest.TestCase):
         self.assertIn('"media.session.commit"', coordinator)
         self.assertIn('"media.session.adjust"', coordinator)
         self.assertIn("MediaPlayerEntityFeature.GROUPING", player)
+
+    def test_device_class_uses_stable_home_assistant_import(self) -> None:
+        player_path = (
+            ROOT / "custom_components" / "tater_satellite" / "media_player.py"
+        )
+        tree = ast.parse(player_path.read_text(encoding="utf-8"))
+        imported_names: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported_names.setdefault(node.module, set()).update(
+                    alias.name for alias in node.names
+                )
+
+        self.assertIn(
+            "MediaPlayerDeviceClass",
+            imported_names["homeassistant.components.media_player"],
+        )
+        self.assertNotIn(
+            "MediaPlayerDeviceClass",
+            imported_names["homeassistant.components.media_player.const"],
+        )
 
     def test_panel_can_create_and_remove_stereo_pairs(self) -> None:
         panel = (

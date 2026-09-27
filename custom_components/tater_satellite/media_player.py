@@ -6,13 +6,13 @@ from typing import Any
 
 from homeassistant.components import media_source
 from homeassistant.components.media_player import (
+    MediaPlayerDeviceClass,
     MediaPlayerEnqueue,
     MediaPlayerEntity,
     async_process_play_media_url,
 )
 from homeassistant.components.media_player.browse_media import BrowseMedia
 from homeassistant.components.media_player.const import (
-    MediaPlayerDeviceClass,
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,

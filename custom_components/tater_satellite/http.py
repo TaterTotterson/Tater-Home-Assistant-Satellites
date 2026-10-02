@@ -274,6 +274,19 @@ class AssetFileView(HomeAssistantView):
         )
 
 
+class WakeWordCatalogView(HomeAssistantView):
+    """Return the official Tater wake-word catalog."""
+
+    url = f"{API_BASE_PATH}/wake-word/catalog"
+    name = "api:tater_satellite:wake_word_catalog"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        """Load cached catalog choices, refreshing them when expired."""
+        catalog = await _manager(request).wake_word_catalog.async_refresh()
+        return self.json(catalog)
+
+
 class FirmwareRefreshView(HomeAssistantView):
     """Refresh firmware release metadata."""
 
@@ -490,6 +503,7 @@ VIEWS = (
     TrainerRemoteUnlinkView,
     AssetUploadView,
     AssetFileView,
+    WakeWordCatalogView,
     FirmwareRefreshView,
     FirmwareInstallView,
     FirmwareRecoveryView,

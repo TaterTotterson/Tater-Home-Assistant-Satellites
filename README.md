@@ -60,6 +60,8 @@ integration from **Devices & services**.
   LEDs, S3 Box screen brightness and night dimming, and firmware logging
 - Per-satellite speaker volume with a main-card slider and a standard Home
   Assistant number entity
+- Official Tater Wake Word Catalog selection with versioned microWakeWord
+  models shared with the main Tater app
 - Custom microWakeWord TFLite and WAV uploads stored inside Home Assistant
 - Secure Wake Word Trainer pairing and automatic wake-word publishing
 - Board-aware OTA updates and browser USB recovery for Voice PE, Satellite1,
@@ -126,6 +128,18 @@ ducked for the message and then resumes. The bridge also fires a
 `tater_satellite_intercom` event for start, delivery, cancellation, and failure
 states so Home Assistant automations can observe the feature without receiving
 the recorded audio.
+
+## Choose a catalog wake word
+
+Open **Tater Satellites -> Voice Defaults**, set **Wake word** to
+**Tater Wake Word Catalog**, and choose any versioned model from the official
+catalog. Home Assistant validates that the selected JSON package belongs to the
+Tater catalog, sends its URL through the existing custom-model firmware path,
+and reads the manifest phrase for STT wake verification.
+
+The catalog is fetched asynchronously and cached for ten minutes. If a refresh
+temporarily fails, the bridge keeps the last successfully loaded list. You can
+still use **Hey Tater**, upload a model, or enter a custom model URL separately.
 
 ## Link the Wake Word Trainer
 

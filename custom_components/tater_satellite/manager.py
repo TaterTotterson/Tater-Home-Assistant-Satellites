@@ -67,6 +67,7 @@ from .wake_verifier import (
     normalize_phrase,
     unavailable_result,
 )
+from .wake_word_catalog import WakeWordCatalog, resolve_wake_word_source_values
 
 if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -685,6 +686,7 @@ class TaterSatelliteManager:
         self.data: dict[str, Any] = {}
         self.runtimes: dict[str, SatelliteRuntime] = {}
         self.firmware = FirmwareCatalog(hass)
+        self.wake_word_catalog = WakeWordCatalog(async_get_clientsession(hass))
         self.trainer = TrainerLinkManager(self)
         self.media = TaterMediaCoordinator(self)
         self.intercom = TaterIntercomCoordinator(self)
@@ -731,6 +733,11 @@ class TaterSatelliteManager:
             self._assets_root.mkdir, 0o755, True, True
         )
         await self.firmware.async_setup()
+        self.entry.async_create_background_task(
+            self.hass,
+            self.wake_word_catalog.async_refresh(),
+            "tater_satellite_wake_word_catalog",
+        )
         for device_id, record in list(self.data["devices"].items()):
             if not isinstance(record, dict):
                 continue
@@ -1101,6 +1108,7 @@ class TaterSatelliteManager:
 
     async def async_set_global_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         """Save global defaults and update every connected satellite."""
+        values = resolve_wake_word_source_values(values)
         current = normalize_settings(self.data.get("global_settings"))
         patch = normalize_settings(values, base=current, partial=True)
         if "wake_word_url" in patch and text(patch.get("wake_word_url")) != text(
@@ -1254,7 +1262,7 @@ class TaterSatelliteManager:
         base = self.effective_settings(device_id)
         device_values = {
             key: value
-            for key, value in values.items()
+            for key, value in resolve_wake_word_source_values(values).items()
             if key not in _GLOBAL_WAKE_VERIFIER_KEYS
         }
         if "wake_word_url" in device_values and text(

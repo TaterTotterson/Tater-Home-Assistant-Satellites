@@ -25,9 +25,11 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .manager import SatelliteRuntime, TaterSatelliteManager
 from .timers import timer_event_command
+from .wake_word_catalog import is_catalog_url
 
 _LOGGER = logging.getLogger(__name__)
 _PLAYBACK_COMMAND_SETTLE_SECONDS = 0.075
+_CATALOG_WAKE_PREFIX = "catalog:"
 
 _EVENT_NAMES = {
     PipelineEventType.RUN_START: "RUN_START",
@@ -158,6 +160,17 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 for asset_id, row in assets.items()
                 if isinstance(row, dict) and row.get("kind") == "wake_model"
             )
+        catalog_options = self.manager.wake_word_catalog.snapshot().get("options", [])
+        if isinstance(catalog_options, list):
+            available.extend(
+                assist_satellite.AssistSatelliteWakeWord(
+                    id=f"{_CATALOG_WAKE_PREFIX}{row.get('value')}",
+                    wake_word=str(row.get("label") or "Catalog wake word"),
+                    trained_languages=["en"],
+                )
+                for row in catalog_options
+                if isinstance(row, dict) and row.get("value")
+            )
         settings = self.runtime.effective_settings()
         active: list[str] = []
         if settings.get("wake_engine") == "micro_wake_word":
@@ -167,14 +180,27 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
             elif settings.get("wake_word") == "custom_url" and settings.get(
                 "wake_word_url"
             ):
-                available.append(
-                    assist_satellite.AssistSatelliteWakeWord(
-                        id="custom_url",
-                        wake_word="External custom wake model",
-                        trained_languages=["en"],
+                wake_url = str(settings.get("wake_word_url") or "")
+                if is_catalog_url(wake_url) and not asset_id:
+                    wake_id = f"{_CATALOG_WAKE_PREFIX}{wake_url}"
+                    if not any(row.id == wake_id for row in available):
+                        available.append(
+                            assist_satellite.AssistSatelliteWakeWord(
+                                id=wake_id,
+                                wake_word="Current catalog wake word",
+                                trained_languages=["en"],
+                            )
+                        )
+                    active = [wake_id]
+                else:
+                    available.append(
+                        assist_satellite.AssistSatelliteWakeWord(
+                            id="custom_url",
+                            wake_word="External custom wake model",
+                            trained_languages=["en"],
+                        )
                     )
-                )
-                active = ["custom_url"]
+                    active = ["custom_url"]
             else:
                 active = ["hey_tater"]
         return assist_satellite.AssistSatelliteConfiguration(
@@ -208,6 +234,14 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 "wake_engine": "micro_wake_word",
                 "wake_word": "custom_url",
                 "wake_model_asset_id": "",
+            }
+        elif wake_id.startswith(_CATALOG_WAKE_PREFIX):
+            values = {
+                "wake_engine": "micro_wake_word",
+                "wake_word": "catalog",
+                "wake_word_catalog_url": wake_id.removeprefix(
+                    _CATALOG_WAKE_PREFIX
+                ),
             }
         else:
             asset = self.manager.data.get("assets", {}).get(wake_id)

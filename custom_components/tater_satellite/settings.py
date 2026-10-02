@@ -96,6 +96,12 @@ WAKE_WORD_OPTIONS = [
     {"value": "custom_url", "label": "Custom model"},
 ]
 
+WAKE_WORD_SOURCE_OPTIONS = [
+    {"value": "hey_tater", "label": "Hey Tater (built in)"},
+    {"value": "catalog", "label": "Tater Wake Word Catalog"},
+    {"value": "custom_url", "label": "Custom model"},
+]
+
 WAKE_SOUND_OPTIONS = [
     {"value": "no_sound", "label": "No sound"},
     {"value": "default", "label": "Default"},
@@ -172,7 +178,18 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "wake_word",
                 "label": "Wake word",
                 "type": "select",
-                "options": WAKE_WORD_OPTIONS,
+                "options": WAKE_WORD_SOURCE_OPTIONS,
+            },
+            {
+                "key": "wake_word_catalog_url",
+                "label": "Wake Word Catalog",
+                "type": "select",
+                "options": [],
+                "show_when": {"key": "wake_word", "equals": "catalog"},
+                "description": (
+                    "Choose a versioned model from the official Tater "
+                    "Wake Word Catalog."
+                ),
             },
             {
                 "key": "wake_model_asset_id",

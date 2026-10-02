@@ -12,6 +12,21 @@ const escapeHtml = (value) =>
 
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
 
+const isWakeWordCatalogUrl = (value) => {
+  try {
+    const url = new URL(String(value || ""));
+    return (
+      url.protocol === "https:" &&
+      url.hostname.toLowerCase() === "raw.githubusercontent.com" &&
+      /^\/TaterTotterson\/Tater-Wake-Words\/main\/microWakeWordsV[0-9]+\/[^/]+\.json$/i.test(
+        url.pathname,
+      )
+    );
+  } catch (_error) {
+    return false;
+  }
+};
+
 const browserUsbCapability = () => {
   if (typeof window === "undefined" || !window.isSecureContext) {
     return {
@@ -105,6 +120,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._recovery = null;
     this._recoveryBoard = "";
     this._recoveryFlashKind = "factory";
+    this._wakeWordCatalog = null;
     this._pollTimer = null;
   }
 
@@ -143,10 +159,20 @@ class TaterSatellitePanel extends HTMLElement {
     if (!background) this.render();
     try {
       const data = await this.api("GET", "manage");
+      if (!this._wakeWordCatalog) {
+        try {
+          this._wakeWordCatalog = await this.api("GET", "wake-word/catalog");
+        } catch (error) {
+          this._wakeWordCatalog = {
+            options: [],
+            warning: formatApiError(error),
+          };
+        }
+      }
       this._data = data;
       this._error = "";
       if (!this._globalDraft || !this._dirty) {
-        this._globalDraft = clone(data.global_settings);
+        this._globalDraft = this.prepareSettingsDraft(data.global_settings);
       }
       if (this._selectedDeviceId && !this._dirty) {
         this.prepareDeviceDraft(this._selectedDeviceId, false);
@@ -315,6 +341,7 @@ class TaterSatellitePanel extends HTMLElement {
       .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 13px; }
       .field { display: flex; flex-direction: column; gap: 6px; }
       .field > span { font-size: 13px; font-weight: 600; }
+      .field > small { color: var(--secondary-text-color); line-height: 1.35; }
       input, select {
         width: 100%;
         min-height: 42px;
@@ -754,12 +781,27 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  prepareSettingsDraft(settings) {
+    const draft = clone(settings);
+    if (
+      draft.wake_word === "custom_url" &&
+      !draft.wake_model_asset_id &&
+      isWakeWordCatalogUrl(draft.wake_word_url)
+    ) {
+      draft.wake_word = "catalog";
+      draft.wake_word_catalog_url = draft.wake_word_url;
+    } else {
+      draft.wake_word_catalog_url = "";
+    }
+    return draft;
+  }
+
   prepareDeviceDraft(deviceId, markDirty = false) {
     const device = (this._data?.devices || []).find((row) => row.device_id === deviceId);
     if (!device) return;
     this._selectedDeviceId = deviceId;
-    this._deviceDraft = clone(device.settings);
-    this._deviceOriginal = clone(device.settings);
+    this._deviceDraft = this.prepareSettingsDraft(device.settings);
+    this._deviceOriginal = this.prepareSettingsDraft(device.settings);
     this._pipelineDraft = device.pipeline_id || "";
     this._vadDraft = device.vad_sensitivity || "default";
     this._dirty = markDirty;
@@ -1085,6 +1127,42 @@ class TaterSatellitePanel extends HTMLElement {
     return values?.[condition.key] === condition.equals;
   }
 
+  wakeWordCatalogOptions(currentValue = "") {
+    const options = clone(this._wakeWordCatalog?.options || []);
+    if (
+      currentValue &&
+      isWakeWordCatalogUrl(currentValue) &&
+      !options.some((option) => String(option.value) === String(currentValue))
+    ) {
+      const path = new URL(currentValue).pathname.split("/");
+      const version = path.at(-2)?.replace("microWakeWords", "") || "Catalog";
+      const label = decodeURIComponent(path.at(-1) || "wake_word.json")
+        .replace(/\.json$/i, "")
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+      options.unshift({ value: currentValue, label: `${label} [${version}]` });
+    }
+    if (!options.length) {
+      options.push({ value: "", label: "Catalog unavailable" });
+    }
+    return options;
+  }
+
+  wakeWordCatalogDescription(field) {
+    const catalog = this._wakeWordCatalog || {};
+    const count = Number(catalog.count || 0);
+    const versions = Array.isArray(catalog.versions) ? catalog.versions : [];
+    const range = versions.length
+      ? versions.length === 1
+        ? `V${versions[0]}`
+        : `V${versions[0]}–V${versions.at(-1)}`
+      : "";
+    const summary = count
+      ? `${count} official wake models${range ? ` across ${range}` : ""}.`
+      : String(field.description || "");
+    return [summary, catalog.warning].filter(Boolean).join(" ");
+  }
+
   renderField(field, values, scope) {
     const value = values?.[field.key] ?? "";
     const common = `data-setting="${escapeHtml(field.key)}" data-scope="${scope}"`;
@@ -1097,12 +1175,21 @@ class TaterSatellitePanel extends HTMLElement {
       `;
     }
     if (field.type === "select") {
+      const options =
+        field.key === "wake_word_catalog_url"
+          ? this.wakeWordCatalogOptions(value)
+          : field.options || [];
+      const description =
+        field.key === "wake_word_catalog_url"
+          ? this.wakeWordCatalogDescription(field)
+          : field.description || "";
       return `
         <label class="field">
           <span>${escapeHtml(field.label)}</span>
           <select ${common}>
-            ${(field.options || []).map((option) => `<option value="${escapeHtml(option.value)}" ${String(option.value) === String(value) ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            ${options.map((option) => `<option value="${escapeHtml(option.value)}" ${String(option.value) === String(value) ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
           </select>
+          ${description ? `<small>${escapeHtml(description)}</small>` : ""}
         </label>
       `;
     }
@@ -1480,6 +1567,31 @@ class TaterSatellitePanel extends HTMLElement {
         let value = input.type === "checkbox" ? input.checked : input.value;
         if (input.type === "number") value = Number(value);
         target[input.dataset.setting] = value;
+        if (input.dataset.setting === "wake_word") {
+          if (value === "catalog") {
+            const catalogUrl =
+              target.wake_word_catalog_url ||
+              this.wakeWordCatalogOptions()[0]?.value ||
+              "";
+            target.wake_word_catalog_url = catalogUrl;
+            target.wake_word_url = catalogUrl;
+            target.wake_model_asset_id = "";
+          } else if (value === "custom_url") {
+            if (isWakeWordCatalogUrl(target.wake_word_url)) {
+              target.wake_word_url = "";
+            }
+            target.wake_word_catalog_url = "";
+          } else {
+            target.wake_word_catalog_url = "";
+            target.wake_word_url = "";
+            target.wake_model_asset_id = "";
+            target.wake_model_revision = "";
+          }
+        } else if (input.dataset.setting === "wake_word_catalog_url") {
+          target.wake_word = "catalog";
+          target.wake_word_url = value;
+          target.wake_model_asset_id = "";
+        }
         this._dirty = true;
         const controlsConditionalFields = (this._data.settings_schema || []).some(
           (section) =>
@@ -1517,7 +1629,7 @@ class TaterSatellitePanel extends HTMLElement {
       ),
     );
     root.querySelector('[data-action="reset-draft"]')?.addEventListener("click", () => {
-      this._globalDraft = clone(this._data.global_settings);
+      this._globalDraft = this.prepareSettingsDraft(this._data.global_settings);
       this._dirty = false;
       this.render();
     });

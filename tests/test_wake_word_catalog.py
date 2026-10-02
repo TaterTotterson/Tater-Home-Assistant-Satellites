@@ -154,6 +154,9 @@ class WakeWordCatalogTests(unittest.TestCase):
         self.assertNotIn("catalog", settings._ALLOWED["wake_word"])
 
     def test_bridge_wires_catalog_endpoint_and_both_setting_scopes(self) -> None:
+        integration = (
+            ROOT / "custom_components" / "tater_satellite" / "__init__.py"
+        ).read_text(encoding="utf-8")
         manager = (
             ROOT / "custom_components" / "tater_satellite" / "manager.py"
         ).read_text(encoding="utf-8")
@@ -178,6 +181,14 @@ class WakeWordCatalogTests(unittest.TestCase):
         self.assertIn("prepareSettingsDraft", panel)
         self.assertIn('_CATALOG_WAKE_PREFIX = "catalog:"', assist)
         self.assertIn("wake_word_catalog.snapshot()", assist)
+        self.assertIn("async_get_integration(hass, DOMAIN)", integration)
+        self.assertIn("?v={quote(panel_version, safe='')}", integration)
+        self.assertIn(
+            "webcomponent_name=_panel_element_name(panel_version)", integration
+        )
+        self.assertIn("new URL(import.meta.url).searchParams.get(\"v\")", panel)
+        self.assertIn("customElements.define(PANEL_ELEMENT_NAME", panel)
+        self.assertIn("catalogUnavailable && catalogRetryDue", panel)
 
 
 class WakeWordCatalogRuntimeTests(unittest.IsolatedAsyncioTestCase):

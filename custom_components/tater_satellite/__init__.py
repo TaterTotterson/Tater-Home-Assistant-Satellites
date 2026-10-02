@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import quote
 
 from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 
 from .const import (
     DATA_MANAGER,
@@ -22,6 +25,12 @@ from .http import VIEWS
 from .manager import TaterSatelliteManager
 
 TaterConfigEntry = ConfigEntry
+
+
+def _panel_element_name(version: str) -> str:
+    """Return a version-specific element so a live HA tab cannot reuse stale UI."""
+    version_slug = re.sub(r"[^a-z0-9]+", "-", version.lower()).strip("-")
+    return f"{PANEL_ELEMENT}-{version_slug or 'dev'}"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -52,13 +61,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: TaterConfigEntry) -> boo
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     if not hass.data[DOMAIN].get(DATA_PANEL_REGISTERED):
+        integration = await async_get_integration(hass, DOMAIN)
+        panel_version = str(integration.version or "dev")
         await panel_custom.async_register_panel(
             hass,
             frontend_url_path=PANEL_URL_PATH,
-            webcomponent_name=PANEL_ELEMENT,
+            webcomponent_name=_panel_element_name(panel_version),
             sidebar_title="Tater Satellites",
             sidebar_icon="mdi:account-voice",
-            module_url=f"{PANEL_STATIC_URL}/tater-satellite-panel.js",
+            module_url=(
+                f"{PANEL_STATIC_URL}/tater-satellite-panel.js"
+                f"?v={quote(panel_version, safe='')}"
+            ),
             require_admin=True,
             config_panel_domain=DOMAIN,
         )

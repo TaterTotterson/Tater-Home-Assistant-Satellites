@@ -1,6 +1,12 @@
 const API = "tater/satellite/v1";
 const ACCENT = "#ff5a1f";
 const TATER_HOSTED_USB_FLASHER_URL = "https://taterassistant.com/usb-flasher/";
+const PANEL_ASSET_VERSION = new URL(import.meta.url).searchParams.get("v") || "dev";
+const PANEL_ELEMENT_NAME = `tater-satellite-panel-${
+  PANEL_ASSET_VERSION.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "dev"
+}`;
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -121,6 +127,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._recoveryBoard = "";
     this._recoveryFlashKind = "factory";
     this._wakeWordCatalog = null;
+    this._wakeWordCatalogLastAttempt = 0;
     this._pollTimer = null;
   }
 
@@ -159,7 +166,13 @@ class TaterSatellitePanel extends HTMLElement {
     if (!background) this.render();
     try {
       const data = await this.api("GET", "manage");
-      if (!this._wakeWordCatalog) {
+      const catalogOptions = this._wakeWordCatalog?.options;
+      const catalogUnavailable =
+        !Array.isArray(catalogOptions) || catalogOptions.length === 0;
+      const catalogRetryDue =
+        Date.now() - this._wakeWordCatalogLastAttempt >= 30_000;
+      if (!this._wakeWordCatalog || (catalogUnavailable && catalogRetryDue)) {
+        this._wakeWordCatalogLastAttempt = Date.now();
         try {
           this._wakeWordCatalog = await this.api("GET", "wake-word/catalog");
         } catch (error) {
@@ -1771,6 +1784,6 @@ class TaterSatellitePanel extends HTMLElement {
   }
 }
 
-if (!customElements.get("tater-satellite-panel")) {
-  customElements.define("tater-satellite-panel", TaterSatellitePanel);
+if (!customElements.get(PANEL_ELEMENT_NAME)) {
+  customElements.define(PANEL_ELEMENT_NAME, TaterSatellitePanel);
 }

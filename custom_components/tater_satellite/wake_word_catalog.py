@@ -159,7 +159,14 @@ class WakeWordCatalog:
                 headers={"Accept": "application/json"},
             ) as response:
                 response.raise_for_status()
-                raw = await response.content.read(_MAX_MANIFEST_BYTES + 1)
+                raw = bytearray()
+                while len(raw) <= _MAX_MANIFEST_BYTES:
+                    chunk = await response.content.read(
+                        min(64 * 1024, _MAX_MANIFEST_BYTES + 1 - len(raw))
+                    )
+                    if not chunk:
+                        break
+                    raw.extend(chunk)
         if len(raw) > _MAX_MANIFEST_BYTES:
             raise ValueError("Wake word catalog manifest is too large.")
         entries = entries_from_manifest(json.loads(raw.decode("utf-8")))

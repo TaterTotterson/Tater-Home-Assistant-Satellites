@@ -40,16 +40,23 @@ V6_URL = (
 
 
 class _FakeContent:
-    def __init__(self, payload: bytes) -> None:
+    def __init__(self, payload: bytes, chunk_size: int | None = None) -> None:
         self.payload = payload
+        self.chunk_size = chunk_size
+        self.offset = 0
 
-    async def read(self, _limit: int) -> bytes:
-        return self.payload
+    async def read(self, limit: int) -> bytes:
+        if self.offset >= len(self.payload):
+            return b""
+        size = min(limit, self.chunk_size or limit)
+        chunk = self.payload[self.offset : self.offset + size]
+        self.offset += len(chunk)
+        return chunk
 
 
 class _FakeResponse:
-    def __init__(self, payload: bytes) -> None:
-        self.content = _FakeContent(payload)
+    def __init__(self, payload: bytes, chunk_size: int | None = None) -> None:
+        self.content = _FakeContent(payload, chunk_size)
 
     async def __aenter__(self):
         return self
@@ -62,8 +69,9 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, chunk_size: int | None = None) -> None:
         self.payload = payload
+        self.chunk_size = chunk_size
         self.calls = 0
         self.fail = False
 
@@ -71,7 +79,9 @@ class _FakeSession:
         self.calls += 1
         if self.fail:
             raise OSError("catalog offline")
-        return _FakeResponse(json.dumps(self.payload).encode("utf-8"))
+        return _FakeResponse(
+            json.dumps(self.payload).encode("utf-8"), self.chunk_size
+        )
 
 
 class WakeWordCatalogTests(unittest.TestCase):
@@ -192,6 +202,26 @@ class WakeWordCatalogTests(unittest.TestCase):
 
 
 class WakeWordCatalogRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_catalog_fetch_reads_every_network_chunk(self) -> None:
+        session = _FakeSession(
+            {
+                "entries": [
+                    {
+                        "source": "microWakeWordsV6",
+                        "slug": "hey_tater",
+                        "label": "Hey Tater",
+                        "url": V6_URL,
+                    }
+                ]
+            },
+            chunk_size=17,
+        )
+
+        result = await catalog.WakeWordCatalog(session).async_refresh()
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["warning"], "")
+
     async def test_catalog_fetch_is_cached_and_compact(self) -> None:
         session = _FakeSession(
             {

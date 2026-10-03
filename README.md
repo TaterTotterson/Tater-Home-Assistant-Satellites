@@ -95,10 +95,14 @@ satellite into a `media_player` entity and coordinates its firmware render
 clock directly.
 
 Open **Tater Satellites -> Tater Audio** to save a stereo pair. The pair appears
-as its own media player, downloads one common media URL on both satellites,
-routes the left and right channels, schedules one future audible start, and
-uses playhead telemetry to correct drift. Per-channel trim and placement delay
-are available when a room needs them.
+as its own media player. For stereo pairs and synchronized groups, the bridge
+opens the source URL once and serves the same token-protected audio stream to
+every member. It routes the left and right channels, schedules one future
+audible start, and uses playhead telemetry to correct drift. After a member
+reconnects from rebuffering, the bridge waits for decoder recovery before one
+bounded catch-up correction. A seek within a pair keeps the same shared source.
+Per-channel trim and placement delay are available when a room needs them.
+Single-satellite playback still uses its original media URL directly.
 
 Use Home Assistant's **Join media players** action to group any Tater satellite
 or saved stereo pair under a group leader. Standalone satellites in such a

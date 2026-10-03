@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,6 +108,7 @@ class _FakeRuntime:
         self.device_id = device_id
         self.name = device_id.title()
         self.connected = True
+        self.server_base_url = "http://ha.local:8123"
         self.media_session = {}
         self.capabilities = {
             "synchronized_media_sessions": True,
@@ -146,6 +149,25 @@ class _FakeRuntime:
 
 
 class TaterAudioRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_satellite_still_receives_original_media_url(self) -> None:
+        runtime = _FakeRuntime("solo")
+        manager = SimpleNamespace(
+            runtimes={"solo": runtime}, entry=_FakeEntry(), hass=None
+        )
+        coordinator = media.TaterMediaCoordinator(manager)
+        manager.media = coordinator
+        try:
+            with mock.patch.object(coordinator, "_create_shared_relay") as create_relay:
+                await coordinator.async_play("solo", "http://ha.local/solo.mp3")
+            create_relay.assert_not_called()
+            prepares = [
+                payload for kind, payload, _timeout in runtime.requests
+                if kind == "media.session.prepare"
+            ]
+            self.assertEqual(prepares[0]["media"]["url"], "http://ha.local/solo.mp3")
+        finally:
+            await coordinator.async_shutdown()
+
     async def test_saved_pair_uses_prepare_commit_and_left_right_routes(self) -> None:
         manager = SimpleNamespace(
             data={
@@ -170,43 +192,157 @@ class TaterAudioRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         manager.async_save = save
+        manager.public_base_url = lambda: "http://ha.local:8123"
         coordinator = media.TaterMediaCoordinator(manager)
         manager.media = coordinator
         coordinator.setup()
+        relay = SimpleNamespace(
+            id="shared-relay",
+            url_for=lambda base: f"{base}/api/tater/satellite/v1/media/shared/shared-relay/song.flac?token=one",
+        )
         try:
-            session = await coordinator.async_play(
-                "stereo:office", "http://ha.local/song.flac", title="Song"
+            with mock.patch.object(
+                coordinator, "_create_shared_relay", new=mock.AsyncMock(return_value=relay)
+            ) as create_relay:
+                session = await coordinator.async_play(
+                    "stereo:office", "http://ha.local/song.flac", title="Song"
+                )
+            create_relay.assert_awaited_once_with(
+                "http://ha.local/song.flac", None, ""
             )
             self.assertEqual(session["state"], "buffering")
+            self.assertEqual(session["shared_relay_id"], "shared-relay")
             self.assertEqual(
                 [route["channel"] for route in session["routes"]],
                 ["left", "right"],
             )
+            prepared_urls = []
             for runtime in manager.runtimes.values():
                 kinds = [kind for kind, _payload, _timeout in runtime.requests]
                 self.assertEqual(kinds.count("audio.clock.sync"), 5)
                 self.assertIn("media.session.prepare", kinds)
                 self.assertIn("media.session.commit", kinds)
+                prepared_urls.extend(
+                    payload["media"]["url"]
+                    for kind, payload, _timeout in runtime.requests
+                    if kind == "media.session.prepare"
+                )
+            self.assertEqual(len(prepared_urls), 2)
+            self.assertEqual(prepared_urls[0], prepared_urls[1])
+            self.assertIn("/media/shared/shared-relay/", prepared_urls[0])
 
-            group_id = session["group_id"]
-            session_id = session["session_id"]
             for runtime in manager.runtimes.values():
                 coordinator.handle_message(
                     runtime,
                     "media.session.started",
-                    {"group_id": group_id, "session_id": session_id},
+                    {"group_id": session["group_id"], "session_id": session["session_id"]},
                 )
             self.assertEqual(session["state"], "playing")
+
+            with mock.patch.object(
+                coordinator, "_create_shared_relay", new=mock.AsyncMock(return_value=relay)
+            ) as reuse_relay:
+                await coordinator.async_seek("stereo:office", 5.0)
+            reuse_relay.assert_awaited_once_with(
+                "http://ha.local/song.flac", None, "shared-relay"
+            )
+            session = coordinator.session_for_target("stereo:office")
+            self.assertEqual(session["start_position_ms"], 5000)
+            for runtime in manager.runtimes.values():
+                prepares = [
+                    payload for kind, payload, _timeout in runtime.requests
+                    if kind == "media.session.prepare"
+                ]
+                self.assertEqual(len(prepares), 2)
+                self.assertEqual(prepares[1]["media"]["start_position_ms"], 5000)
 
             for runtime in manager.runtimes.values():
                 coordinator.handle_message(
                     runtime,
                     "media.session.finished",
-                    {"group_id": group_id, "session_id": session_id, "ok": True},
+                    {
+                        "group_id": session["group_id"],
+                        "session_id": session["session_id"],
+                        "ok": True,
+                    },
                 )
-            self.assertNotIn(group_id, coordinator.sessions)
+            self.assertNotIn(session["group_id"], coordinator.sessions)
         finally:
             await coordinator.async_shutdown()
+
+    async def test_rebuffered_stereo_member_jumps_once_only_after_recovery(self) -> None:
+        now = media._monotonic_us()
+        left = _FakeRuntime("left")
+        right = _FakeRuntime("right")
+        manager = SimpleNamespace(
+            runtimes={"left": left, "right": right},
+            entry=_FakeEntry(),
+            hass=None,
+        )
+        coordinator = media.TaterMediaCoordinator(manager)
+        manager.media = coordinator
+        coordinator.sessions["group"] = {
+            "group_id": "group",
+            "session_id": "session",
+            "members": ["left", "right"],
+            "routes": [
+                {"device_id": "left", "channel": "left", "delay_ms": 0},
+                {"device_id": "right", "channel": "right", "delay_ms": 0},
+            ],
+            "clock_offsets_us": {"left": 0, "right": 0},
+            "clock_sync_us": now,
+            "audible_start_server_us": now - 1_000_000,
+            "start_position_frames": {"left": 0, "right": 0},
+            "phase_ema": {},
+            "phase_direction": {},
+            "phase_stable": {},
+            "pending_rejoin": {},
+            "playheads": {
+                "left": {
+                    "session_id": "session",
+                    "sample_rate_hz": 48000,
+                    "satellite_time_us": now,
+                    "rendered_frames": 48000,
+                    "rebuffering": False,
+                }
+            },
+            "finished": set(),
+        }
+        stalled = {
+            "group_id": "group",
+            "session_id": "session",
+            "sample_rate_hz": 48000,
+            "satellite_time_us": now,
+            "rendered_frames": 0,
+            "rebuffering": True,
+            "rejoin_count": 0,
+        }
+        coordinator.handle_message(right, "media.session.playhead", stalled)
+        with mock.patch.object(media, "ADJUST_INTERVAL_SECONDS", 0.01):
+            task = asyncio.create_task(coordinator._sync_loop("group"))
+            coordinator.sync_tasks["group"] = task
+            try:
+                await asyncio.sleep(0.04)
+                self.assertFalse(
+                    [item for item in right.requests if item[0] == "media.session.adjust"]
+                )
+                coordinator.handle_message(
+                    right,
+                    "media.session.playhead",
+                    {**stalled, "rebuffering": False, "rejoin_count": 1},
+                )
+                await asyncio.sleep(0.08)
+                jumps = [
+                    payload for kind, payload, _timeout in right.requests
+                    if kind == "media.session.adjust" and payload["mode"] == "jump"
+                ]
+                self.assertEqual(len(jumps), 1)
+                self.assertEqual(jumps[0]["correction_frames"], 24_000)
+                self.assertNotIn(
+                    "right", coordinator.sessions["group"]["pending_rejoin"]
+                )
+            finally:
+                await coordinator.async_shutdown()
 
 
 if __name__ == "__main__":

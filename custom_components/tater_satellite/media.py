@@ -8,7 +8,9 @@ import logging
 import secrets
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from .manager import SatelliteRuntime, TaterSatelliteManager
@@ -70,6 +72,36 @@ class TaterMediaCoordinator:
         self.dynamic_groups: dict[str, list[str]] = {}
         self._pair_factory: Callable[[dict[str, Any]], Any] | None = None
         self._pair_adder: Callable[[list[Any]], None] | None = None
+        self._shared_media_store: Any = None
+
+    def _shared_store(self):
+        if self._shared_media_store is None:
+            from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+            from .shared_media import SharedMediaStore
+
+            self._shared_media_store = SharedMediaStore(
+                async_get_clientsession(self.manager.hass),
+                Path(self.manager.hass.config.path("tater_satellite", "media_relay")),
+            )
+        return self._shared_media_store
+
+    async def _create_shared_relay(
+        self, source_url: str, duration: float | None, reuse_relay_id: str
+    ):
+        store = self._shared_store()
+        if reuse_relay_id:
+            relay = await store.reuse(reuse_relay_id, source_url)
+            if relay is not None:
+                return relay
+        filename = Path(unquote(urlsplit(source_url).path)).name or "media.bin"
+        return await store.create(source_url, filename, duration)
+
+    async def async_shared_relay(self, relay_id: str, token: str):
+        """Resolve a signed firmware media request without exposing the source URL."""
+        if self._shared_media_store is None:
+            return None
+        return await self._shared_media_store.get(relay_id, token)
 
     def setup(self) -> None:
         """Normalize stored stereo-pair records."""
@@ -100,6 +132,9 @@ class TaterMediaCoordinator:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self.sessions.clear()
+        if self._shared_media_store is not None:
+            await self._shared_media_store.close()
+            self._shared_media_store = None
 
     @staticmethod
     def _normalize_pair(value: dict[str, Any], pair_id: str) -> dict[str, Any]:
@@ -419,6 +454,7 @@ class TaterMediaCoordinator:
         image_url: str = "",
         duration: float | None = None,
         position_seconds: float = 0.0,
+        reuse_relay_id: str = "",
     ) -> dict[str, Any]:
         """Prepare and start one clock-synchronized media session."""
         if not _text(media_url):
@@ -445,7 +481,15 @@ class TaterMediaCoordinator:
         }
         for group_id in overlapping:
             if group_id:
-                await self._stop_group(group_id, reason="replaced")
+                await self._stop_group(
+                    group_id, reason="replaced", keep_relay_id=reuse_relay_id
+                )
+
+        relay = None
+        if len(routes) > 1:
+            if not media_url.lower().startswith(("http://", "https://")):
+                raise ValueError("Synchronized group playback requires an HTTP media URL")
+            relay = await self._create_shared_relay(media_url, duration, reuse_relay_id)
 
         session_id = secrets.token_hex(12)
         group_id = secrets.token_hex(6)
@@ -459,6 +503,7 @@ class TaterMediaCoordinator:
             "routes": routes,
             "members": list(runtimes),
             "media_url": media_url,
+            "shared_relay_id": relay.id if relay is not None else "",
             "content_type": _text(content_type) or "music",
             "title": _text(title),
             "artist": _text(artist),
@@ -470,6 +515,7 @@ class TaterMediaCoordinator:
             "state": "buffering",
             "created_us": _monotonic_us(),
             "playheads": {},
+            "pending_rejoin": {},
             "finished": set(),
             "phase_ema": {},
             "phase_direction": {},
@@ -517,7 +563,14 @@ class TaterMediaCoordinator:
                         "session_id": session_id,
                         "group_id": group_id,
                         "media": {
-                            "url": media_url,
+                            "url": (
+                                relay.url_for(
+                                    runtime.server_base_url
+                                    or self.manager.public_base_url()
+                                )
+                                if relay is not None
+                                else media_url
+                            ),
                             "volume_percent": volume,
                             "start_position_ms": start_position_ms,
                             "loop": False,
@@ -620,7 +673,9 @@ class TaterMediaCoordinator:
         self.notify()
         return session
 
-    async def _stop_group(self, group_id: str, *, reason: str) -> None:
+    async def _stop_group(
+        self, group_id: str, *, reason: str, keep_relay_id: str = ""
+    ) -> None:
         session = self.sessions.pop(group_id, None)
         task = self.sync_tasks.pop(group_id, None)
         if task is not None and task is not asyncio.current_task():
@@ -648,6 +703,13 @@ class TaterMediaCoordinator:
                 and _text(runtime.media_session.get("session_id")) == session_id
             ):
                 runtime.media_session = {}
+        relay_id = _text(session.get("shared_relay_id"))
+        if (
+            relay_id
+            and relay_id != keep_relay_id
+            and self._shared_media_store is not None
+        ):
+            await self._shared_media_store.release(relay_id)
         self.notify()
 
     async def async_stop(self, target: str) -> None:
@@ -671,6 +733,7 @@ class TaterMediaCoordinator:
             image_url=_text(session.get("image_url")),
             duration=session.get("duration"),
             position_seconds=max(0.0, float(position)),
+            reuse_relay_id=_text(session.get("shared_relay_id")),
         )
 
     def session_for_target(self, target: str) -> dict[str, Any]:
@@ -800,6 +863,11 @@ class TaterMediaCoordinator:
                         f"tater_media_startup_realign_{group_id}",
                     )
         elif kind == "media.session.playhead":
+            previous = (
+                session["playheads"].get(runtime.device_id, {})
+                if session is not None
+                else {}
+            )
             runtime.media_session = {
                 **runtime.media_session,
                 "active": True,
@@ -809,6 +877,19 @@ class TaterMediaCoordinator:
             }
             if session is not None:
                 session["playheads"][runtime.device_id] = dict(payload)
+                stereo_members = {
+                    route["device_id"]
+                    for route in session["routes"]
+                    if route["channel"] in {"left", "right"}
+                }
+                if runtime.device_id in stereo_members and (
+                    (previous.get("rebuffering") and not payload.get("rebuffering"))
+                    or _integer(payload.get("rejoin_count"))
+                    > _integer(previous.get("rejoin_count"))
+                    or _integer(payload.get("rejoin_frames"))
+                    > _integer(previous.get("rejoin_frames"))
+                ):
+                    session["pending_rejoin"][runtime.device_id] = True
         else:
             runtime.media_session = {
                 **runtime.media_session,
@@ -823,6 +904,13 @@ class TaterMediaCoordinator:
                     task = self.sync_tasks.pop(group_id, None)
                     if task is not None:
                         task.cancel()
+                    relay_id = _text(session.get("shared_relay_id"))
+                    if relay_id and self._shared_media_store is not None:
+                        self.manager.entry.async_create_background_task(
+                            self.manager.hass,
+                            self._shared_media_store.release(relay_id),
+                            f"tater_media_relay_release_{relay_id[:8]}",
+                        )
         self.notify()
         return True
 
@@ -914,7 +1002,7 @@ class TaterMediaCoordinator:
                 maximum = STARTUP_MAX_FRAMES if startup else ADJUST_MAX_FRAMES
                 settle_ms = STARTUP_SETTLE_MS if startup else ADJUST_SETTLE_MS
                 route_by_id = {route["device_id"]: route for route in session["routes"]}
-                adjustments: list[tuple[str, int]] = []
+                adjustments: list[tuple[str, int, str]] = []
                 for device_id in session["members"]:
                     row = playheads[device_id]
                     if row.get("rebuffering") or "rendered_frames" not in row:
@@ -932,6 +1020,15 @@ class TaterMediaCoordinator:
                         0, event_server_us - member_start_us
                     ) * sample_rate / 1_000_000
                     error = expected - _integer(row.get("rendered_frames"))
+                    if device_id in session["pending_rejoin"]:
+                        # Wait until the decoder has recovered, then make only
+                        # one bounded catch-up jump for this rejoin event.
+                        if error > 480:
+                            adjustments.append(
+                                (device_id, min(24_000, round(error)), "jump")
+                            )
+                            continue
+                        session["pending_rejoin"].pop(device_id, None)
                     previous = float(session["phase_ema"].get(device_id, error))
                     smoothed = (
                         (1 - PHASE_EMA_ALPHA) * previous + PHASE_EMA_ALPHA * error
@@ -951,9 +1048,13 @@ class TaterMediaCoordinator:
                     session["phase_stable"][device_id] = stable
                     if stable >= PHASE_STABLE_SAMPLES:
                         adjustments.append(
-                            (device_id, max(-maximum, min(maximum, round(smoothed))))
+                            (
+                                device_id,
+                                max(-maximum, min(maximum, round(smoothed))),
+                                "slew",
+                            )
                         )
-                for device_id, correction in adjustments:
+                for device_id, correction, correction_mode in adjustments:
                     runtime = self.manager.runtimes.get(device_id)
                     if runtime is None or not runtime.connected:
                         continue
@@ -965,9 +1066,13 @@ class TaterMediaCoordinator:
                                 "group_id": group_id,
                                 "correction_frames": correction,
                                 "mode": (
-                                    "slew"
-                                    if runtime.capabilities.get("media_rate_slew")
-                                    else "legacy"
+                                    "jump"
+                                    if correction_mode == "jump"
+                                    else (
+                                        "slew"
+                                        if runtime.capabilities.get("media_rate_slew")
+                                        else "legacy"
+                                    )
                                 ),
                                 "settle_ms": settle_ms,
                                 "reference_selector": "home-assistant:audible-timeline",
@@ -976,6 +1081,8 @@ class TaterMediaCoordinator:
                         )
                         if result.get("ok"):
                             session["phase_stable"][device_id] = 0
+                            if correction_mode == "jump":
+                                session["pending_rejoin"].pop(device_id, None)
                 if adjustments:
                     session["last_adjust_us"] = now_us
         except asyncio.CancelledError:

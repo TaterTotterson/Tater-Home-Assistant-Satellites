@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -76,14 +77,26 @@ class VolumeControlTests(unittest.TestCase):
         self.assertNotIn("registry.async_remove", setup)
 
     def test_volume_is_sent_with_the_audio_settings_group(self) -> None:
-        manager = (
+        manager_path = (
             ROOT / "custom_components" / "tater_satellite" / "manager.py"
-        ).read_text(encoding="utf-8")
-        audio_group = manager.split('_SETTINGS_WIRE_GROUPS = (', 1)[1].split(
-            '    ),', 3
-        )[2]
+        )
+        module = ast.parse(manager_path.read_text(encoding="utf-8"))
+        groups = None
+        for node in module.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            if any(
+                isinstance(target, ast.Name)
+                and target.id == "_SETTINGS_WIRE_GROUPS"
+                for target in node.targets
+            ):
+                groups = ast.literal_eval(node.value)
+                break
 
-        self.assertIn('"volume_percent"', audio_group)
+        self.assertIsNotNone(groups)
+        audio_group = next(group for group in groups if "aec_enabled" in group)
+        self.assertIn("volume_percent", audio_group)
+        self.assertIn("output_channel_mode", audio_group)
 
     def test_manifest_version_is_bumped(self) -> None:
         manifest = json.loads(
@@ -95,7 +108,7 @@ class VolumeControlTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
 
-        self.assertEqual(manifest["version"], "0.6.3")
+        self.assertEqual(manifest["version"], "0.7.0")
 
 
 if __name__ == "__main__":

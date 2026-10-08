@@ -7,6 +7,24 @@ const PANEL_ELEMENT_NAME = `tater-satellite-panel-${
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "dev"
 }`;
+const WAKE_FAMILY_SETTING_KEYS = new Set([
+  "wake_engine",
+  "wake_detector_mode",
+  "wake_mww_enabled",
+  "wake_oww_enabled",
+  "wake_word",
+  "wake_word_catalog_url",
+  "wake_word_url",
+  "wake_model_revision",
+  "wake_model_asset_id",
+  "oww_wake_word",
+  "oww_wake_word_url",
+  "oww_model_revision",
+  "wake_sensitivity",
+  "wake_environment",
+  "wake_threshold",
+  "wake_sliding_window",
+]);
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -117,6 +135,8 @@ class TaterSatellitePanel extends HTMLElement {
     this._tab = "satellites";
     this._selectedDeviceId = "";
     this._globalDraft = null;
+    this._mwwDraft = null;
+    this._echoDraft = null;
     this._deviceDraft = null;
     this._deviceOriginal = null;
     this._pipelineDraft = "";
@@ -186,6 +206,8 @@ class TaterSatellitePanel extends HTMLElement {
       this._error = "";
       if (!this._globalDraft || !this._dirty) {
         this._globalDraft = this.prepareSettingsDraft(data.global_settings);
+        this._mwwDraft = this.prepareSettingsDraft(data.wake_family_settings?.mww || {});
+        this._echoDraft = this.prepareSettingsDraft(data.wake_family_settings?.echo || {});
       }
       if (this._selectedDeviceId && !this._dirty) {
         this.prepareDeviceDraft(this._selectedDeviceId, false);
@@ -630,7 +652,7 @@ class TaterSatellitePanel extends HTMLElement {
         ${this.tabButton("trainer", "Wake Word Trainer")}
         ${this.tabButton("firmware", "Firmware & Recovery")}
       </nav>
-      ${this._tab === "defaults" ? this.renderSettingsEditor("Shared Satellite Voice Settings", this._globalDraft, "global", { exclude: ["feedback", "verifier"] }) : ""}
+      ${this._tab === "defaults" ? this.renderVoiceDefaults() : ""}
       ${this._tab === "verifier" ? this.renderVerifier() : ""}
       ${this._tab === "trainer" ? this.renderTrainer() : ""}
       ${this._tab === "firmware" ? this.renderFirmware() : ""}
@@ -691,7 +713,7 @@ class TaterSatellitePanel extends HTMLElement {
         ${pairs.map((pair) => `
           <article class="card device-card ${pair.ready ? "online" : ""}">
             <div class="device-head">
-              <div><h2>${escapeHtml(pair.name)}</h2><div class="muted">Synchronized stereo pair</div></div>
+              <div><h2>${escapeHtml(pair.name)}</h2><div class="muted">Sendspin stereo pair</div></div>
               <span class="badge ${pair.ready ? "online" : ""}">${pair.ready ? "Ready" : "Unavailable"}</span>
             </div>
             <div class="facts">
@@ -931,6 +953,56 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  renderVoiceDefaults() {
+    return `
+      <div class="editor-head">
+        <div>
+          <h2>Shared Satellite Voice Settings</h2>
+          <div class="muted">Wake models are routed by firmware capability. ESP and MWW-only satellites keep their own profile; Echo firmware can use MWW, OWW, or require both in Dual mode.</div>
+        </div>
+      </div>
+      ${this.renderWakeFamilyEditor(
+        "mww",
+        "ESP satellites",
+        "How should ESP firmware wake?",
+        this._mwwDraft || {},
+      )}
+      ${this.renderWakeFamilyEditor(
+        "echo",
+        "Echo satellites",
+        "How should Echo firmware wake?",
+        this._echoDraft || {},
+      )}
+      ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { exclude: ["wake", "feedback", "verifier"] })}
+      <div class="sticky-actions">
+        <button data-action="reset-draft">Discard shared changes</button>
+        <button class="primary" data-action="save-global" ${this._loading ? "disabled" : ""}>Save shared settings</button>
+      </div>
+    `;
+  }
+
+  renderWakeFamilyEditor(family, eyebrow, title, values) {
+    const connected = (this._data.devices || []).filter(
+      (device) => device.connected && device.wake_family === family,
+    ).length;
+    return `
+      <section class="card section-card">
+        <div class="device-head">
+          <div>
+            <div class="muted" style="text-transform:uppercase;font-size:12px;font-weight:700;letter-spacing:.08em">Step 1 · ${escapeHtml(eyebrow)}</div>
+            <h3 style="margin-top:6px">${escapeHtml(title)}</h3>
+          </div>
+          <span class="badge ${connected ? "online" : ""}">${connected} connected</span>
+        </div>
+        ${this.renderSettingsSections(values, family, { wake_family: family }, { include: ["wake"], wakeFamily: family, bare: true })}
+        <div class="row-actions" style="margin-top:15px">
+          <button data-reset-wake-family="${family}">Discard ${family === "echo" ? "Echo" : "ESP"} changes</button>
+          <button class="primary" data-save-wake-family="${family}" ${this._loading ? "disabled" : ""}>Save and update ${family === "echo" ? "Echo" : "ESP"} satellites</button>
+        </div>
+      </section>
+    `;
+  }
+
   renderSettingsSections(values, scope, device = null, sectionFilter = {}) {
     const boardKey = String(device?.board_key || device?.board || "")
       .trim()
@@ -947,18 +1019,22 @@ class TaterSatellitePanel extends HTMLElement {
       .filter((section) => !(sectionFilter.exclude || []).includes(section.section))
       .filter((section) => !(sectionFilter.include || []).length || sectionFilter.include.includes(section.section))
       .map(
-        (section) => `
-          <section class="card section-card">
-            <h3>${escapeHtml(section.title)}</h3>
-            <div class="section-description">${escapeHtml(section.description || "")}</div>
+        (section) => {
+          const wakeFamily = sectionFilter.wakeFamily || device?.wake_family || "";
+          const fields = (section.fields || [])
+            .filter((field) => !(field.wake_families || []).length || field.wake_families.includes(wakeFamily))
+            .filter((field) => !(field.detector_modes || []).length || field.detector_modes.includes(String(values?.wake_detector_mode || "mww")))
+            .filter((field) => this.fieldVisible(field, values));
+          if (!fields.length) return "";
+          const contents = `
+            ${sectionFilter.bare ? "" : `<h3>${escapeHtml(section.title)}</h3>`}
+            ${sectionFilter.bare ? "" : `<div class="section-description">${escapeHtml(section.description || "")}</div>`}
             <div class="settings-grid">
-              ${(section.fields || [])
-                .filter((field) => this.fieldVisible(field, values))
-                .map((field) => this.renderField(field, values, scope))
-                .join("")}
+              ${fields.map((field) => this.renderField(field, values, scope)).join("")}
             </div>
-          </section>
-        `,
+          `;
+          return sectionFilter.bare ? contents : `<section class="card section-card">${contents}</section>`;
+        },
       )
       .join("");
   }
@@ -1217,7 +1293,7 @@ class TaterSatellitePanel extends HTMLElement {
               <option value="">Use external URL</option>
               ${assets.map((asset) => `<option value="${escapeHtml(asset.id)}" ${asset.id === value ? "selected" : ""}>${escapeHtml(asset.label)}</option>`).join("")}
             </select>
-            <button type="button" data-upload-kind="${kind}" data-upload-key="${escapeHtml(field.key)}">Upload</button>
+            <button type="button" data-upload-kind="${kind}" data-upload-key="${escapeHtml(field.key)}" data-upload-scope="${escapeHtml(scope)}">Upload</button>
           </div>
         </label>
       `;
@@ -1576,7 +1652,11 @@ class TaterSatellitePanel extends HTMLElement {
     );
     root.querySelectorAll("[data-setting]").forEach((input) => {
       input.addEventListener("change", () => {
-        const target = input.dataset.scope === "global" ? this._globalDraft : this._deviceDraft;
+        const target = {
+          global: this._globalDraft,
+          mww: this._mwwDraft,
+          echo: this._echoDraft,
+        }[input.dataset.scope] || this._deviceDraft;
         let value = input.type === "checkbox" ? input.checked : input.value;
         if (input.type === "number") value = Number(value);
         target[input.dataset.setting] = value;
@@ -1614,7 +1694,7 @@ class TaterSatellitePanel extends HTMLElement {
         );
         if (
           controlsConditionalFields ||
-          ["wake_word", "wake_sound", "aec_enabled", "wake_verifier_mode"].includes(
+          ["wake_word", "wake_detector_mode", "oww_wake_word", "wake_sound", "aec_enabled", "wake_verifier_mode"].includes(
             input.dataset.setting,
           )
         ) {
@@ -1635,14 +1715,40 @@ class TaterSatellitePanel extends HTMLElement {
     );
     root.querySelector('[data-action="save-global"]')?.addEventListener("click", () =>
       this.run(
-        () => this.api("POST", "settings/global", { settings: this._globalDraft }),
+        () => {
+          const settings = clone(this._globalDraft);
+          WAKE_FAMILY_SETTING_KEYS.forEach((key) => delete settings[key]);
+          return this.api("POST", "settings/global", { settings });
+        },
         this._tab === "verifier"
           ? "STT wake verification updated for all satellites."
           : "Shared satellite settings saved and pushed live.",
       ),
     );
+    root.querySelectorAll("[data-save-wake-family]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const family = button.dataset.saveWakeFamily;
+        const settings = family === "echo" ? this._echoDraft : this._mwwDraft;
+        this.run(
+          () => this.api("POST", `settings/wake-family/${family}`, { settings }),
+          `${family === "echo" ? "Echo" : "ESP"} wake settings saved and pushed live.`,
+        );
+      }),
+    );
+    root.querySelectorAll("[data-reset-wake-family]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const family = button.dataset.resetWakeFamily;
+        const values = this._data.wake_family_settings?.[family] || {};
+        if (family === "echo") this._echoDraft = this.prepareSettingsDraft(values);
+        else this._mwwDraft = this.prepareSettingsDraft(values);
+        this._dirty = false;
+        this.render();
+      }),
+    );
     root.querySelector('[data-action="reset-draft"]')?.addEventListener("click", () => {
       this._globalDraft = this.prepareSettingsDraft(this._data.global_settings);
+      this._mwwDraft = this.prepareSettingsDraft(this._data.wake_family_settings?.mww || {});
+      this._echoDraft = this.prepareSettingsDraft(this._data.wake_family_settings?.echo || {});
       this._dirty = false;
       this.render();
     });
@@ -1709,7 +1815,7 @@ class TaterSatellitePanel extends HTMLElement {
   async uploadAsset(button) {
     const kind = button.dataset.uploadKind;
     const settingKey = button.dataset.uploadKey;
-    const scope = this._tab === "defaults" ? "global" : "device";
+    const scope = button.dataset.uploadScope || (this._tab === "defaults" ? "global" : "device");
     const accept = kind === "wake_model" ? ".tflite,application/octet-stream" : ".wav,audio/wav";
     const picker = document.createElement("input");
     picker.type = "file";
@@ -1733,7 +1839,14 @@ class TaterSatellitePanel extends HTMLElement {
         this._loading = false;
         this._dirty = false;
         await this.load(true);
-        const target = scope === "global" ? this._globalDraft : this._deviceDraft;
+        const target =
+          scope === "mww"
+            ? this._mwwDraft
+            : scope === "echo"
+              ? this._echoDraft
+              : scope === "global"
+                ? this._globalDraft
+                : this._deviceDraft;
         target[settingKey] = result.asset.id;
         if (kind === "wake_model") target.wake_word = "custom_url";
         if (kind === "wake_sound") target.wake_sound = "custom";

@@ -1,4 +1,4 @@
-"""Media-player entities for synchronized Tater Audio playback."""
+"""Media-player entities for Sendspin Tater Audio playback."""
 
 from __future__ import annotations
 
@@ -126,52 +126,13 @@ class _TaterMediaPlayerMixin(MediaPlayerEntity):
         except (TypeError, ValueError):
             return None
 
-    def _playhead(self) -> tuple[dict[str, Any], int] | None:
-        session = self._session()
-        playheads = session.get("playheads")
-        sample_rates = session.get("sample_rates")
-        if not isinstance(playheads, dict) or not isinstance(sample_rates, dict):
-            return None
-        for device_id in session.get("members") or []:
-            row = playheads.get(device_id)
-            if isinstance(row, dict):
-                sample_rate = int(
-                    row.get("sample_rate_hz")
-                    or sample_rates.get(device_id)
-                    or 48000
-                )
-                return row, max(1, sample_rate)
-        return None
-
     @property
     def media_position(self) -> float | None:
-        value = self._playhead()
-        if value is None:
-            return None
-        playhead, sample_rate = value
-        frames = int(
-            playhead.get("source_frames") or playhead.get("rendered_frames") or 0
-        )
-        start_seconds = float(self._session().get("start_position_ms") or 0) / 1000
-        seconds = frames / sample_rate
-        return seconds if seconds >= start_seconds else start_seconds + seconds
+        return self.manager.media.media_position(self.target)
 
     @property
     def media_position_updated_at(self):
-        value = self._playhead()
-        if value is None:
-            return None
-        session = self._session()
-        for device_id in session.get("members") or []:
-            runtime = self.manager.runtimes.get(device_id)
-            if runtime is None:
-                continue
-            received_us = runtime.media_session.get("playhead_received_us")
-            if received_us:
-                # Playhead receipt is monotonic, so wall time at property access
-                # is the closest useful HA extrapolation anchor.
-                return dt_util.utcnow()
-        return None
+        return dt_util.utcnow() if self._session().get("state") == "playing" else None
 
     async def async_browse_media(
         self,
@@ -274,9 +235,8 @@ class TaterSatelliteMediaPlayer(
         return {
             **TaterSatelliteEntity.extra_state_attributes.fget(self),
             "tater_audio": True,
-            "audio_session_version": self.runtime.capabilities.get(
-                "audio_session_version"
-            ),
+            "sendspin_version": self.runtime.capabilities.get("sendspin_version"),
+            "media_transport": "sendspin",
             "media_group_id": session.get("group_id"),
             "media_channel": self.runtime.media_session.get("channel"),
         }
@@ -311,7 +271,10 @@ class TaterStereoMediaPlayer(_TaterMediaPlayerMixin):
             if (
                 runtime is None
                 or not runtime.connected
-                or not self.manager.media._supports_synchronized_media(runtime)
+                or not self.manager.media._supports_sendspin(
+                    runtime, channel_selection=True
+                )
+                or not runtime.remote
             ):
                 return False
         return True
@@ -322,7 +285,7 @@ class TaterStereoMediaPlayer(_TaterMediaPlayerMixin):
             identifiers={(DOMAIN, self.target)},
             name=str(self.pair["name"]),
             manufacturer="Tater",
-            model="Synchronized Stereo Pair",
+            model="Sendspin Stereo Pair",
         )
 
     @property
@@ -334,5 +297,6 @@ class TaterStereoMediaPlayer(_TaterMediaPlayerMixin):
             "right_device_id": self.pair["right_device_id"],
             "left_delay_ms": self.pair["left_delay_ms"],
             "right_delay_ms": self.pair["right_delay_ms"],
+            "media_transport": "sendspin",
             "media_group_id": session.get("group_id"),
         }

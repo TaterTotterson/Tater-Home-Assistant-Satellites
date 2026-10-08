@@ -8,10 +8,16 @@ from typing import Any
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "wake_engine": "micro_wake_word",
+    "wake_detector_mode": "dual",
+    "wake_mww_enabled": True,
+    "wake_oww_enabled": True,
     "wake_word": "hey_tater",
     "wake_word_url": "",
     "wake_model_revision": "",
     "wake_model_asset_id": "",
+    "oww_wake_word": "hey_tater",
+    "oww_wake_word_url": "",
+    "oww_model_revision": "",
     "wake_sensitivity": "normal",
     "wake_environment": "balanced",
     "wake_threshold": 0.97,
@@ -53,9 +59,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 FIRMWARE_SETTING_KEYS = {
     "wake_engine",
+    "wake_mww_enabled",
+    "wake_oww_enabled",
     "wake_word",
     "wake_word_url",
     "wake_model_revision",
+    "oww_wake_word",
+    "oww_wake_word_url",
+    "oww_model_revision",
     "wake_sensitivity",
     "wake_environment",
     "wake_threshold",
@@ -101,6 +112,31 @@ WAKE_WORD_SOURCE_OPTIONS = [
     {"value": "catalog", "label": "Tater Wake Word Catalog"},
     {"value": "custom_url", "label": "Custom model"},
 ]
+
+OWW_WORD_SOURCE_OPTIONS = [
+    {"value": "hey_tater", "label": "Hey Tater (built in)"},
+    {"value": "custom_url", "label": "Custom Tater wake bundle"},
+]
+
+WAKE_DETECTOR_MODES = {"mww", "oww", "dual"}
+WAKE_FAMILIES = {"mww", "echo"}
+WAKE_FAMILY_SETTING_KEYS = {
+    "wake_engine",
+    "wake_detector_mode",
+    "wake_mww_enabled",
+    "wake_oww_enabled",
+    "wake_word",
+    "wake_word_url",
+    "wake_model_revision",
+    "wake_model_asset_id",
+    "oww_wake_word",
+    "oww_wake_word_url",
+    "oww_model_revision",
+    "wake_sensitivity",
+    "wake_environment",
+    "wake_threshold",
+    "wake_sliding_window",
+}
 
 WAKE_SOUND_OPTIONS = [
     {"value": "no_sound", "label": "No sound"},
@@ -162,7 +198,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
     {
         "section": "wake",
         "title": "Wake Word",
-        "description": "On-device microWakeWord model and false-wake tuning.",
+        "description": "On-device wake model and false-wake tuning.",
         "fields": [
             {
                 "key": "wake_engine",
@@ -175,15 +211,32 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 ],
             },
             {
+                "key": "wake_detector_mode",
+                "label": "Wake detection mode",
+                "type": "select",
+                "wake_families": ["echo"],
+                "options": [
+                    {"value": "mww", "label": "microWakeWord"},
+                    {"value": "oww", "label": "openWakeWord"},
+                    {"value": "dual", "label": "Dual Wake Word"},
+                ],
+                "description": (
+                    "Use either detector alone, or require both detectors to "
+                    "agree before opening the microphone."
+                ),
+            },
+            {
                 "key": "wake_word",
                 "label": "Wake word",
                 "type": "select",
+                "detector_modes": ["mww"],
                 "options": WAKE_WORD_SOURCE_OPTIONS,
             },
             {
                 "key": "wake_word_catalog_url",
                 "label": "Wake Word Catalog",
                 "type": "select",
+                "detector_modes": ["mww"],
                 "options": [],
                 "show_when": {"key": "wake_word", "equals": "catalog"},
                 "description": (
@@ -195,19 +248,46 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "wake_model_asset_id",
                 "label": "Uploaded wake model",
                 "type": "wake_model_asset",
+                "detector_modes": ["mww"],
                 "show_when": {"key": "wake_word", "equals": "custom_url"},
             },
             {
                 "key": "wake_word_url",
                 "label": "External wake JSON or TFLite URL",
                 "type": "url",
+                "detector_modes": ["mww"],
                 "show_when": {"key": "wake_word", "equals": "custom_url"},
                 "placeholder": "https://example.local/wake_word.json",
+            },
+            {
+                "key": "oww_wake_word",
+                "label": "openWakeWord model",
+                "type": "select",
+                "wake_families": ["echo"],
+                "detector_modes": ["oww", "dual"],
+                "options": OWW_WORD_SOURCE_OPTIONS,
+                "description": (
+                    "Use the built-in Hey Tater model or a matching dual-model "
+                    "bundle produced by a Tater Wake Word Trainer."
+                ),
+            },
+            {
+                "key": "oww_wake_word_url",
+                "label": "Tater wake-bundle URL",
+                "type": "url",
+                "wake_families": ["echo"],
+                "detector_modes": ["oww", "dual"],
+                "show_when": {"key": "oww_wake_word", "equals": "custom_url"},
+                "placeholder": (
+                    "http://trainer.local:8789/api/trained_wake_words/"
+                    "hey_tater.wake-bundle.json"
+                ),
             },
             {
                 "key": "wake_sensitivity",
                 "label": "Wake sensitivity",
                 "type": "select",
+                "detector_modes": ["mww", "dual"],
                 "options": [
                     {"value": "conservative", "label": "Conservative"},
                     {"value": "normal", "label": "Normal"},
@@ -218,6 +298,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "wake_environment",
                 "label": "Wake environment",
                 "type": "select",
+                "detector_modes": ["mww", "dual"],
                 "options": [
                     {"value": "balanced", "label": "Balanced"},
                     {"value": "tv_nearby", "label": "TV Nearby"},
@@ -229,6 +310,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "wake_threshold",
                 "label": "Base wake threshold",
                 "type": "number",
+                "detector_modes": ["mww", "dual"],
                 "min": 0.01,
                 "max": 0.99,
                 "step": 0.01,
@@ -237,6 +319,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "wake_sliding_window",
                 "label": "Sliding window",
                 "type": "number",
+                "detector_modes": ["mww", "dual"],
                 "min": 1,
                 "max": 10,
                 "step": 1,
@@ -485,7 +568,9 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
 
 _ALLOWED = {
     "wake_engine": {"micro_wake_word", "button", "off"},
+    "wake_detector_mode": WAKE_DETECTOR_MODES,
     "wake_word": {row["value"] for row in WAKE_WORD_OPTIONS},
+    "oww_wake_word": {row["value"] for row in OWW_WORD_SOURCE_OPTIONS},
     "wake_sensitivity": {"conservative", "normal", "high"},
     "wake_environment": {"balanced", "tv_nearby", "strict", "far_field"},
     "wake_verifier_mode": {"off", "observe", "enforce"},
@@ -497,6 +582,8 @@ _ALLOWED = {
     "led_replying_animation": {row["value"] for row in ANIMATION_OPTIONS},
 }
 _BOOL_KEYS = {
+    "wake_mww_enabled",
+    "wake_oww_enabled",
     "capture_wake_audio",
     "capture_close_misses",
     "wake_sound_enabled",
@@ -526,6 +613,8 @@ _TEXT_LIMITS = {
     "wake_word_url": 255,
     "wake_model_revision": 64,
     "wake_model_asset_id": 128,
+    "oww_wake_word_url": 255,
+    "oww_model_revision": 64,
     "wake_verifier_phrase": 120,
     "wake_verifier_phrase_url": 255,
     "trainer_app_url": 127,
@@ -658,27 +747,89 @@ def normalize_settings(
             result["wake_word_url"] = ""
             result["wake_model_revision"] = ""
             result["wake_model_asset_id"] = ""
+        if result.get("oww_wake_word") != "custom_url":
+            result["oww_wake_word_url"] = ""
+            result["oww_model_revision"] = ""
         if result.get("wake_sound") != "custom":
             result["wake_sound_url"] = ""
             result["wake_sound_asset_id"] = ""
 
+    if "wake_detector_mode" in result or not partial:
+        mode = str(result.get("wake_detector_mode") or "dual")
+        if mode not in WAKE_DETECTOR_MODES:
+            mode = "dual"
+        result["wake_detector_mode"] = mode
+        result["wake_mww_enabled"] = mode in {"mww", "dual"}
+        result["wake_oww_enabled"] = mode in {"oww", "dual"}
+
     return result
+
+
+def wake_family_for(
+    *, capabilities: dict[str, Any] | None = None, board: Any = ""
+) -> str:
+    """Return the shared wake profile family for one satellite."""
+    caps = capabilities if isinstance(capabilities, dict) else {}
+    if any(
+        _boolean(caps.get(key), False)
+        for key in ("openwakeword", "wake_detector_selection", "dual_wake_confirmation")
+    ):
+        return "echo"
+    token = str(board or "").strip().lower().replace("_", "-")
+    return "echo" if token in {"biscuit", "checkers", "rook"} else "mww"
+
+
+def normalize_wake_family_settings(
+    family: Any,
+    values: dict[str, Any] | None,
+    *,
+    base: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize the wake-only settings persisted for a satellite family."""
+    token = str(family or "").strip().lower()
+    if token not in WAKE_FAMILIES:
+        raise ValueError(f"Unsupported wake family: {family}")
+    source = {
+        key: value
+        for key, value in (values or {}).items()
+        if key in WAKE_FAMILY_SETTING_KEYS
+    }
+    current = normalize_settings(source, base=base)
+    mode = (
+        "mww"
+        if token == "mww"
+        else str(current.get("wake_detector_mode") or "dual")
+    )
+    if mode not in WAKE_DETECTOR_MODES:
+        mode = "dual"
+    current["wake_detector_mode"] = mode
+    current["wake_mww_enabled"] = mode in {"mww", "dual"}
+    current["wake_oww_enabled"] = mode in {"oww", "dual"}
+    return {key: current[key] for key in WAKE_FAMILY_SETTING_KEYS if key in current}
 
 
 def merged_settings(
     global_settings: dict[str, Any] | None,
     overrides: dict[str, Any] | None,
+    wake_family_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge normalized global settings with per-device overrides."""
     global_values = normalize_settings(global_settings)
-    override_values = normalize_settings(overrides, base=global_values, partial=True)
-    return normalize_settings({**global_values, **override_values})
+    family_values = normalize_settings(
+        wake_family_settings,
+        base=global_values,
+        partial=True,
+    )
+    base_values = normalize_settings({**global_values, **family_values})
+    override_values = normalize_settings(overrides, base=base_values, partial=True)
+    return normalize_settings({**base_values, **override_values})
 
 
 def firmware_payload(
     settings: dict[str, Any],
     *,
     board: Any = "",
+    capabilities: dict[str, Any] | None = None,
     local_time_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Return only values understood by the firmware."""
@@ -708,4 +859,23 @@ def firmware_payload(
     payload["wake_threshold"] = round(
         max(0.01, min(0.99, base_threshold + adjustment)), 3
     )
+    family = wake_family_for(capabilities=capabilities, board=board)
+    if family == "mww":
+        payload["wake_mww_enabled"] = True
+        for key in (
+            "wake_oww_enabled",
+            "oww_wake_word",
+            "oww_wake_word_url",
+            "oww_model_revision",
+        ):
+            payload.pop(key, None)
+    elif (
+        payload.get("wake_mww_enabled")
+        and payload.get("wake_oww_enabled")
+        and payload.get("oww_wake_word") == "custom_url"
+        and payload.get("oww_wake_word_url")
+    ):
+        # Echo firmware treats one validated trainer bundle as the authority
+        # for both detectors in Dual mode.
+        payload["oww_wake_word"] = "paired_bundle"
     return payload

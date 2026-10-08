@@ -15,6 +15,7 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin
 
 from aiohttp import WSMsgType, web
 from homeassistant.components.assist_pipeline import (
@@ -56,10 +57,14 @@ from .protocol import (
 from .settings import (
     DEFAULT_SETTINGS,
     SETTINGS_SCHEMA,
+    WAKE_FAMILIES,
+    WAKE_FAMILY_SETTING_KEYS,
     board_supports_screen_settings,
     firmware_payload,
     merged_settings,
     normalize_settings,
+    normalize_wake_family_settings,
+    wake_family_for,
 )
 from .trainer import TrainerLinkManager
 from .wake_verifier import (
@@ -86,10 +91,16 @@ _GLOBAL_WAKE_VERIFIER_KEYS = {
 }
 _WAKE_MODEL_SETTING_KEYS = {
     "wake_engine",
+    "wake_detector_mode",
+    "wake_mww_enabled",
+    "wake_oww_enabled",
     "wake_word",
     "wake_word_url",
     "wake_model_revision",
     "wake_model_asset_id",
+    "oww_wake_word",
+    "oww_wake_word_url",
+    "oww_model_revision",
     "wake_sensitivity",
     "wake_environment",
     "wake_threshold",
@@ -104,6 +115,7 @@ _WAKE_SOUND_SETTING_KEYS = {
 _SETTINGS_WIRE_GROUPS = (
     (
         "wake_engine",
+        "wake_mww_enabled",
         "wake_word",
         "wake_word_url",
         "wake_model_revision",
@@ -111,6 +123,12 @@ _SETTINGS_WIRE_GROUPS = (
         "wake_environment",
         "wake_threshold",
         "wake_sliding_window",
+    ),
+    (
+        "wake_oww_enabled",
+        "oww_wake_word",
+        "oww_wake_word_url",
+        "oww_model_revision",
     ),
     (
         "capture_wake_audio",
@@ -132,6 +150,7 @@ _SETTINGS_WIRE_GROUPS = (
         "barge_in_enabled",
         "volume_percent",
         "muted",
+        "output_channel_mode",
     ),
     (
         "led_brightness",
@@ -177,13 +196,24 @@ def _compact_json(message: dict[str, Any]) -> str:
     return json.dumps(message, ensure_ascii=False, separators=(",", ":"))
 
 
-def _settings_messages(settings: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build settings frames that fit older native firmware receive windows."""
+def _settings_messages(
+    settings: dict[str, Any],
+    *,
+    board: Any = "",
+    capabilities: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build settings frames for the receiving firmware family."""
 
     def _message(payload: dict[str, Any]) -> dict[str, Any]:
         return envelope("settings", payload, include_metadata=False)
 
     complete = _message(settings)
+    # Echo firmware applies the wake detector pair as one coherent settings
+    # snapshot. Tater uses this same atomic contract, and Echo's WebSocket
+    # transport accepts the larger frame. Keep legacy fragmentation only for
+    # the MWW/ESP family whose older receive windows are limited to 1,000 bytes.
+    if wake_family_for(capabilities=capabilities, board=board) == "echo":
+        return [complete]
     if len(_compact_json(complete).encode("utf-8")) <= _MAX_DEVICE_TEXT_FRAME_BYTES:
         return [complete]
 
@@ -543,7 +573,11 @@ class SatelliteRuntime:
         desired_settings = (
             self.manager.firmware_settings(self.device_id)
             if self.server_base_url
-            else firmware_payload(self.effective_settings(), board=self.board)
+            else firmware_payload(
+                self.effective_settings(),
+                board=self.board,
+                capabilities=self.capabilities,
+            )
         )
         desired_wake_word = text(desired_settings.get("wake_word"))
         active_wake_word = text(wake_engine.get("active_wake_word"))
@@ -594,6 +628,10 @@ class SatelliteRuntime:
             "last_seen": self.last_seen,
             "last_error": self.last_error,
             "capabilities": self.capabilities,
+            "wake_family": wake_family_for(
+                capabilities=self.capabilities,
+                board=self.board,
+            ),
             "state": text(status.get("state"))
             or ("idle" if self.connected else "offline"),
             "wifi_rssi": status.get("wifi_rssi"),
@@ -705,15 +743,53 @@ class TaterSatelliteManager:
         """Load persistent state and prepare services."""
         loaded = await self.store.async_load()
         self.data = loaded if isinstance(loaded, dict) else {}
+        raw_global_settings = (
+            dict(self.data.get("global_settings"))
+            if isinstance(self.data.get("global_settings"), dict)
+            else {}
+        )
         self.data.setdefault("global_settings", dict(DEFAULT_SETTINGS))
         self.data["global_settings"] = normalize_settings(
             self.data.get("global_settings")
         )
+        migrated_wake_families = False
+        stored_families = self.data.get("wake_family_settings")
+        if not isinstance(stored_families, dict):
+            stored_families = {}
+            migrated_wake_families = True
+        global_settings = self.data["global_settings"]
+        explicit_echo_mode = any(
+            key in raw_global_settings
+            for key in ("wake_detector_mode", "wake_mww_enabled", "wake_oww_enabled")
+        )
+        echo_mode = str(global_settings.get("wake_detector_mode") or "dual")
+        if (
+            not explicit_echo_mode
+            and global_settings.get("wake_word") == "custom_url"
+        ):
+            # Preserve an existing custom MWW on upgrade. The user can switch
+            # Echo devices to Dual after selecting its matching wake bundle.
+            echo_mode = "mww"
+        family_defaults = {
+            "mww": {**global_settings, "wake_detector_mode": "mww"},
+            "echo": {**global_settings, "wake_detector_mode": echo_mode},
+        }
+        normalized_families: dict[str, dict[str, Any]] = {}
+        for family in sorted(WAKE_FAMILIES):
+            raw_family = stored_families.get(family)
+            if not isinstance(raw_family, dict):
+                raw_family = family_defaults[family]
+                migrated_wake_families = True
+            normalized_families[family] = normalize_wake_family_settings(
+                family,
+                raw_family,
+                base=global_settings,
+            )
+        self.data["wake_family_settings"] = normalized_families
         self.data.setdefault("devices", {})
         self.data.setdefault("assets", {})
         self.media.setup()
         self.trainer.setup()
-        global_settings = self.data["global_settings"]
         if (
             global_settings.get("wake_word") == "custom_url"
             and text(global_settings.get("wake_word_url"))
@@ -728,6 +804,8 @@ class TaterSatelliteManager:
             global_settings["wake_verifier_phrase_url"] = text(
                 global_settings.get("wake_word_url")
             )
+            await self.async_save()
+        elif migrated_wake_families:
             await self.async_save()
         await self.hass.async_add_executor_job(
             self._assets_root.mkdir, 0o755, True, True
@@ -937,7 +1015,21 @@ class TaterSatelliteManager:
             if runtime is not None and isinstance(runtime.record.get("overrides"), dict)
             else {}
         )
-        return merged_settings(self.data.get("global_settings"), overrides)
+        family = wake_family_for(
+            capabilities=runtime.capabilities if runtime is not None else {},
+            board=runtime.board if runtime is not None else "",
+        )
+        families = self.data.get("wake_family_settings")
+        family_settings = (
+            families.get(family)
+            if isinstance(families, dict) and isinstance(families.get(family), dict)
+            else {}
+        )
+        return merged_settings(
+            self.data.get("global_settings"),
+            overrides,
+            family_settings,
+        )
 
     def _adopt_reported_device_volume(
         self, runtime: SatelliteRuntime, status: dict[str, Any]
@@ -1024,11 +1116,14 @@ class TaterSatelliteManager:
                 + (local_now.minute * 60)
                 + local_now.second
             )
-        return firmware_payload(
+        payload = firmware_payload(
             settings,
             board=board,
+            capabilities=runtime.capabilities if runtime is not None else {},
             local_time_seconds=local_time_seconds,
         )
+        payload["output_channel_mode"] = self.media.output_channel_mode(device_id)
+        return payload
 
     async def async_push_settings(
         self,
@@ -1048,7 +1143,11 @@ class TaterSatelliteManager:
         runtime.settings_sync_state = "sending"
         runtime.settings_sync_message = "Sending live settings to the satellite."
         settings = self.firmware_settings(runtime.device_id)
-        messages = _settings_messages(settings)
+        messages = _settings_messages(
+            settings,
+            board=runtime.board,
+            capabilities=runtime.capabilities,
+        )
         sent = True
         for message in messages:
             if not await runtime.async_send_json(message):
@@ -1106,6 +1205,242 @@ class TaterSatelliteManager:
             keys.update(_GLOBAL_WAKE_VERIFIER_KEYS)
         return keys
 
+    def wake_family_settings(self, family: str) -> dict[str, Any]:
+        """Return one normalized shared wake-family profile."""
+        token = text(family).lower()
+        if token not in WAKE_FAMILIES:
+            raise ValueError(f"Unsupported wake family: {family}")
+        families = self.data.get("wake_family_settings")
+        values = (
+            families.get(token)
+            if isinstance(families, dict) and isinstance(families.get(token), dict)
+            else {}
+        )
+        return normalize_wake_family_settings(
+            token,
+            values,
+            base=normalize_settings(self.data.get("global_settings")),
+        )
+
+    async def _async_wake_bundle(self, bundle_url: str) -> dict[str, str]:
+        """Validate a trainer bundle and resolve its matching MWW manifest."""
+        url = text(bundle_url)
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(
+                "The openWakeWord bundle URL must start with http:// or https://."
+            )
+        session = async_get_clientsession(self.hass)
+        try:
+            async with asyncio.timeout(8):
+                async with session.get(url) as response:
+                    response.raise_for_status()
+                    raw = await response.content.read(256 * 1024 + 1)
+        except Exception as err:  # noqa: BLE001
+            raise ValueError(
+                f"Could not read the Tater wake bundle: {type(err).__name__}"
+            ) from err
+        if len(raw) > 256 * 1024:
+            raise ValueError("The Tater wake bundle is larger than 256 KB.")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as err:
+            raise ValueError("The Tater wake bundle is not valid JSON.") from err
+        if not isinstance(payload, dict):
+            raise ValueError("The Tater wake bundle must contain a JSON object.")
+        if (
+            payload.get("schema_version") != 1
+            or text(payload.get("type")) != "tater_wake_word_bundle"
+        ):
+            raise ValueError("The URL is not a Tater dual-model wake bundle.")
+        micro = payload.get("micro_wake_word")
+        oww = payload.get("open_wake_word")
+        if not isinstance(micro, dict) or not isinstance(oww, dict):
+            raise ValueError(
+                "The wake bundle must contain matching MWW and OWW models."
+            )
+        manifest_ref = text(micro.get("manifest"))
+        model_ref = text(micro.get("model"))
+        if not manifest_ref.lower().endswith(
+            ".json"
+        ) or not model_ref.lower().endswith(".tflite"):
+            raise ValueError(
+                "The wake bundle does not contain a valid microWakeWord package."
+            )
+        artifacts = oww.get("artifacts")
+        model_artifacts = [
+            row
+            for row in artifacts.values()
+            if isinstance(row, dict)
+            and text(row.get("file")).lower().endswith((".onnx", ".tflite"))
+        ] if isinstance(artifacts, dict) else []
+        if not model_artifacts:
+            raise ValueError("The wake bundle does not contain an openWakeWord model.")
+        return {
+            "wake_word": text(
+                payload.get("wake_word") or payload.get("label") or payload.get("key")
+            ),
+            "manifest_url": urljoin(url, manifest_ref),
+            "wake_model_revision": text(micro.get("manifest_sha256"))
+            or hashlib.sha256(raw).hexdigest(),
+            "oww_model_revision": hashlib.sha256(raw).hexdigest(),
+        }
+
+    async def async_set_wake_family_settings(
+        self,
+        family: str,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Save one family profile and update only matching satellites."""
+        token = text(family).lower()
+        if token not in WAKE_FAMILIES:
+            raise ValueError(f"Unsupported wake family: {family}")
+        incoming = resolve_wake_word_source_values(values)
+        incoming = {
+            key: value
+            for key, value in incoming.items()
+            if key in WAKE_FAMILY_SETTING_KEYS
+        }
+        current = self.wake_family_settings(token)
+        bundle_profile: dict[str, str] | None = None
+        if token == "mww":
+            incoming["wake_detector_mode"] = "mww"
+        mode = text(
+            incoming.get("wake_detector_mode")
+            or current.get("wake_detector_mode")
+        )
+        if token == "echo" and mode not in {"mww", "oww", "dual"}:
+            mode = "dual"
+        if token == "echo" and mode in {"oww", "dual"}:
+            oww_source = text(
+                incoming.get("oww_wake_word", current.get("oww_wake_word"))
+            ).lower()
+            oww_url = text(
+                incoming.get("oww_wake_word_url", current.get("oww_wake_word_url"))
+            )
+            if oww_source == "custom_url":
+                bundle_profile = await self._async_wake_bundle(oww_url)
+                incoming["oww_wake_word_url"] = oww_url
+                incoming["oww_model_revision"] = bundle_profile[
+                    "oww_model_revision"
+                ]
+                if mode == "dual":
+                    incoming.update(
+                        {
+                            "wake_word": "custom_url",
+                            "wake_word_url": bundle_profile["manifest_url"],
+                            "wake_model_asset_id": "",
+                            "wake_model_revision": bundle_profile[
+                                "wake_model_revision"
+                            ],
+                        }
+                    )
+            elif mode == "dual":
+                # Built-in Dual always pairs the two Hey Tater models. This
+                # prevents accidentally requiring two different phrases.
+                incoming.update(
+                    {
+                        "wake_word": "hey_tater",
+                        "wake_word_url": "",
+                        "wake_model_asset_id": "",
+                        "wake_model_revision": "",
+                        "oww_wake_word": "hey_tater",
+                        "oww_wake_word_url": "",
+                        "oww_model_revision": "",
+                    }
+                )
+        incoming["wake_detector_mode"] = "mww" if token == "mww" else mode
+        next_settings = normalize_wake_family_settings(
+            token,
+            {**current, **incoming},
+            base=normalize_settings(self.data.get("global_settings")),
+        )
+        families = self.data.setdefault("wake_family_settings", {})
+        families[token] = next_settings
+
+        verifier_phrase = ""
+        verifier_phrase_url = ""
+        custom_verifier_model = False
+        if (
+            next_settings.get("wake_oww_enabled")
+            and not next_settings.get("wake_mww_enabled")
+        ):
+            custom_verifier_model = (
+                next_settings.get("oww_wake_word") == "custom_url"
+            )
+            if custom_verifier_model:
+                verifier_phrase_url = text(
+                    next_settings.get("oww_wake_word_url")
+                )
+                verifier_phrase = normalize_phrase(
+                    (bundle_profile or {}).get("wake_word")
+                )
+        elif next_settings.get("wake_word") == "custom_url" and not text(
+            next_settings.get("wake_model_asset_id")
+        ):
+            custom_verifier_model = True
+            verifier_phrase_url = text(next_settings.get("wake_word_url"))
+            verifier_phrase = normalize_phrase(
+                (bundle_profile or {}).get("wake_word")
+            )
+            if not verifier_phrase:
+                verifier_phrase = await self._async_wake_phrase_from_url(
+                    verifier_phrase_url
+                )
+
+        changed_keys = {
+            key for key, value in next_settings.items() if value != current.get(key)
+        }
+        for runtime in self.runtimes.values():
+            if wake_family_for(
+                capabilities=runtime.capabilities,
+                board=runtime.board,
+            ) != token:
+                continue
+            if changed_keys:
+                overrides = runtime.record.get("overrides")
+                if isinstance(overrides, dict):
+                    runtime.record["overrides"] = {
+                        key: value
+                        for key, value in overrides.items()
+                        if key not in WAKE_FAMILY_SETTING_KEYS
+                    }
+            if verifier_phrase and verifier_phrase_url:
+                runtime.record["wake_verifier_phrase"] = verifier_phrase
+                runtime.record["wake_verifier_phrase_url"] = verifier_phrase_url
+            elif not custom_verifier_model or text(
+                runtime.record.get("wake_verifier_phrase_url")
+            ) != verifier_phrase_url:
+                runtime.record.pop("wake_verifier_phrase", None)
+                runtime.record.pop("wake_verifier_phrase_url", None)
+
+        await self.async_save()
+        connected = [
+            runtime
+            for runtime in self.runtimes.values()
+            if runtime.connected
+            and wake_family_for(
+                capabilities=runtime.capabilities,
+                board=runtime.board,
+            ) == token
+        ]
+        results = await asyncio.gather(
+            *(self.async_push_settings(runtime) for runtime in connected),
+            return_exceptions=True,
+        )
+        failed = [
+            runtime.name
+            for runtime, result in zip(connected, results, strict=True)
+            if result is not True
+        ]
+        for runtime in self.runtimes.values():
+            runtime.notify()
+        if failed:
+            raise RuntimeError(
+                "Wake settings were saved, but they could not be sent to: "
+                + ", ".join(failed)
+            )
+        return dict(next_settings)
+
     async def async_set_global_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         """Save global defaults and update every connected satellite."""
         values = resolve_wake_word_source_values(values)
@@ -1147,6 +1482,31 @@ class TaterSatelliteManager:
         }
         override_keys = self._global_override_keys(changed_keys)
         self.data["global_settings"] = next_settings
+        legacy_family_patch = {
+            key: value
+            for key, value in values.items()
+            if key in WAKE_FAMILY_SETTING_KEYS
+        }
+        if legacy_family_patch:
+            families = self.data.setdefault("wake_family_settings", {})
+            for family in sorted(WAKE_FAMILIES):
+                family_current = self.wake_family_settings(family)
+                family_patch = dict(legacy_family_patch)
+                if family == "mww":
+                    family_patch["wake_detector_mode"] = "mww"
+                elif (
+                    family_current.get("wake_detector_mode") == "dual"
+                    and family_patch.get("wake_word") == "custom_url"
+                    and "oww_wake_word_url" not in family_patch
+                ):
+                    # A legacy client only knows how to publish one MWW model;
+                    # keep Echo on that detector instead of pairing mismatched words.
+                    family_patch["wake_detector_mode"] = "mww"
+                families[family] = normalize_wake_family_settings(
+                    family,
+                    {**family_current, **family_patch},
+                    base=next_settings,
+                )
         if override_keys:
             for runtime in self.runtimes.values():
                 overrides = runtime.record.get("overrides")
@@ -1197,6 +1557,24 @@ class TaterSatelliteManager:
                 "wake_verifier_phrase_url": wake_word_url,
             }
         )
+        families = self.data.setdefault("wake_family_settings", {})
+        family_targets = ["mww"]
+        echo_current = self.wake_family_settings("echo")
+        if echo_current.get("wake_detector_mode") == "mww":
+            family_targets.append("echo")
+        for family in family_targets:
+            current_family = self.wake_family_settings(family)
+            families[family] = normalize_wake_family_settings(
+                family,
+                {
+                    **current_family,
+                    "wake_word": "custom_url",
+                    "wake_word_url": wake_word_url,
+                    "wake_model_revision": secrets.token_hex(16),
+                    "wake_model_asset_id": "",
+                },
+                base=self.data["global_settings"],
+            )
         wake_override_keys = {
             "wake_word",
             "wake_word_url",
@@ -1206,6 +1584,12 @@ class TaterSatelliteManager:
             "wake_verifier_phrase_url",
         }
         for runtime in self.runtimes.values():
+            runtime_family = wake_family_for(
+                capabilities=runtime.capabilities,
+                board=runtime.board,
+            )
+            if runtime_family not in family_targets:
+                continue
             overrides = runtime.record.get("overrides")
             if isinstance(overrides, dict):
                 runtime.record["overrides"] = {
@@ -1265,6 +1649,72 @@ class TaterSatelliteManager:
             for key, value in resolve_wake_word_source_values(values).items()
             if key not in _GLOBAL_WAKE_VERIFIER_KEYS
         }
+        wake_family = wake_family_for(
+            capabilities=runtime.capabilities,
+            board=runtime.board,
+        )
+        wake_change_keys = WAKE_FAMILY_SETTING_KEYS.intersection(device_values)
+        wake_changed = bool(wake_change_keys)
+        device_bundle_profile: dict[str, str] | None = None
+        if wake_changed and wake_family == "mww":
+            device_values["wake_detector_mode"] = "mww"
+            for key in (
+                "wake_oww_enabled",
+                "oww_wake_word",
+                "oww_wake_word_url",
+                "oww_model_revision",
+            ):
+                device_values.pop(key, None)
+        elif wake_changed:
+            candidate = {**base, **device_values}
+            mode = text(candidate.get("wake_detector_mode")).lower()
+            if mode not in {"mww", "oww", "dual"}:
+                mode = "dual"
+            device_values["wake_detector_mode"] = mode
+            pairing_keys = {
+                "wake_detector_mode",
+                "wake_word",
+                "wake_word_url",
+                "wake_model_asset_id",
+                "oww_wake_word",
+                "oww_wake_word_url",
+            }
+            if mode in {"oww", "dual"} and pairing_keys.intersection(
+                wake_change_keys
+            ):
+                oww_source = text(candidate.get("oww_wake_word")).lower()
+                oww_url = text(candidate.get("oww_wake_word_url"))
+                if oww_source == "custom_url":
+                    device_bundle_profile = await self._async_wake_bundle(oww_url)
+                    device_values["oww_wake_word_url"] = oww_url
+                    device_values["oww_model_revision"] = device_bundle_profile[
+                        "oww_model_revision"
+                    ]
+                    if mode == "dual":
+                        device_values.update(
+                            {
+                                "wake_word": "custom_url",
+                                "wake_word_url": device_bundle_profile[
+                                    "manifest_url"
+                                ],
+                                "wake_model_asset_id": "",
+                                "wake_model_revision": device_bundle_profile[
+                                    "wake_model_revision"
+                                ],
+                            }
+                        )
+                elif mode == "dual":
+                    device_values.update(
+                        {
+                            "wake_word": "hey_tater",
+                            "wake_word_url": "",
+                            "wake_model_asset_id": "",
+                            "wake_model_revision": "",
+                            "oww_wake_word": "hey_tater",
+                            "oww_wake_word_url": "",
+                            "oww_model_revision": "",
+                        }
+                    )
         if "wake_word_url" in device_values and text(
             device_values.get("wake_word_url")
         ) != text(base.get("wake_word_url")):
@@ -1278,27 +1728,42 @@ class TaterSatelliteManager:
         existing.update(patch)
         runtime.record["overrides"] = existing
         if {
+            "wake_detector_mode",
             "wake_word",
             "wake_word_url",
             "wake_model_asset_id",
+            "oww_wake_word",
+            "oww_wake_word_url",
         }.intersection(patch):
             effective = runtime.effective_settings()
-            if effective.get("wake_word") == "custom_url" and not text(
-                effective.get("wake_model_asset_id")
-            ):
-                phrase = await self._async_wake_phrase_from_url(
-                    text(effective.get("wake_word_url"))
+            oww_only = bool(effective.get("wake_oww_enabled")) and not bool(
+                effective.get("wake_mww_enabled")
+            )
+            wake_word = effective.get(
+                "oww_wake_word" if oww_only else "wake_word"
+            )
+            wake_url = text(
+                effective.get(
+                    "oww_wake_word_url" if oww_only else "wake_word_url"
                 )
+            )
+            uses_uploaded_mww = not oww_only and bool(
+                text(effective.get("wake_model_asset_id"))
+            )
+            if wake_word == "custom_url" and not uses_uploaded_mww:
+                phrase = normalize_phrase(
+                    (device_bundle_profile or {}).get("wake_word")
+                )
+                if not phrase and not oww_only:
+                    phrase = await self._async_wake_phrase_from_url(wake_url)
                 if not phrase and text(
                     runtime.record.get("wake_verifier_phrase_url")
-                ) == text(effective.get("wake_word_url")):
+                ) == wake_url:
                     phrase = normalize_phrase(
                         runtime.record.get("wake_verifier_phrase")
                     )
                 runtime.record["wake_verifier_phrase"] = phrase
-                runtime.record["wake_verifier_phrase_url"] = text(
-                    effective.get("wake_word_url")
-                )
+                runtime.record["wake_verifier_phrase_url"] = wake_url
             else:
                 runtime.record.pop("wake_verifier_phrase", None)
                 runtime.record.pop("wake_verifier_phrase_url", None)
@@ -1555,11 +2020,16 @@ class TaterSatelliteManager:
     def wake_verifier_phrase(self, runtime: SatelliteRuntime) -> str:
         """Resolve the current wake phrase without maintaining alias lists."""
         settings = runtime.effective_settings()
-        wake_word = text(settings.get("wake_word"))
+        oww_only = bool(settings.get("wake_oww_enabled")) and not bool(
+            settings.get("wake_mww_enabled")
+        )
+        wake_word = text(
+            settings.get("oww_wake_word") if oww_only else settings.get("wake_word")
+        )
         if wake_word and wake_word != "custom_url":
             return normalize_phrase(wake_word)
 
-        asset_id = text(settings.get("wake_model_asset_id"))
+        asset_id = "" if oww_only else text(settings.get("wake_model_asset_id"))
         assets = self.data.get("assets")
         asset = assets.get(asset_id) if asset_id and isinstance(assets, dict) else None
         if isinstance(asset, dict):
@@ -1567,7 +2037,11 @@ class TaterSatelliteManager:
             if phrase:
                 return phrase
 
-        effective_url = text(settings.get("wake_word_url"))
+        effective_url = text(
+            settings.get("oww_wake_word_url")
+            if oww_only
+            else settings.get("wake_word_url")
+        )
         device_phrase = normalize_phrase(runtime.record.get("wake_verifier_phrase"))
         device_phrase_url = text(runtime.record.get("wake_verifier_phrase_url"))
         if device_phrase and effective_url and effective_url == device_phrase_url:
@@ -1660,6 +2134,10 @@ class TaterSatelliteManager:
                 "pairing": self.trainer.pairing_snapshot(),
             },
             "global_settings": dict(self.data.get("global_settings") or {}),
+            "wake_family_settings": {
+                family: self.wake_family_settings(family)
+                for family in sorted(WAKE_FAMILIES)
+            },
             "settings_schema": _json_copy(SETTINGS_SCHEMA, []),
             "assets": assets,
             "stereo_pairs": self.media.list_pairs(),
@@ -1716,6 +2194,31 @@ class TaterSatelliteManager:
             runtime.notify()
             return
         if kind == "settings.changed":
+            reported = (
+                payload.get("settings")
+                if isinstance(payload.get("settings"), dict)
+                else payload
+            )
+            error = text(payload.get("error"))
+            ok = bool(payload.get("ok", not error))
+            if error or not ok:
+                runtime.settings_sync_state = "failed"
+                runtime.settings_sync_message = (
+                    error or "Satellite rejected the live settings."
+                )
+                runtime.add_log(
+                    "error",
+                    runtime.settings_sync_message,
+                    kind="settings.changed",
+                )
+            elif "wake_word" in reported:
+                # Full settings acknowledgements include wake_word. Small
+                # physical-control deltas must not overwrite sync diagnostics.
+                runtime.settings_sync_state = "confirmed"
+                runtime.settings_sync_message = (
+                    "Satellite confirmed the live settings."
+                )
+                runtime.settings_last_confirmed = time.time()
             self._adopt_reported_device_volume(runtime, payload)
             runtime.notify()
             return
@@ -1895,7 +2398,7 @@ class TaterSatelliteManager:
                     "timers": True,
                     "ota": True,
                     "media_player": True,
-                    "synchronized_media": True,
+                    "sendspin_source": True,
                     "stereo_pairs": True,
                     "intercom": True,
                 },

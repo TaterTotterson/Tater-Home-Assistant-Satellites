@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +92,29 @@ class GlobalSettingsView(HomeAssistantView):
         except (KeyError, ValueError, RuntimeError) as err:
             raise web.HTTPBadRequest(text=str(err)) from err
         return self.json({"ok": True, "settings": saved})
+
+
+class WakeFamilySettingsView(HomeAssistantView):
+    """Manage the shared ESP/MWW and Echo wake profiles."""
+
+    url = f"{API_BASE_PATH}/settings/wake-family/{{family}}"
+    name = "api:tater_satellite:settings_wake_family"
+    requires_auth = True
+
+    async def post(self, request: web.Request, family: str) -> web.Response:
+        """Save one capability-routed wake profile."""
+        body = await _json_body(request)
+        values = body.get("settings")
+        if not isinstance(values, dict):
+            values = body
+        try:
+            saved = await _manager(request).async_set_wake_family_settings(
+                family,
+                values,
+            )
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "family": family, "settings": saved})
 
 
 class DeviceSettingsView(HomeAssistantView):
@@ -273,62 +295,6 @@ class AssetFileView(HomeAssistantView):
                 "Cache-Control": "private, max-age=300",
             },
         )
-
-
-class SharedMediaView(HomeAssistantView):
-    """Serve the same signed media spool to every member of a group."""
-
-    url = f"{API_BASE_PATH}/media/shared/{{relay_id}}/{{filename}}"
-    name = "api:tater_satellite:shared_media"
-    requires_auth = False
-
-    async def get(
-        self, request: web.Request, relay_id: str, filename: str
-    ) -> web.StreamResponse:
-        relay = await _manager(request).media.async_shared_relay(
-            relay_id, str(request.query.get("token") or "")
-        )
-        if relay is None or filename != relay.filename or relay.path is None:
-            raise web.HTTPNotFound()
-        headers = {
-            "Content-Type": relay.media_type,
-            "Cache-Control": "private, no-store, max-age=0",
-            "X-Accel-Buffering": "no",
-        }
-        if relay.complete:
-            if relay.error:
-                raise web.HTTPBadGateway(text="Shared media source stopped unexpectedly")
-            return web.FileResponse(relay.path, headers=headers)
-
-        response = web.StreamResponse(headers=headers)
-        await response.prepare(request)
-        chunks = relay.chunks()
-        try:
-            async for chunk in chunks:
-                await response.write(chunk)
-        except ConnectionResetError:
-            pass
-        finally:
-            await chunks.aclose()
-        with contextlib.suppress(ConnectionResetError):
-            await response.write_eof()
-        return response
-
-    async def head(
-        self, request: web.Request, relay_id: str, filename: str
-    ) -> web.StreamResponse:
-        relay = await _manager(request).media.async_shared_relay(
-            relay_id, str(request.query.get("token") or "")
-        )
-        if relay is None or filename != relay.filename or relay.path is None:
-            raise web.HTTPNotFound()
-        headers = {
-            "Content-Type": relay.media_type,
-            "Cache-Control": "private, no-store, max-age=0",
-        }
-        if relay.complete:
-            headers["Content-Length"] = str(relay.bytes_written)
-        return web.Response(headers=headers)
 
 
 class WakeWordCatalogView(HomeAssistantView):
@@ -551,6 +517,7 @@ VIEWS = (
     ManageView,
     PairingView,
     GlobalSettingsView,
+    WakeFamilySettingsView,
     DeviceSettingsView,
     DeviceSettingsResetView,
     TrainerPairingView,
@@ -560,7 +527,6 @@ VIEWS = (
     TrainerRemoteUnlinkView,
     AssetUploadView,
     AssetFileView,
-    SharedMediaView,
     WakeWordCatalogView,
     FirmwareRefreshView,
     FirmwareInstallView,

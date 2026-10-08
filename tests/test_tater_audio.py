@@ -11,6 +11,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MEDIA_PATH = ROOT / "custom_components" / "tater_satellite" / "media.py"
+SENDSPIN_PATH = ROOT / "custom_components" / "tater_satellite" / "sendspin.py"
 SPEC = importlib.util.spec_from_file_location("tater_satellite_media", MEDIA_PATH)
 assert SPEC is not None and SPEC.loader is not None
 media = importlib.util.module_from_spec(SPEC)
@@ -18,7 +19,7 @@ SPEC.loader.exec_module(media)
 
 
 class TaterAudioTests(unittest.TestCase):
-    def test_pair_values_are_bounded_for_the_firmware_protocol(self) -> None:
+    def test_pair_values_are_bounded_for_sendspin_routing(self) -> None:
         row = media.TaterMediaCoordinator._normalize_pair(
             {
                 "name": "Office",
@@ -38,7 +39,7 @@ class TaterAudioTests(unittest.TestCase):
         self.assertEqual(row["left_volume_percent"], 100)
         self.assertEqual(row["right_volume_percent"], 0)
 
-    def test_bridge_exposes_media_players_and_sync_commands(self) -> None:
+    def test_bridge_uses_sendspin_and_removes_legacy_sync_protocol(self) -> None:
         const = (
             ROOT / "custom_components" / "tater_satellite" / "const.py"
         ).read_text()
@@ -49,14 +50,38 @@ class TaterAudioTests(unittest.TestCase):
             ROOT / "custom_components" / "tater_satellite" / "media_player.py"
         ).read_text()
         coordinator = MEDIA_PATH.read_text()
+        sendspin = SENDSPIN_PATH.read_text()
 
         self.assertIn("Platform.MEDIA_PLAYER", const)
-        self.assertIn("self.pending_requests", manager)
-        self.assertIn('"audio.clock.sync"', coordinator)
-        self.assertIn('"media.session.prepare"', coordinator)
-        self.assertIn('"media.session.commit"', coordinator)
-        self.assertIn('"media.session.adjust"', coordinator)
+        self.assertIn('"sendspin_source": True', manager)
+        self.assertIn('"output_channel_mode"', manager)
+        self.assertIn("class SendspinStream", sendspin)
+        self.assertIn('"stream/start"', sendspin)
+        self.assertIn('"stream/end"', sendspin)
         self.assertIn("MediaPlayerEntityFeature.GROUPING", player)
+        retired = (
+            "audio.clock.sync",
+            "media.session.prepare",
+            "media.session.commit",
+            "media.session.adjust",
+            "media.session.stop",
+        )
+        for command in retired:
+            self.assertNotIn(command, coordinator)
+            self.assertNotIn(command, manager)
+
+    def test_manifest_loads_home_assistant_ffmpeg(self) -> None:
+        import json
+
+        manifest = json.loads(
+            (
+                ROOT
+                / "custom_components"
+                / "tater_satellite"
+                / "manifest.json"
+            ).read_text()
+        )
+        self.assertIn("ffmpeg", manifest["dependencies"])
 
     def test_device_class_uses_stable_home_assistant_import(self) -> None:
         player_path = (
@@ -87,19 +112,20 @@ class TaterAudioTests(unittest.TestCase):
             / "frontend"
             / "tater-satellite-panel.js"
         ).read_text()
-        http = (ROOT / "custom_components" / "tater_satellite" / "http.py").read_text()
+        http = (
+            ROOT / "custom_components" / "tater_satellite" / "http.py"
+        ).read_text()
 
         self.assertIn('this.tabButton("audio", "Tater Audio")', panel)
         self.assertIn('this.api("POST", "stereo-pairs"', panel)
-        self.assertIn('class StereoPairView(', http)
-        self.assertIn('class StereoPairDeleteView(', http)
+        self.assertIn("class StereoPairView(", http)
+        self.assertIn("class StereoPairDeleteView(", http)
+        self.assertNotIn("SharedMediaView", http)
 
 
 class _FakeEntry:
     @staticmethod
     def async_create_background_task(_hass, coroutine, _name):
-        import asyncio
-
         return asyncio.create_task(coroutine)
 
 
@@ -108,82 +134,71 @@ class _FakeRuntime:
         self.device_id = device_id
         self.name = device_id.title()
         self.connected = True
-        self.server_base_url = "http://ha.local:8123"
+        self.remote = f"192.0.2.{1 if device_id == 'left' else 2}"
         self.media_session = {}
+        self.last_error = ""
         self.capabilities = {
-            "synchronized_media_sessions": True,
-            "media_playhead_telemetry": True,
-            "media_drift_correction": True,
-            "media_rate_slew": True,
-            "media_render_clock": True,
-            "audio_session_version": 4,
-            "media_sample_rate_hz": 48000,
-            "media_output_latency_frames": 480,
+            "sendspin_player": True,
+            "sendspin_version": 1,
+            "sendspin_output_channel_selection": True,
         }
-        self.requests = []
-        self.sent = []
 
     def effective_settings(self):
         return {"volume_percent": 80, "muted": False}
 
-    async def async_request(self, kind, payload, *, timeout):
-        self.requests.append((kind, payload, timeout))
-        if kind == "audio.clock.sync":
-            sent = int(payload["server_send_us"])
-            return {
-                "ok": True,
-                "satellite_receive_us": sent + 1000,
-                "satellite_send_us": sent + 1100,
-            }
-        if kind == "media.session.prepare":
-            return {
-                "ok": True,
-                "sample_rate_hz": 48000,
-                "output_latency_frames": 480,
-            }
-        return {"ok": True}
 
-    async def async_send(self, kind, payload):
-        self.sent.append((kind, payload))
-        return True
+class _FakeStream:
+    def __init__(self) -> None:
+        self.task = None
+        self.running = asyncio.Event()
+        self.release = asyncio.Event()
+        self.stopped = False
+
+    def bind_task(self, task) -> None:
+        self.task = task
+
+    async def run(self) -> None:
+        self.running.set()
+        await self.release.wait()
+
+    async def wait_started(self) -> None:
+        await self.running.wait()
+
+    async def stop(self) -> None:
+        self.stopped = True
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+            with self.assert_cancelled():
+                await self.task
+
+    @staticmethod
+    def assert_cancelled():
+        import contextlib
+
+        return contextlib.suppress(asyncio.CancelledError)
+
+    def position_seconds(self) -> float:
+        return 12.5
 
 
 class TaterAudioRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_single_satellite_still_receives_original_media_url(self) -> None:
-        runtime = _FakeRuntime("solo")
+    def _manager(self, *, pair: bool = False):
+        data = {"stereo_pairs": {}}
+        runtimes = {"left": _FakeRuntime("left"), "right": _FakeRuntime("right")}
+        if pair:
+            data["stereo_pairs"]["office"] = {
+                "id": "office",
+                "name": "Office",
+                "left_device_id": "left",
+                "right_device_id": "right",
+                "left_delay_ms": 15,
+                "right_delay_ms": 25,
+                "left_volume_percent": 90,
+                "right_volume_percent": 80,
+            }
         manager = SimpleNamespace(
-            runtimes={"solo": runtime}, entry=_FakeEntry(), hass=None
-        )
-        coordinator = media.TaterMediaCoordinator(manager)
-        manager.media = coordinator
-        try:
-            with mock.patch.object(coordinator, "_create_shared_relay") as create_relay:
-                await coordinator.async_play("solo", "http://ha.local/solo.mp3")
-            create_relay.assert_not_called()
-            prepares = [
-                payload for kind, payload, _timeout in runtime.requests
-                if kind == "media.session.prepare"
-            ]
-            self.assertEqual(prepares[0]["media"]["url"], "http://ha.local/solo.mp3")
-        finally:
-            await coordinator.async_shutdown()
-
-    async def test_saved_pair_uses_prepare_commit_and_left_right_routes(self) -> None:
-        manager = SimpleNamespace(
-            data={
-                "stereo_pairs": {
-                    "office": {
-                        "id": "office",
-                        "name": "Office",
-                        "left_device_id": "left",
-                        "right_device_id": "right",
-                    }
-                }
-            },
-            runtimes={
-                "left": _FakeRuntime("left"),
-                "right": _FakeRuntime("right"),
-            },
+            data=data,
+            runtimes=runtimes,
             entry=_FakeEntry(),
             hass=None,
         )
@@ -191,158 +206,92 @@ class TaterAudioRuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def save():
             return None
 
+        manager.setting_updates = []
+
+        async def set_device_settings(device_id, values):
+            manager.setting_updates.append((device_id, dict(values)))
+
         manager.async_save = save
-        manager.public_base_url = lambda: "http://ha.local:8123"
+        manager.async_set_device_settings = set_device_settings
         coordinator = media.TaterMediaCoordinator(manager)
         manager.media = coordinator
         coordinator.setup()
-        relay = SimpleNamespace(
-            id="shared-relay",
-            url_for=lambda base: f"{base}/api/tater/satellite/v1/media/shared/shared-relay/song.flac?token=one",
-        )
+        return manager, coordinator
+
+    async def test_single_satellite_uses_one_sendspin_stream(self) -> None:
+        manager, coordinator = self._manager()
+        stream = _FakeStream()
+        try:
+            with mock.patch.object(coordinator, "_new_stream", return_value=stream):
+                session = await coordinator.async_play(
+                    "left", "http://ha.local/solo.mp3"
+                )
+            self.assertEqual(session["state"], "playing")
+            self.assertEqual(session["routes"][0]["channel"], "stereo")
+            self.assertEqual(
+                manager.runtimes["left"].media_session["transport"], "sendspin"
+            )
+            self.assertEqual(coordinator.media_position("left"), 12.5)
+        finally:
+            await coordinator.async_shutdown()
+        self.assertTrue(stream.stopped)
+
+    async def test_saved_pair_routes_left_and_right_through_one_stream(self) -> None:
+        manager, coordinator = self._manager(pair=True)
+        first = _FakeStream()
+        second = _FakeStream()
         try:
             with mock.patch.object(
-                coordinator, "_create_shared_relay", new=mock.AsyncMock(return_value=relay)
-            ) as create_relay:
+                coordinator, "_new_stream", side_effect=[first, second]
+            ):
                 session = await coordinator.async_play(
                     "stereo:office", "http://ha.local/song.flac", title="Song"
                 )
-            create_relay.assert_awaited_once_with(
-                "http://ha.local/song.flac", None, ""
-            )
-            self.assertEqual(session["state"], "buffering")
-            self.assertEqual(session["shared_relay_id"], "shared-relay")
-            self.assertEqual(
-                [route["channel"] for route in session["routes"]],
-                ["left", "right"],
-            )
-            prepared_urls = []
-            for runtime in manager.runtimes.values():
-                kinds = [kind for kind, _payload, _timeout in runtime.requests]
-                self.assertEqual(kinds.count("audio.clock.sync"), 5)
-                self.assertIn("media.session.prepare", kinds)
-                self.assertIn("media.session.commit", kinds)
-                prepared_urls.extend(
-                    payload["media"]["url"]
-                    for kind, payload, _timeout in runtime.requests
-                    if kind == "media.session.prepare"
+                self.assertEqual(
+                    [route["channel"] for route in session["routes"]],
+                    ["left", "right"],
                 )
-            self.assertEqual(len(prepared_urls), 2)
-            self.assertEqual(prepared_urls[0], prepared_urls[1])
-            self.assertIn("/media/shared/shared-relay/", prepared_urls[0])
-
-            for runtime in manager.runtimes.values():
-                coordinator.handle_message(
-                    runtime,
-                    "media.session.started",
-                    {"group_id": session["group_id"], "session_id": session["session_id"]},
+                self.assertEqual(
+                    [route["trim_percent"] for route in session["routes"]],
+                    [90, 80],
                 )
-            self.assertEqual(session["state"], "playing")
+                self.assertEqual(coordinator.output_channel_mode("left"), "left")
+                self.assertEqual(coordinator.output_channel_mode("right"), "right")
 
-            with mock.patch.object(
-                coordinator, "_create_shared_relay", new=mock.AsyncMock(return_value=relay)
-            ) as reuse_relay:
                 await coordinator.async_seek("stereo:office", 5.0)
-            reuse_relay.assert_awaited_once_with(
-                "http://ha.local/song.flac", None, "shared-relay"
-            )
-            session = coordinator.session_for_target("stereo:office")
-            self.assertEqual(session["start_position_ms"], 5000)
-            for runtime in manager.runtimes.values():
-                prepares = [
-                    payload for kind, payload, _timeout in runtime.requests
-                    if kind == "media.session.prepare"
-                ]
-                self.assertEqual(len(prepares), 2)
-                self.assertEqual(prepares[1]["media"]["start_position_ms"], 5000)
-
-            for runtime in manager.runtimes.values():
-                coordinator.handle_message(
-                    runtime,
-                    "media.session.finished",
-                    {
-                        "group_id": session["group_id"],
-                        "session_id": session["session_id"],
-                        "ok": True,
-                    },
-                )
-            self.assertNotIn(session["group_id"], coordinator.sessions)
+                replacement = coordinator.session_for_target("stereo:office")
+                self.assertEqual(replacement["start_position_seconds"], 5.0)
+                self.assertTrue(first.stopped)
         finally:
             await coordinator.async_shutdown()
 
-    async def test_rebuffered_stereo_member_jumps_once_only_after_recovery(self) -> None:
-        now = media._monotonic_us()
-        left = _FakeRuntime("left")
-        right = _FakeRuntime("right")
-        manager = SimpleNamespace(
-            runtimes={"left": left, "right": right},
-            entry=_FakeEntry(),
-            hass=None,
-        )
-        coordinator = media.TaterMediaCoordinator(manager)
-        manager.media = coordinator
-        coordinator.sessions["group"] = {
-            "group_id": "group",
-            "session_id": "session",
-            "members": ["left", "right"],
-            "routes": [
-                {"device_id": "left", "channel": "left", "delay_ms": 0},
-                {"device_id": "right", "channel": "right", "delay_ms": 0},
-            ],
-            "clock_offsets_us": {"left": 0, "right": 0},
-            "clock_sync_us": now,
-            "audible_start_server_us": now - 1_000_000,
-            "start_position_frames": {"left": 0, "right": 0},
-            "phase_ema": {},
-            "phase_direction": {},
-            "phase_stable": {},
-            "pending_rejoin": {},
-            "playheads": {
-                "left": {
-                    "session_id": "session",
-                    "sample_rate_hz": 48000,
-                    "satellite_time_us": now,
-                    "rendered_frames": 48000,
-                    "rebuffering": False,
-                }
-            },
-            "finished": set(),
+    async def test_multiroom_standalone_routes_are_mono(self) -> None:
+        manager, coordinator = self._manager()
+        coordinator.entities = {
+            "left": SimpleNamespace(entity_id="media_player.left"),
+            "right": SimpleNamespace(entity_id="media_player.right"),
         }
-        stalled = {
-            "group_id": "group",
-            "session_id": "session",
-            "sample_rate_hz": 48000,
-            "satellite_time_us": now,
-            "rendered_frames": 0,
-            "rebuffering": True,
-            "rejoin_count": 0,
-        }
-        coordinator.handle_message(right, "media.session.playhead", stalled)
-        with mock.patch.object(media, "ADJUST_INTERVAL_SECONDS", 0.01):
-            task = asyncio.create_task(coordinator._sync_loop("group"))
-            coordinator.sync_tasks["group"] = task
-            try:
-                await asyncio.sleep(0.04)
-                self.assertFalse(
-                    [item for item in right.requests if item[0] == "media.session.adjust"]
+        await coordinator.async_join("left", ["media_player.right"])
+        targets, routes = coordinator._play_routes("left")
+        self.assertEqual(targets, ["left", "right"])
+        self.assertEqual([route["channel"] for route in routes], ["mono", "mono"])
+
+        stream = _FakeStream()
+        try:
+            with mock.patch.object(coordinator, "_new_stream", return_value=stream):
+                await coordinator.async_play(
+                    "left", "http://ha.local/group.flac"
                 )
-                coordinator.handle_message(
-                    right,
-                    "media.session.playhead",
-                    {**stalled, "rebuffering": False, "rejoin_count": 1},
-                )
-                await asyncio.sleep(0.08)
-                jumps = [
-                    payload for kind, payload, _timeout in right.requests
-                    if kind == "media.session.adjust" and payload["mode"] == "jump"
-                ]
-                self.assertEqual(len(jumps), 1)
-                self.assertEqual(jumps[0]["correction_frames"], 24_000)
-                self.assertNotIn(
-                    "right", coordinator.sessions["group"]["pending_rejoin"]
-                )
-            finally:
-                await coordinator.async_shutdown()
+            await coordinator.async_set_volume("left", 55)
+            self.assertEqual(
+                manager.setting_updates,
+                [
+                    ("left", {"volume_percent": 55}),
+                    ("right", {"volume_percent": 55}),
+                ],
+            )
+        finally:
+            await coordinator.async_shutdown()
 
 
 if __name__ == "__main__":

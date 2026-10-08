@@ -52,17 +52,21 @@ integration from **Devices & services**.
 - Announcements, continued conversations, timers, TTS playback, and diagnostics
 - Native Home Assistant media-player entities with URL and media-source music
   playback, seek, stop, mute, volume, and dynamic grouping
-- Saved left/right stereo-pair media players plus clock-synchronized multi-room
-  playback with firmware playhead drift correction
+- Saved left/right stereo-pair media players plus Sendspin-synchronized
+  multi-room playback
 - Secure six-digit first pairing followed by a per-device credential
-- Shared voice defaults and per-satellite settings for wake models, sensitivity,
-  wake sounds, trainer captures, conversation behavior, AEC, microphone mute,
-  LEDs, S3 Box screen brightness and night dimming, and firmware logging
+- Capability-routed wake profiles: ESP and MWW-only satellites use their own
+  microWakeWord settings, while Echo satellites can use MWW, OWW, or matched
+  Dual Wake Word detection
+- Shared voice defaults and per-satellite settings for sensitivity, wake sounds,
+  trainer captures, conversation behavior, AEC, microphone mute, LEDs, S3 Box
+  screen brightness and night dimming, and firmware logging
 - Per-satellite speaker volume with a main-card slider and a standard Home
   Assistant number entity
 - Official Tater Wake Word Catalog selection with versioned microWakeWord
   models shared with the main Tater app
-- Custom microWakeWord TFLite and WAV uploads stored inside Home Assistant
+- Custom microWakeWord TFLite uploads, trainer-produced MWW/OWW wake bundles,
+  and custom WAV wake sounds
 - Secure Wake Word Trainer pairing and automatic wake-word publishing
 - Board-aware OTA updates and browser USB recovery for Voice PE, Satellite1,
   Satellite1 Beta.1/rev4.1, ReSpeaker XVF3800, and ESP32-S3-BOX-3
@@ -89,20 +93,18 @@ using the physical setup-reset gesture documented in the
 
 ## Tater Audio, stereo, and multi-room playback
 
-Current Tater Native, Tater Echo, and Tater ThirdReality firmware expose the
-same synchronized media-session protocol. The bridge turns every compatible
-satellite into a `media_player` entity and coordinates its firmware render
-clock directly.
+Current Tater Native, Tater Echo, and Tater ThirdReality firmware expose a
+Sendspin v1 player on port `8928`. The bridge turns every compatible satellite
+into a `media_player` entity, decodes each Home Assistant media URL once, and
+publishes one timestamped 48 kHz stereo PCM timeline to every selected player.
+Sendspin owns clock selection, buffering, and drift correction on the devices.
 
 Open **Tater Satellites -> Tater Audio** to save a stereo pair. The pair appears
-as its own media player. For stereo pairs and synchronized groups, the bridge
-opens the source URL once and serves the same token-protected audio stream to
-every member. It routes the left and right channels, schedules one future
-audible start, and uses playhead telemetry to correct drift. After a member
-reconnects from rebuffering, the bridge waits for decoder recovery before one
-bounded catch-up correction. A seek within a pair keeps the same shared source.
-Per-channel trim and placement delay are available when a room needs them.
-Single-satellite playback still uses its original media URL directly.
+as its own media player. The bridge assigns persistent left/right Sendspin
+output modes and keeps per-channel trim and placement delay available for room
+calibration. Single speakers, saved pairs, and dynamic groups all use the same
+Sendspin transport. Seeking starts a new synchronized timeline at the requested
+source position.
 
 Use Home Assistant's **Join media players** action to group any Tater satellite
 or saved stereo pair under a group leader. Standalone satellites in such a
@@ -110,13 +112,14 @@ group play mono, while saved pairs retain left/right routing. Playing media on
 any member controls the synchronized group. **Unjoin media player** returns it
 to independent playback.
 
-For Music Assistant, add its **Home Assistant Plugin** and **Home Assistant
-Media Players** provider, then enable the Tater media-player entities there.
-Music Assistant can hand the bridge its flow URL while the bridge remains the
-owner of Tater channel routing, scheduled starts, and ongoing clock correction.
+Music Assistant can discover updated satellites directly as Sendspin players.
+That is the preferred route when Music Assistant owns playback. The bridge's
+Home Assistant media-player entities remain available for Home Assistant media
+services, saved stereo pairs, and groups; avoid enabling both representations
+of the same physical satellite in one Music Assistant group.
 
-Older firmware without audio-session version 2 or newer remains available for
-voice use, but music playback reports that a firmware update is required.
+Older firmware without Sendspin v1 remains available for voice use, but music
+playback reports that a firmware update is required.
 
 ## Push-to-talk intercom
 
@@ -133,9 +136,26 @@ ducked for the message and then resumes. The bridge also fires a
 states so Home Assistant automations can observe the feature without receiving
 the recorded audio.
 
-## Choose a catalog wake word
+## Configure wake words by satellite family
 
-Open **Tater Satellites -> Voice Defaults**, set **Wake word** to
+Open **Tater Satellites -> Voice Defaults**. The bridge keeps two independent
+wake profiles and routes them from each connected satellite's advertised
+capabilities:
+
+- **ESP satellites** use microWakeWord. Choose built-in Hey Tater, a catalog
+  model, an uploaded model, or a custom package URL.
+- **Echo satellites** can use microWakeWord, openWakeWord, or **Dual Wake Word**.
+  Dual mode requires both detectors to agree before the microphone opens.
+
+For a custom Echo Dual wake word, select a `.wake-bundle.json` produced by a
+Tater Wake Word Trainer. Home Assistant validates the bundle and derives both
+matching models from that one selection, so MWW and OWW cannot accidentally be
+configured for different phrases. Older firmware that does not advertise OWW
+support continues to receive only its MWW-compatible settings.
+
+## Choose a catalog microWakeWord
+
+In the ESP profile, or while an Echo uses MWW-only mode, set **Wake word** to
 **Tater Wake Word Catalog**, and choose any versioned model from the official
 catalog. Home Assistant validates that the selected JSON package belongs to the
 Tater catalog, sends its URL through the existing custom-model firmware path,
@@ -157,10 +177,12 @@ trained wake word directly to every Home Assistant-connected Tater satellite:
    temporary code.
 
 After pairing, the trainer stores a device-specific credential and Home
-Assistant stores only its hash. A published wake-word URL must belong to the
+Assistant stores only its hash. A published microWakeWord URL must belong to the
 linked trainer and point to its trained wake-word API. Publishing updates the
-shared wake word, clears conflicting per-satellite wake-word overrides, and
-pushes the new model URL and revision to every connected satellite.
+ESP/MWW profile and any Echo profile currently using MWW-only mode, clears only
+the conflicting per-satellite overrides for those families, and pushes the new
+model live. Echo Dual and OWW profiles remain unchanged until their matching
+wake bundle is selected.
 
 ## STT wake verification
 

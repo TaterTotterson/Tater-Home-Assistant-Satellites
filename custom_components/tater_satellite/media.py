@@ -1,4 +1,4 @@
-"""Synchronized music playback for Tater satellites."""
+"""Sendspin music playback, stereo pairs, and groups for Tater satellites."""
 
 from __future__ import annotations
 
@@ -6,11 +6,8 @@ import asyncio
 import contextlib
 import logging
 import secrets
-import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from .manager import SatelliteRuntime, TaterSatelliteManager
@@ -18,21 +15,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 STEREO_PREFIX = "stereo:"
-CLOCK_PROBE_COUNT = 5
-START_LEAD_MS = 750
-CLOCK_REFRESH_SECONDS = 60.0
-ADJUST_INTERVAL_SECONDS = 2.0
-ADJUST_THRESHOLD_FRAMES = 48
-ADJUST_MAX_FRAMES = 96
-ADJUST_SETTLE_MS = 4000
-STARTUP_SECONDS = 10.0
-STARTUP_THRESHOLD_FRAMES = 24
-STARTUP_MAX_FRAMES = 240
-STARTUP_SETTLE_MS = 2000
-PHASE_EMA_ALPHA = 0.25
-PHASE_STABLE_SAMPLES = 2
-OUTPUT_LATENCY_MAX_FRAMES = 24_000
-OUTPUT_GUARD_MS = 250
+SENDSPIN_PORT = 8928
 
 
 def _text(value: Any) -> str:
@@ -50,10 +33,6 @@ def _clamp(value: Any, minimum: int, maximum: int, default: int = 0) -> int:
     return max(minimum, min(maximum, _integer(value, default)))
 
 
-def _monotonic_us() -> int:
-    return time.monotonic_ns() // 1000
-
-
 def _pair_id(value: Any) -> str:
     token = _text(value).lower()
     if token.startswith(STEREO_PREFIX):
@@ -62,46 +41,15 @@ def _pair_id(value: Any) -> str:
 
 
 class TaterMediaCoordinator:
-    """Coordinate persistent URL playback across firmware render clocks."""
+    """Coordinate Home Assistant media players through one Sendspin timeline."""
 
     def __init__(self, manager: TaterSatelliteManager) -> None:
         self.manager = manager
         self.sessions: dict[str, dict[str, Any]] = {}
-        self.sync_tasks: dict[str, asyncio.Task[None]] = {}
         self.entities: dict[str, Any] = {}
         self.dynamic_groups: dict[str, list[str]] = {}
         self._pair_factory: Callable[[dict[str, Any]], Any] | None = None
         self._pair_adder: Callable[[list[Any]], None] | None = None
-        self._shared_media_store: Any = None
-
-    def _shared_store(self):
-        if self._shared_media_store is None:
-            from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
-            from .shared_media import SharedMediaStore
-
-            self._shared_media_store = SharedMediaStore(
-                async_get_clientsession(self.manager.hass),
-                Path(self.manager.hass.config.path("tater_satellite", "media_relay")),
-            )
-        return self._shared_media_store
-
-    async def _create_shared_relay(
-        self, source_url: str, duration: float | None, reuse_relay_id: str
-    ):
-        store = self._shared_store()
-        if reuse_relay_id:
-            relay = await store.reuse(reuse_relay_id, source_url)
-            if relay is not None:
-                return relay
-        filename = Path(unquote(urlsplit(source_url).path)).name or "media.bin"
-        return await store.create(source_url, filename, duration)
-
-    async def async_shared_relay(self, relay_id: str, token: str):
-        """Resolve a signed firmware media request without exposing the source URL."""
-        if self._shared_media_store is None:
-            return None
-        return await self._shared_media_store.get(relay_id, token)
 
     def setup(self) -> None:
         """Normalize stored stereo-pair records."""
@@ -121,20 +69,10 @@ class TaterMediaCoordinator:
         self.manager.data["stereo_pairs"] = normalized
 
     async def async_shutdown(self) -> None:
-        """Stop coordinator-owned tasks and fail outstanding requests."""
+        """Stop every coordinator-owned Sendspin stream."""
         for group_id in list(self.sessions):
             await self._stop_group(group_id, reason="bridge_shutdown")
-        tasks = list(self.sync_tasks.values())
-        self.sync_tasks.clear()
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
         self.sessions.clear()
-        if self._shared_media_store is not None:
-            await self._shared_media_store.close()
-            self._shared_media_store = None
 
     @staticmethod
     def _normalize_pair(value: dict[str, Any], pair_id: str) -> dict[str, Any]:
@@ -154,8 +92,59 @@ class TaterMediaCoordinator:
             ),
         }
 
+    @staticmethod
+    def _supports_sendspin(
+        runtime: SatelliteRuntime, *, channel_selection: bool = False
+    ) -> bool:
+        caps = runtime.capabilities
+        supported = bool(
+            caps.get("sendspin_player")
+            and _integer(caps.get("sendspin_version"), 0) >= 1
+        )
+        if channel_selection:
+            supported = supported and bool(
+                caps.get("sendspin_output_channel_selection")
+            )
+        return supported
+
+    def output_channel_mode(self, device_id: str) -> str:
+        """Return the persistent Sendspin output route for one satellite."""
+        for pair in self.list_pairs():
+            if pair["left_device_id"] == device_id:
+                return "left"
+            if pair["right_device_id"] == device_id:
+                return "right"
+        return "stereo"
+
+    async def _push_output_modes(self, device_ids: set[str]) -> None:
+        """Apply changed pair channel assignments to connected firmware."""
+        push = getattr(self.manager, "async_push_settings", None)
+        if not callable(push):
+            return
+        connected = [
+            runtime
+            for device_id in sorted(device_ids)
+            if (runtime := self.manager.runtimes.get(device_id)) is not None
+            and runtime.connected
+        ]
+        if not connected:
+            return
+        results = await asyncio.gather(
+            *(push(runtime) for runtime in connected), return_exceptions=True
+        )
+        failed = [
+            runtime.name
+            for runtime, result in zip(connected, results, strict=True)
+            if result is not True
+        ]
+        if failed:
+            raise RuntimeError(
+                "Stereo pair was saved, but its Sendspin channel could not be "
+                "sent to: " + ", ".join(failed)
+            )
+
     def list_pairs(self) -> list[dict[str, Any]]:
-        """Return saved stereo pairs with live readiness."""
+        """Return saved stereo pairs with live Sendspin readiness."""
         pairs = self.manager.data.get("stereo_pairs")
         if not isinstance(pairs, dict):
             return []
@@ -168,7 +157,8 @@ class TaterMediaCoordinator:
             row["ready"] = all(
                 (runtime := self.manager.runtimes.get(device_id)) is not None
                 and runtime.connected
-                and self._supports_synchronized_media(runtime)
+                and self._supports_sendspin(runtime, channel_selection=True)
+                and bool(runtime.remote)
                 for device_id in members
             )
             row["members"] = [
@@ -198,11 +188,9 @@ class TaterMediaCoordinator:
     async def async_save_pair(
         self, values: dict[str, Any], pair_id: str = ""
     ) -> dict[str, Any]:
-        """Create or update a stereo pair."""
+        """Create or update a stereo pair and push its Sendspin channel modes."""
         normalized_id = _pair_id(pair_id) or secrets.token_hex(6)
         row = self._normalize_pair(values, normalized_id)
-        if not row["name"]:
-            raise ValueError("Stereo pair name is required")
         left = row["left_device_id"]
         right = row["right_device_id"]
         if left not in self.manager.runtimes or right not in self.manager.runtimes:
@@ -221,8 +209,18 @@ class TaterMediaCoordinator:
                     "Each satellite can belong to only one saved stereo pair"
                 )
         pairs = self.manager.data.setdefault("stereo_pairs", {})
+        previous = pairs.get(normalized_id)
+        affected = {left, right}
+        if isinstance(previous, dict):
+            affected.update(
+                {
+                    _text(previous.get("left_device_id")),
+                    _text(previous.get("right_device_id")),
+                }
+            )
         pairs[normalized_id] = row
         await self.manager.async_save()
+        await self._push_output_modes({value for value in affected if value})
         target = row["target"]
         entity = self.entities.get(target)
         if entity is not None and hasattr(entity, "update_pair"):
@@ -232,17 +230,21 @@ class TaterMediaCoordinator:
         return dict(row)
 
     async def async_remove_pair(self, pair_id: str) -> bool:
-        """Remove a saved stereo pair."""
+        """Remove a saved pair and return its members to stereo output."""
         pairs = self.manager.data.get("stereo_pairs")
         token = _pair_id(pair_id)
         if not isinstance(pairs, dict) or token not in pairs:
             raise KeyError("Stereo pair not found")
+        pair = dict(pairs[token])
         target = f"{STEREO_PREFIX}{token}"
         with contextlib.suppress(Exception):
             await self.async_stop(target)
         pairs.pop(token)
         self._remove_target_from_groups(target)
         await self.manager.async_save()
+        await self._push_output_modes(
+            {pair["left_device_id"], pair["right_device_id"]}
+        )
         entity = self.entities.get(target)
         if entity is not None and getattr(entity, "hass", None) is not None:
             await entity.async_remove(force_remove=True)
@@ -315,7 +317,7 @@ class TaterMediaCoordinator:
         return [entity_id for entity_id in entity_ids if entity_id]
 
     async def async_join(self, leader: str, member_entity_ids: list[str]) -> None:
-        """Create a synchronized mono group from Home Assistant entities."""
+        """Create a Sendspin-synchronized group from Home Assistant entities."""
         members = [leader]
         for entity_id in member_entity_ids:
             target = self.target_from_entity_id(entity_id)
@@ -379,68 +381,52 @@ class TaterMediaCoordinator:
         routes: list[dict[str, Any]] = []
         for item in targets:
             routes.extend(self._routes_for_target(item))
-        # Standalone satellites reproduce both channels. Satellites added to a
-        # multi-room group use mono while explicit stereo pairs retain L/R.
+        # A standalone speaker in a multi-room group gets a mono fold-down.
+        # Saved stereo pairs keep their persistent left/right output modes.
         if len(targets) > 1:
             for route in routes:
                 if route["channel"] == "stereo":
                     route["channel"] = "mono"
         return targets, routes
 
-    @staticmethod
-    def _supports_synchronized_media(runtime: SatelliteRuntime) -> bool:
-        caps = runtime.capabilities
-        return bool(
-            caps.get("synchronized_media_sessions")
-            and caps.get("media_playhead_telemetry")
-            and caps.get("media_drift_correction")
-            and _integer(caps.get("audio_session_version"), 0) >= 2
-        )
+    def _ffmpeg_binary(self) -> str:
+        from homeassistant.components.ffmpeg import get_ffmpeg_manager
 
-    async def _clock_probe(self, runtime: SatelliteRuntime) -> dict[str, Any]:
-        best: dict[str, Any] = {}
-        for _index in range(CLOCK_PROBE_COUNT):
-            server_send_us = _monotonic_us()
-            try:
-                result = await runtime.async_request(
-                    "audio.clock.sync",
-                    {"server_send_us": server_send_us},
-                    timeout=2.0,
-                )
-            except (RuntimeError, TimeoutError):
-                continue
-            server_receive_us = _monotonic_us()
-            satellite_receive_us = _integer(result.get("satellite_receive_us"))
-            satellite_send_us = _integer(result.get("satellite_send_us"))
-            if (
-                not result.get("ok")
-                or satellite_receive_us <= 0
-                or satellite_send_us < satellite_receive_us
-            ):
-                continue
-            processing_us = satellite_send_us - satellite_receive_us
-            round_trip_us = max(
-                0, server_receive_us - server_send_us - processing_us
-            )
-            sample = {
-                "device_id": runtime.device_id,
-                "offset_us": round(
-                    (
-                        (satellite_receive_us - server_send_us)
-                        + (satellite_send_us - server_receive_us)
-                    )
-                    / 2
-                ),
-                "round_trip_us": round_trip_us,
+        return _text(get_ffmpeg_manager(self.manager.hass).binary)
+
+    def _new_stream(
+        self,
+        session: dict[str, Any],
+        routes: list[dict[str, Any]],
+        runtimes: dict[str, SatelliteRuntime],
+    ) -> Any:
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+        from .sendspin import SendspinStream
+
+        targets = [
+            {
+                **route,
+                "host": runtimes[route["device_id"]].remote,
+                "port": SENDSPIN_PORT,
             }
-            if not best or round_trip_us < _integer(best.get("round_trip_us")):
-                best = sample
-            await asyncio.sleep(0)
-        if not best:
-            raise RuntimeError(
-                f"Could not synchronize the playback clock for {runtime.name}"
-            )
-        return best
+            for route in routes
+        ]
+
+        async def finished(error: str) -> None:
+            await self._stream_finished(session["group_id"], error)
+
+        return SendspinStream(
+            async_get_clientsession(self.manager.hass),
+            self._ffmpeg_binary(),
+            session["media_url"],
+            targets,
+            group_id=session["group_id"],
+            group_name=session["title"] or "Tater Audio",
+            start_position_seconds=session["start_position_seconds"],
+            duration_seconds=session["duration"],
+            on_finished=finished,
+        )
 
     async def async_play(
         self,
@@ -454,9 +440,8 @@ class TaterMediaCoordinator:
         image_url: str = "",
         duration: float | None = None,
         position_seconds: float = 0.0,
-        reuse_relay_id: str = "",
     ) -> dict[str, Any]:
-        """Prepare and start one clock-synchronized media session."""
+        """Start one Sendspin timeline for a player, pair, or group."""
         if not _text(media_url):
             raise ValueError("A playable media URL is required")
         targets, routes = self._play_routes(target)
@@ -467,9 +452,15 @@ class TaterMediaCoordinator:
                 raise RuntimeError(
                     f"{runtime.name if runtime else route['device_id']} is offline"
                 )
-            if not self._supports_synchronized_media(runtime):
+            if not self._supports_sendspin(
+                runtime, channel_selection=route["channel"] in {"left", "right"}
+            ):
                 raise RuntimeError(
-                    f"Update {runtime.name} firmware to enable Tater Audio"
+                    f"Update {runtime.name} firmware to enable Sendspin audio"
+                )
+            if not _text(runtime.remote):
+                raise RuntimeError(
+                    f"{runtime.name} has no reachable Sendspin address"
                 )
             runtimes[runtime.device_id] = runtime
 
@@ -481,51 +472,30 @@ class TaterMediaCoordinator:
         }
         for group_id in overlapping:
             if group_id:
-                await self._stop_group(
-                    group_id, reason="replaced", keep_relay_id=reuse_relay_id
-                )
+                await self._stop_group(group_id, reason="replaced")
 
-        relay = None
-        if len(routes) > 1:
-            if not media_url.lower().startswith(("http://", "https://")):
-                raise ValueError("Synchronized group playback requires an HTTP media URL")
-            relay = await self._create_shared_relay(media_url, duration, reuse_relay_id)
-
-        session_id = secrets.token_hex(12)
         group_id = secrets.token_hex(6)
-        base_volume = self.volume_percent(target)
-        start_position_ms = max(0, round(float(position_seconds or 0) * 1000))
-        session = {
+        try:
+            normalized_duration = (
+                max(0.0, float(duration)) if duration is not None else None
+            )
+        except (TypeError, ValueError):
+            normalized_duration = None
+        session: dict[str, Any] = {
             "group_id": group_id,
-            "session_id": session_id,
             "leader_target": target,
             "targets": targets,
             "routes": routes,
             "members": list(runtimes),
             "media_url": media_url,
-            "shared_relay_id": relay.id if relay is not None else "",
             "content_type": _text(content_type) or "music",
             "title": _text(title),
             "artist": _text(artist),
             "album": _text(album),
             "image_url": _text(image_url),
-            "duration": duration,
-            "volume_percent": base_volume,
-            "start_position_ms": start_position_ms,
+            "duration": normalized_duration,
+            "start_position_seconds": max(0.0, float(position_seconds or 0)),
             "state": "buffering",
-            "created_us": _monotonic_us(),
-            "playheads": {},
-            "pending_rejoin": {},
-            "finished": set(),
-            "phase_ema": {},
-            "phase_direction": {},
-            "phase_stable": {},
-            "clock_offsets_us": {},
-            "clock_round_trip_us": {},
-            "clock_sync_us": 0,
-            "last_adjust_us": 0,
-            "actual_starts_us": {},
-            "startup_realign_scheduled": False,
         }
         self.sessions[group_id] = session
         for route in routes:
@@ -533,193 +503,73 @@ class TaterMediaCoordinator:
             runtime.media_session = {
                 "active": True,
                 "state": "buffering",
-                "session_id": session_id,
                 "group_id": group_id,
                 "channel": route["channel"],
+                "transport": "sendspin",
             }
         self.notify()
 
         try:
-            clocks = await asyncio.gather(
-                *(self._clock_probe(runtime) for runtime in runtimes.values())
+            stream = self._new_stream(session, routes, runtimes)
+            session["stream"] = stream
+            task = self.manager.entry.async_create_background_task(
+                self.manager.hass,
+                stream.run(),
+                f"tater_sendspin_{group_id}",
             )
-            clock_by_id = {row["device_id"]: row for row in clocks}
-            session["clock_offsets_us"] = {
-                device_id: _integer(row.get("offset_us"))
-                for device_id, row in clock_by_id.items()
-            }
-            session["clock_round_trip_us"] = {
-                device_id: _integer(row.get("round_trip_us"))
-                for device_id, row in clock_by_id.items()
-            }
-            session["clock_sync_us"] = _monotonic_us()
-
-            async def prepare(route: dict[str, Any]) -> dict[str, Any]:
-                runtime = runtimes[route["device_id"]]
-                volume = round(base_volume * route["trim_percent"] / 100)
-                result = await runtime.async_request(
-                    "media.session.prepare",
-                    {
-                        "session_id": session_id,
-                        "group_id": group_id,
-                        "media": {
-                            "url": (
-                                relay.url_for(
-                                    runtime.server_base_url
-                                    or self.manager.public_base_url()
-                                )
-                                if relay is not None
-                                else media_url
-                            ),
-                            "volume_percent": volume,
-                            "start_position_ms": start_position_ms,
-                            "loop": False,
-                            "content_type": session["content_type"],
-                            "title": session["title"],
-                            "artist": session["artist"],
-                            "album": session["album"],
-                        },
-                        "routing": {"channel": route["channel"]},
-                    },
-                    timeout=min(60.0, max(15.0, 8.0 + start_position_ms / 15000)),
-                )
-                if not result.get("ok"):
-                    raise RuntimeError(
-                        _text(result.get("error"))
-                        or f"{runtime.name} could not prepare the audio"
-                    )
-                return result
-
-            prepared = await asyncio.gather(*(prepare(route) for route in routes))
-            prepared_by_id = {
-                route["device_id"]: result
-                for route, result in zip(routes, prepared, strict=True)
-            }
-            latency_us: dict[str, int] = {}
-            sample_rates: dict[str, int] = {}
-            for device_id, runtime in runtimes.items():
-                result = prepared_by_id[device_id]
-                sample_rate = max(
-                    1,
-                    _integer(
-                        result.get("sample_rate_hz"),
-                        _integer(
-                            runtime.capabilities.get("media_sample_rate_hz"), 48000
-                        ),
-                    ),
-                )
-                latency_frames = _clamp(
-                    result.get("output_latency_frames"),
-                    0,
-                    OUTPUT_LATENCY_MAX_FRAMES,
-                    _integer(
-                        runtime.capabilities.get("media_output_latency_frames"), 0
-                    ),
-                )
-                sample_rates[device_id] = sample_rate
-                latency_us[device_id] = round(latency_frames * 1_000_000 / sample_rate)
-            lead_ms = max(
-                START_LEAD_MS,
-                max(latency_us.values(), default=0) // 1000 + OUTPUT_GUARD_MS,
-            )
-            start_server_us = _monotonic_us() + lead_ms * 1000
-            session["audible_start_server_us"] = start_server_us
-            session["sample_rates"] = sample_rates
-            session["latency_us"] = latency_us
-            session["startup_realign_supported"] = all(
-                runtime.capabilities.get("media_startup_realign")
-                for runtime in runtimes.values()
-            )
-            session["start_position_frames"] = {
-                device_id: round(start_position_ms * rate / 1000)
-                for device_id, rate in sample_rates.items()
-            }
-
-            async def commit(route: dict[str, Any]) -> dict[str, Any]:
-                runtime = runtimes[route["device_id"]]
-                audible_at_us = (
-                    start_server_us
-                    + clock_by_id[runtime.device_id]["offset_us"]
-                    + route["delay_ms"] * 1000
-                )
-                result = await runtime.async_request(
-                    "media.session.commit",
-                    {
-                        "session_id": session_id,
-                        "group_id": group_id,
-                        "start_at_us": audible_at_us - latency_us[runtime.device_id],
-                        "audible_start_at_us": audible_at_us,
-                    },
-                    timeout=3.0,
-                )
-                if not result.get("ok"):
-                    raise RuntimeError(
-                        _text(result.get("error"))
-                        or f"{runtime.name} rejected synchronized playback"
-                    )
-                return result
-
-            await asyncio.gather(*(commit(route) for route in routes))
+            stream.bind_task(task)
+            await stream.wait_started()
         except Exception:
             await self._stop_group(group_id, reason="start_failed")
             raise
 
-        task = self.manager.entry.async_create_background_task(
-            self.manager.hass,
-            self._sync_loop(group_id),
-            f"tater_media_sync_{group_id}",
-        )
-        self.sync_tasks[group_id] = task
+        if group_id not in self.sessions:
+            raise RuntimeError("Sendspin playback ended before it could start")
+        session["state"] = "playing"
+        for runtime in runtimes.values():
+            runtime.media_session["state"] = "playing"
         self.notify()
         return session
 
-    async def _stop_group(
-        self, group_id: str, *, reason: str, keep_relay_id: str = ""
-    ) -> None:
+    async def _stream_finished(self, group_id: str, error: str) -> None:
         session = self.sessions.pop(group_id, None)
-        task = self.sync_tasks.pop(group_id, None)
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
         if not isinstance(session, dict):
             return
-        session_id = _text(session.get("session_id"))
-        members = list(session.get("members") or [])
-        await asyncio.gather(
-            *(
-                runtime.async_send(
-                    "media.session.stop",
-                    {"session_id": session_id, "reason": reason},
-                )
-                for device_id in members
-                if (runtime := self.manager.runtimes.get(device_id)) is not None
-                and runtime.connected
-            ),
-            return_exceptions=True,
-        )
-        for device_id in members:
+        for device_id in session.get("members") or []:
+            runtime = self.manager.runtimes.get(device_id)
+            if runtime is None:
+                continue
+            if _text(runtime.media_session.get("group_id")) == group_id:
+                runtime.media_session = {}
+            if error:
+                runtime.last_error = error
+        self.notify()
+
+    async def _stop_group(self, group_id: str, *, reason: str) -> None:
+        del reason
+        session = self.sessions.pop(group_id, None)
+        if not isinstance(session, dict):
+            return
+        stream = session.get("stream")
+        if stream is not None:
+            await stream.stop()
+        for device_id in session.get("members") or []:
             runtime = self.manager.runtimes.get(device_id)
             if (
                 runtime is not None
-                and _text(runtime.media_session.get("session_id")) == session_id
+                and _text(runtime.media_session.get("group_id")) == group_id
             ):
                 runtime.media_session = {}
-        relay_id = _text(session.get("shared_relay_id"))
-        if (
-            relay_id
-            and relay_id != keep_relay_id
-            and self._shared_media_store is not None
-        ):
-            await self._shared_media_store.release(relay_id)
         self.notify()
 
     async def async_stop(self, target: str) -> None:
-        """Stop the session controlled by a logical player."""
+        """Stop the Sendspin session controlled by a logical player."""
         session = self.session_for_target(target)
         if session:
             await self._stop_group(_text(session.get("group_id")), reason="user_stop")
 
     async def async_seek(self, target: str, position: float) -> None:
-        """Restart an active URL session at a requested position."""
+        """Restart an active Sendspin source at a requested position."""
         session = dict(self.session_for_target(target))
         if not session:
             raise RuntimeError("No active media session to seek")
@@ -733,7 +583,6 @@ class TaterMediaCoordinator:
             image_url=_text(session.get("image_url")),
             duration=session.get("duration"),
             position_seconds=max(0.0, float(position)),
-            reuse_relay_id=_text(session.get("shared_relay_id")),
         )
 
     def session_for_target(self, target: str) -> dict[str, Any]:
@@ -745,10 +594,17 @@ class TaterMediaCoordinator:
                 return session
         return {}
 
-    def volume_percent(self, target: str) -> int:
+    def media_position(self, target: str) -> float | None:
+        """Return the source position derived from the Sendspin timeline."""
         session = self.session_for_target(target)
-        if session:
-            return _clamp(session.get("volume_percent"), 0, 100, 80)
+        if not session:
+            return None
+        stream = session.get("stream")
+        if stream is None:
+            return float(session.get("start_position_seconds") or 0)
+        return float(stream.position_seconds())
+
+    def volume_percent(self, target: str) -> int:
         routes = self._routes_for_target(target)
         volumes = [
             _clamp(
@@ -777,38 +633,26 @@ class TaterMediaCoordinator:
         )
 
     async def async_set_volume(self, target: str, volume_percent: int) -> None:
+        """Set the satellites' one device volume, including during Sendspin."""
         volume = _clamp(volume_percent, 0, 100)
         session = self.session_for_target(target)
-        if session:
-            session_id = _text(session.get("session_id"))
-            routes = list(session.get("routes") or [])
-            results = await asyncio.gather(
-                *(
-                    self.manager.runtimes[route["device_id"]].async_request(
-                        "media.session.volume",
-                        {
-                            "session_id": session_id,
-                            "volume_percent": round(
-                                volume * route["trim_percent"] / 100
-                            ),
-                        },
-                        timeout=2.0,
-                    )
-                    for route in routes
+        routes = (
+            list(session.get("routes") or [])
+            if session
+            else self._routes_for_target(target)
+        )
+        device_ids = list(
+            dict.fromkeys(_text(route.get("device_id")) for route in routes)
+        )
+        await asyncio.gather(
+            *(
+                self.manager.async_set_device_settings(
+                    device_id, {"volume_percent": volume}
                 )
+                for device_id in device_ids
+                if device_id
             )
-            if not all(result.get("ok") for result in results):
-                raise RuntimeError("One or more satellites rejected the volume change")
-            session["volume_percent"] = volume
-        else:
-            await asyncio.gather(
-                *(
-                    self.manager.async_set_device_settings(
-                        route["device_id"], {"volume_percent": volume}
-                    )
-                    for route in self._routes_for_target(target)
-                )
-            )
+        )
         self.notify()
 
     async def async_set_muted(self, target: str, muted: bool) -> None:
@@ -825,270 +669,12 @@ class TaterMediaCoordinator:
     def handle_message(
         self, runtime: SatelliteRuntime, kind: str, payload: dict[str, Any]
     ) -> bool:
-        """Record firmware media lifecycle and playhead messages."""
-        if kind not in {
-            "media.session.started",
-            "media.session.playhead",
-            "media.session.finished",
-        }:
-            return False
-        group_id = _text(payload.get("group_id")) or _text(
-            runtime.media_session.get("group_id")
-        )
-        session = self.sessions.get(group_id)
-        if kind == "media.session.started":
-            runtime.media_session = {
-                **runtime.media_session,
-                **payload,
-                "active": True,
-                "state": "playing",
-            }
-            if session is not None:
-                session["state"] = "playing"
-                session["actual_starts_us"][runtime.device_id] = _integer(
-                    payload.get("actual_start_us")
-                )
-                if (
-                    session.get("startup_realign_supported")
-                    and not session.get("startup_realign_scheduled")
-                    and all(
-                        _integer(session["actual_starts_us"].get(device_id)) > 0
-                        for device_id in session["members"]
-                    )
-                ):
-                    session["startup_realign_scheduled"] = True
-                    self.manager.entry.async_create_background_task(
-                        self.manager.hass,
-                        self._realign_startup(group_id),
-                        f"tater_media_startup_realign_{group_id}",
-                    )
-        elif kind == "media.session.playhead":
-            previous = (
-                session["playheads"].get(runtime.device_id, {})
-                if session is not None
-                else {}
-            )
-            runtime.media_session = {
-                **runtime.media_session,
-                "active": True,
-                "state": "playing",
-                "playhead": dict(payload),
-                "playhead_received_us": _monotonic_us(),
-            }
-            if session is not None:
-                session["playheads"][runtime.device_id] = dict(payload)
-                stereo_members = {
-                    route["device_id"]
-                    for route in session["routes"]
-                    if route["channel"] in {"left", "right"}
-                }
-                if runtime.device_id in stereo_members and (
-                    (previous.get("rebuffering") and not payload.get("rebuffering"))
-                    or _integer(payload.get("rejoin_count"))
-                    > _integer(previous.get("rejoin_count"))
-                    or _integer(payload.get("rejoin_frames"))
-                    > _integer(previous.get("rejoin_frames"))
-                ):
-                    session["pending_rejoin"][runtime.device_id] = True
-        else:
-            runtime.media_session = {
-                **runtime.media_session,
-                "active": False,
-                "state": "idle",
-                "ok": bool(payload.get("ok", True)),
-            }
-            if session is not None:
-                session["finished"].add(runtime.device_id)
-                if set(session["finished"]) >= set(session["members"]):
-                    self.sessions.pop(group_id, None)
-                    task = self.sync_tasks.pop(group_id, None)
-                    if task is not None:
-                        task.cancel()
-                    relay_id = _text(session.get("shared_relay_id"))
-                    if relay_id and self._shared_media_store is not None:
-                        self.manager.entry.async_create_background_task(
-                            self.manager.hass,
-                            self._shared_media_store.release(relay_id),
-                            f"tater_media_relay_release_{relay_id[:8]}",
-                        )
-        self.notify()
-        return True
-
-    async def _realign_startup(self, group_id: str) -> None:
-        """Jump a renderer forward after an unusually late audible start."""
-        session = self.sessions.get(group_id)
-        if not isinstance(session, dict):
-            return
-        route_by_id = {route["device_id"]: route for route in session["routes"]}
-        normalized: dict[str, int] = {}
-        for device_id in session["members"]:
-            normalized[device_id] = (
-                _integer(session["actual_starts_us"].get(device_id))
-                - _integer(session["clock_offsets_us"].get(device_id))
-                + _integer(session["latency_us"].get(device_id))
-                - route_by_id[device_id]["delay_ms"] * 1000
-            )
-        reference = min(normalized, key=lambda device_id: normalized[device_id])
-        reference_us = normalized[reference]
-        for device_id, actual_us in normalized.items():
-            late_us = actual_us - reference_us
-            if late_us < 40_000:
-                continue
-            runtime = self.manager.runtimes.get(device_id)
-            if runtime is None or not runtime.connected:
-                continue
-            correction = round(
-                min(2_000_000, late_us)
-                * session["sample_rates"][device_id]
-                / 1_000_000
-            )
-            with contextlib.suppress(Exception):
-                await runtime.async_request(
-                    "media.session.adjust",
-                    {
-                        "session_id": session["session_id"],
-                        "group_id": group_id,
-                        "correction_frames": correction,
-                        "mode": "jump",
-                        "settle_ms": 0,
-                        "reference_selector": reference,
-                        "reason": "startup_realign",
-                    },
-                    timeout=2.0,
-                )
+        """Sendspin lifecycle travels on its own socket, not the Tater control link."""
+        del runtime, kind, payload
+        return False
 
     async def async_handle_disconnect(self, runtime: SatelliteRuntime) -> None:
-        """Abort a synchronized group when one renderer disappears."""
+        """Abort a Sendspin group when one selected satellite disconnects."""
         group_id = _text(runtime.media_session.get("group_id"))
         if group_id in self.sessions:
             await self._stop_group(group_id, reason="member_disconnected")
-
-    async def _refresh_clocks(self, session: dict[str, Any]) -> None:
-        samples = await asyncio.gather(
-            *(
-                self._clock_probe(self.manager.runtimes[device_id])
-                for device_id in session["members"]
-            ),
-            return_exceptions=True,
-        )
-        for sample in samples:
-            if not isinstance(sample, dict):
-                continue
-            device_id = sample["device_id"]
-            session["clock_offsets_us"][device_id] = sample["offset_us"]
-            session["clock_round_trip_us"][device_id] = sample["round_trip_us"]
-        session["clock_sync_us"] = _monotonic_us()
-
-    async def _sync_loop(self, group_id: str) -> None:
-        try:
-            while (session := self.sessions.get(group_id)) is not None:
-                await asyncio.sleep(ADJUST_INTERVAL_SECONDS)
-                now_us = _monotonic_us()
-                if (
-                    now_us - session["clock_sync_us"]
-                    >= CLOCK_REFRESH_SECONDS * 1_000_000
-                ):
-                    await self._refresh_clocks(session)
-                playheads = session["playheads"]
-                if any(device_id not in playheads for device_id in session["members"]):
-                    continue
-                startup = (
-                    now_us - session["audible_start_server_us"]
-                    < STARTUP_SECONDS * 1_000_000
-                )
-                threshold = (
-                    STARTUP_THRESHOLD_FRAMES if startup else ADJUST_THRESHOLD_FRAMES
-                )
-                maximum = STARTUP_MAX_FRAMES if startup else ADJUST_MAX_FRAMES
-                settle_ms = STARTUP_SETTLE_MS if startup else ADJUST_SETTLE_MS
-                route_by_id = {route["device_id"]: route for route in session["routes"]}
-                adjustments: list[tuple[str, int, str]] = []
-                for device_id in session["members"]:
-                    row = playheads[device_id]
-                    if row.get("rebuffering") or "rendered_frames" not in row:
-                        continue
-                    sample_rate = max(1, _integer(row.get("sample_rate_hz"), 48000))
-                    satellite_time_us = _integer(row.get("satellite_time_us"))
-                    event_server_us = satellite_time_us - _integer(
-                        session["clock_offsets_us"].get(device_id)
-                    )
-                    member_start_us = (
-                        session["audible_start_server_us"]
-                        + route_by_id[device_id]["delay_ms"] * 1000
-                    )
-                    expected = session["start_position_frames"][device_id] + max(
-                        0, event_server_us - member_start_us
-                    ) * sample_rate / 1_000_000
-                    error = expected - _integer(row.get("rendered_frames"))
-                    if device_id in session["pending_rejoin"]:
-                        # Wait until the decoder has recovered, then make only
-                        # one bounded catch-up jump for this rejoin event.
-                        if error > 480:
-                            adjustments.append(
-                                (device_id, min(24_000, round(error)), "jump")
-                            )
-                            continue
-                        session["pending_rejoin"].pop(device_id, None)
-                    previous = float(session["phase_ema"].get(device_id, error))
-                    smoothed = (
-                        (1 - PHASE_EMA_ALPHA) * previous + PHASE_EMA_ALPHA * error
-                    )
-                    session["phase_ema"][device_id] = smoothed
-                    direction = 1 if smoothed > 0 else -1
-                    if abs(smoothed) < threshold:
-                        session["phase_direction"][device_id] = 0
-                        session["phase_stable"][device_id] = 0
-                        continue
-                    stable = (
-                        _integer(session["phase_stable"].get(device_id)) + 1
-                        if session["phase_direction"].get(device_id) == direction
-                        else 1
-                    )
-                    session["phase_direction"][device_id] = direction
-                    session["phase_stable"][device_id] = stable
-                    if stable >= PHASE_STABLE_SAMPLES:
-                        adjustments.append(
-                            (
-                                device_id,
-                                max(-maximum, min(maximum, round(smoothed))),
-                                "slew",
-                            )
-                        )
-                for device_id, correction, correction_mode in adjustments:
-                    runtime = self.manager.runtimes.get(device_id)
-                    if runtime is None or not runtime.connected:
-                        continue
-                    with contextlib.suppress(Exception):
-                        result = await runtime.async_request(
-                            "media.session.adjust",
-                            {
-                                "session_id": session["session_id"],
-                                "group_id": group_id,
-                                "correction_frames": correction,
-                                "mode": (
-                                    "jump"
-                                    if correction_mode == "jump"
-                                    else (
-                                        "slew"
-                                        if runtime.capabilities.get("media_rate_slew")
-                                        else "legacy"
-                                    )
-                                ),
-                                "settle_ms": settle_ms,
-                                "reference_selector": "home-assistant:audible-timeline",
-                            },
-                            timeout=2.0,
-                        )
-                        if result.get("ok"):
-                            session["phase_stable"][device_id] = 0
-                            if correction_mode == "jump":
-                                session["pending_rejoin"].pop(device_id, None)
-                if adjustments:
-                    session["last_adjust_us"] = now_us
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _LOGGER.exception("Tater synchronized playback monitor failed")
-        finally:
-            if self.sync_tasks.get(group_id) is asyncio.current_task():
-                self.sync_tasks.pop(group_id, None)

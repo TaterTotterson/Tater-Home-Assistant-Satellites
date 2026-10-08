@@ -232,12 +232,14 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 raise ValueError("External custom wake URL is missing")
             values = {
                 "wake_engine": "micro_wake_word",
+                "wake_detector_mode": "mww",
                 "wake_word": "custom_url",
                 "wake_model_asset_id": "",
             }
         elif wake_id.startswith(_CATALOG_WAKE_PREFIX):
             values = {
                 "wake_engine": "micro_wake_word",
+                "wake_detector_mode": "mww",
                 "wake_word": "catalog",
                 "wake_word_catalog_url": wake_id.removeprefix(
                     _CATALOG_WAKE_PREFIX
@@ -249,6 +251,7 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 raise ValueError("Wake model is no longer available")
             values = {
                 "wake_engine": "micro_wake_word",
+                "wake_detector_mode": "mww",
                 "wake_word": "custom_url",
                 "wake_model_asset_id": wake_id,
             }

@@ -184,7 +184,7 @@ class WakeWordCatalogTests(unittest.TestCase):
             ROOT / "custom_components" / "tater_satellite" / "assist_satellite.py"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(manager.count("resolve_wake_word_source_values(values)"), 2)
+        self.assertEqual(manager.count("resolve_wake_word_source_values(values)"), 3)
         self.assertIn("self.wake_word_catalog.async_refresh()", manager)
         self.assertIn("class WakeWordCatalogView", http)
         self.assertIn('this.api("GET", "wake-word/catalog")', panel)

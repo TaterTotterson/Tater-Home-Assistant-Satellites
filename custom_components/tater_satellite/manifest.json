@@ -1,7 +1,7 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "codeowners": [
     "@TaterTotterson"
   ],
@@ -9,6 +9,7 @@
   "dependencies": [
     "assist_pipeline",
     "assist_satellite",
+    "ffmpeg",
     "intent",
     "panel_custom",
     "stt"

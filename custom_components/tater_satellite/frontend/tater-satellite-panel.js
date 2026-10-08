@@ -149,6 +149,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._wakeWordCatalog = null;
     this._wakeWordCatalogLastAttempt = 0;
     this._pollTimer = null;
+    this._backgroundRenderPending = false;
   }
 
   set hass(value) {
@@ -164,7 +165,13 @@ class TaterSatellitePanel extends HTMLElement {
     if (this._hass && !this._data) this.load();
     if (!this._pollTimer) {
       this._pollTimer = window.setInterval(() => {
-        if (!document.hidden && !this._dirty) this.load(true);
+        if (document.hidden || this.hasActiveInput()) return;
+        if (this._backgroundRenderPending) {
+          this._backgroundRenderPending = false;
+          this.render();
+          return;
+        }
+        this.load(true);
       }, 5000);
     }
   }
@@ -178,6 +185,13 @@ class TaterSatellitePanel extends HTMLElement {
   async api(method, path, body) {
     if (!this._hass) throw new Error("Home Assistant is not ready");
     return this._hass.callApi(method, `${API}/${path}`, body);
+  }
+
+  hasActiveInput() {
+    const active = this.shadowRoot?.activeElement;
+    return Boolean(
+      active?.matches('input, select, textarea, [contenteditable="true"]'),
+    );
   }
 
   async load(background = false) {
@@ -216,7 +230,12 @@ class TaterSatellitePanel extends HTMLElement {
       this._error = formatApiError(error);
     } finally {
       this._loading = false;
-      this.render();
+      if (!background || !this.hasActiveInput()) {
+        this._backgroundRenderPending = false;
+        this.render();
+      } else {
+        this._backgroundRenderPending = true;
+      }
     }
   }
 

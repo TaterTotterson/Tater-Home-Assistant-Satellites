@@ -64,6 +64,8 @@ integration from **Devices & services**.
   and firmware logging
 - Per-satellite speaker volume with a main-card slider and a standard Home
   Assistant number entity
+- Satellite1 output routing with automatic jack detection plus Internal, AUX,
+  and simultaneous Internal + AUX modes
 - Official Tater Wake Word Catalog selection with versioned microWakeWord
   models shared with the main Tater app
 - Custom microWakeWord TFLite uploads, trainer-produced MWW/OWW wake bundles,

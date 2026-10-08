@@ -43,6 +43,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "barge_in_enabled": False,
     "volume_percent": 80,
     "muted": False,
+    "audio_output_mode": "auto",
     "screen_brightness": 80,
     "screen_night_mode_enabled": False,
     "screen_night_brightness": 10,
@@ -89,6 +90,7 @@ FIRMWARE_SETTING_KEYS = {
     "barge_in_enabled",
     "volume_percent",
     "muted",
+    "audio_output_mode",
     "screen_brightness",
     "screen_night_mode_enabled",
     "screen_night_brightness",
@@ -251,6 +253,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "wake_engine",
                 "label": "Wake engine",
                 "type": "select",
+                "wake_families": ["mww"],
                 "options": [
                     {"value": "micro_wake_word", "label": "microWakeWord"},
                     {"value": "button", "label": "Button only"},
@@ -259,7 +262,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
             },
             {
                 "key": "wake_detector_mode",
-                "label": "Wake detection mode",
+                "label": "Wake engine",
                 "type": "select",
                 "wake_families": ["echo"],
                 "options": [
@@ -497,6 +500,39 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "section": "audio_output",
+        "title": "Satellite1 Audio Output",
+        "description": (
+            "Choose the internal speaker, 3.5 mm line-out, or both outputs."
+        ),
+        "scopes": ["device"],
+        "include_boards": [
+            "satellite1",
+            "satellite_1",
+            "sat1",
+            "satellite1_beta_rev41",
+            "sat1_beta_rev41",
+        ],
+        "fields": [
+            {
+                "key": "audio_output_mode",
+                "label": "Audio output",
+                "type": "select",
+                "options": [
+                    {"value": "auto", "label": "Automatic (jack detection)"},
+                    {"value": "internal", "label": "Internal speaker"},
+                    {"value": "aux", "label": "AUX / line-out"},
+                    {"value": "both", "label": "Internal + AUX"},
+                ],
+                "description": (
+                    "Automatic switches to the 3.5 mm output when a plug is "
+                    "detected. AUX requires powered speakers or an external "
+                    "amplifier."
+                ),
+            }
+        ],
+    },
+    {
         "section": "display",
         "title": "S3 Box Display",
         "description": (
@@ -633,6 +669,7 @@ _ALLOWED = {
     "wake_environment": {"balanced", "tv_nearby", "strict", "far_field"},
     "wake_verifier_mode": {"off", "observe", "enforce"},
     "wake_sound": {row["value"] for row in WAKE_SOUND_OPTIONS},
+    "audio_output_mode": {"auto", "internal", "aux", "both"},
     "logging_level": {"error", "warning", "info", "debug"},
     "led_listening_animation": {
         row["value"] for row in LISTENING_ANIMATION_OPTIONS
@@ -733,6 +770,24 @@ def board_supports_screen_settings(board: Any) -> bool:
         "s3box3",
         "esp32s3box",
         "esp32s3box3",
+    }
+
+
+def board_supports_audio_output_settings(board: Any) -> bool:
+    """Return whether a board supports Satellite1 output routing."""
+    token = str(board or "").strip().lower().replace("_", "-").replace(" ", "-")
+    compact = token.replace("-", "")
+    return token in {
+        "satellite1",
+        "satellite-1",
+        "sat1",
+        "satellite1-beta-rev41",
+        "sat1-beta-rev41",
+    } or compact in {
+        "satellite1",
+        "sat1",
+        "satellite1betarev41",
+        "sat1betarev41",
     }
 
 
@@ -928,6 +983,8 @@ def firmware_payload(
             payload.pop(key, None)
     if not board_supports_music_led_settings(board):
         payload.pop("led_music_animation", None)
+    if not board_supports_audio_output_settings(board):
+        payload.pop("audio_output_mode", None)
     base_threshold = float(normalized["wake_threshold"])
     adjustment = WAKE_SENSITIVITY_ADJUSTMENTS.get(
         str(normalized["wake_sensitivity"]), 0.0

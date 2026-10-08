@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.2
+
+- Added per-device Satellite1 audio output controls for automatic jack
+  detection, the internal speaker, 3.5 mm AUX/line-out, or both outputs. The
+  setting is available in the Tater Satellites panel and as a Home Assistant
+  select entity.
+- Simplified wake-word settings so ESP/MWW and Echo satellites each show one
+  clear **Wake engine** selector with only the choices supported by that
+  firmware family.
+- Fixed live panel refreshes replacing an open dropdown or active settings
+  control while it is being used.
+
 ## 0.7.1
 
 - Added a **No Animation** choice for listening, thinking, tool-call, and

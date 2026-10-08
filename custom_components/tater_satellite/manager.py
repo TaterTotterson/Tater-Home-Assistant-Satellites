@@ -151,6 +151,7 @@ _SETTINGS_WIRE_GROUPS = (
         "volume_percent",
         "muted",
         "output_channel_mode",
+        "audio_output_mode",
     ),
     (
         "led_brightness",

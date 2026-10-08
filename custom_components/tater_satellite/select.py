@@ -17,6 +17,7 @@ from .settings import (
     THINKING_ANIMATION_OPTIONS,
     TOOL_CALL_ANIMATION_OPTIONS,
     WAKE_SOUND_OPTIONS,
+    board_supports_audio_output_settings,
     board_supports_led_settings,
     board_supports_music_led_settings,
 )
@@ -56,6 +57,12 @@ DEFINITIONS = (
         "Wake sound",
         tuple(str(row["value"]) for row in WAKE_SOUND_OPTIONS),
         "mdi:music-note",
+    ),
+    SelectDefinition(
+        "audio_output_mode",
+        "Audio output",
+        ("auto", "internal", "aux", "both"),
+        "mdi:audio-input-stereo-minijack",
     ),
     SelectDefinition(
         "led_listening_animation",
@@ -112,12 +119,18 @@ async def async_setup_entry(
                 TaterSettingsSelect(runtime, definition)
                 for definition in DEFINITIONS
                 if (
-                    not definition.key.startswith("led_")
-                    or (
-                        board_supports_led_settings(runtime.board)
-                        and (
-                            definition.key != "led_music_animation"
-                            or board_supports_music_led_settings(runtime.board)
+                    (
+                        definition.key != "audio_output_mode"
+                        or board_supports_audio_output_settings(runtime.board)
+                    )
+                    and (
+                        not definition.key.startswith("led_")
+                        or (
+                            board_supports_led_settings(runtime.board)
+                            and (
+                                definition.key != "led_music_animation"
+                                or board_supports_music_led_settings(runtime.board)
+                            )
                         )
                     )
                 )

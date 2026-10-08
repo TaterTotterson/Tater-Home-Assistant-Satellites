@@ -123,7 +123,7 @@ class WakeFamilySettingsTests(unittest.TestCase):
             "https://example.test/hey.wake-bundle.json",
         )
 
-    def test_schema_separates_echo_mode_from_mww_model_selection(self) -> None:
+    def test_schema_presents_one_wake_engine_per_family(self) -> None:
         wake = next(
             section
             for section in settings.SETTINGS_SCHEMA
@@ -131,7 +131,9 @@ class WakeFamilySettingsTests(unittest.TestCase):
         )
         fields = {field["key"]: field for field in wake["fields"]}
 
+        self.assertEqual(fields["wake_engine"]["wake_families"], ["mww"])
         self.assertEqual(fields["wake_detector_mode"]["wake_families"], ["echo"])
+        self.assertEqual(fields["wake_detector_mode"]["label"], "Wake engine")
         self.assertEqual(fields["wake_word"]["detector_modes"], ["mww"])
         self.assertEqual(fields["oww_wake_word"]["wake_families"], ["echo"])
         self.assertEqual(
@@ -157,6 +159,16 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertIn("settings/wake-family/${family}", panel)
         self.assertIn("WAKE_FAMILY_SETTING_KEYS.forEach", panel)
         self.assertGreaterEqual(assist.count('"wake_detector_mode": "mww"'), 3)
+
+    def test_panel_live_refresh_preserves_active_editor_controls(self) -> None:
+        panel = PANEL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("this._backgroundRenderPending = false", panel)
+        self.assertIn("hasActiveInput()", panel)
+        self.assertIn("this.shadowRoot?.activeElement", panel)
+        self.assertIn("document.hidden || this.hasActiveInput()", panel)
+        self.assertIn("this._backgroundRenderPending = true", panel)
+        self.assertIn("!background || !this.hasActiveInput()", panel)
 
     def test_dual_wake_settings_stay_below_legacy_wire_frame_limit(self) -> None:
         module = ast.parse(MANAGER_PATH.read_text(encoding="utf-8"))

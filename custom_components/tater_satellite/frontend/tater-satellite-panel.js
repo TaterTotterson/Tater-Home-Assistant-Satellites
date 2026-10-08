@@ -1022,6 +1022,8 @@ class TaterSatellitePanel extends HTMLElement {
         (section) => {
           const wakeFamily = sectionFilter.wakeFamily || device?.wake_family || "";
           const fields = (section.fields || [])
+            .filter((field) => !(field.include_boards || []).length || field.include_boards.includes(boardKey))
+            .filter((field) => !(field.exclude_boards || []).includes(boardKey))
             .filter((field) => !(field.wake_families || []).length || field.wake_families.includes(wakeFamily))
             .filter((field) => !(field.detector_modes || []).length || field.detector_modes.includes(String(values?.wake_detector_mode || "mww")))
             .filter((field) => this.fieldVisible(field, values));

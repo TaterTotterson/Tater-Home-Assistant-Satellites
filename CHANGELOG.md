@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+- Added a **No Animation** choice for listening, thinking, tool-call, and
+  replying LEDs.
+- Added Biscuit music LED controls for Audio Glow, Beat Pulse, Level Bars,
+  Reactive Orbit, Reactive Wave, or no animation. The setting is available in
+  the Tater Satellites panel and as a Home Assistant select entity.
+- Music-only LED settings are shown and sent only to supported Echo Dot 2
+  (Biscuit) satellites.
+
 ## 0.7.0
 
 - Added separate ESP/MWW and Echo wake profiles. Echo satellites can select

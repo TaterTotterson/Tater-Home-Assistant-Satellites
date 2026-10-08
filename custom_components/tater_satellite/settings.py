@@ -54,6 +54,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "led_thinking_animation": "sparkle",
     "led_tool_call_animation": "ping_pong",
     "led_replying_animation": "voice_ring",
+    "led_music_animation": "audio_glow",
     "logging_level": "info",
 }
 
@@ -99,6 +100,7 @@ FIRMWARE_SETTING_KEYS = {
     "led_thinking_animation",
     "led_tool_call_animation",
     "led_replying_animation",
+    "led_music_animation",
     "logging_level",
 }
 
@@ -170,6 +172,7 @@ ANIMATION_OPTIONS = [
     {"value": "directional", "label": "Directional Listening"},
     {"value": "sparkle", "label": "Sparkle"},
     {"value": "ping_pong", "label": "Ping Pong"},
+    {"value": "audio_glow", "label": "Audio Glow"},
     {"value": "voice_ring", "label": "Voice Ring"},
     {"value": "spinner", "label": "Spinner"},
     {"value": "orbit", "label": "Orbit"},
@@ -186,6 +189,50 @@ ANIMATION_OPTIONS = [
     {"value": "twinkle", "label": "Twinkle"},
     {"value": "equalizer", "label": "Equalizer"},
     {"value": "solid", "label": "Solid"},
+]
+
+
+def _animation_options(*preferred: str, include_audio_glow: bool = False):
+    """Return Tater's ordered animation choices with an explicit off option."""
+    labels = {str(row["value"]): str(row["label"]) for row in ANIMATION_OPTIONS}
+    ordered: list[dict[str, str]] = [{"value": "off", "label": "No Animation"}]
+    used = {"off"}
+    for value in preferred:
+        if value in labels and value not in used:
+            ordered.append({"value": value, "label": labels[value]})
+            used.add(value)
+    for value, label in labels.items():
+        if value in used or (value == "audio_glow" and not include_audio_glow):
+            continue
+        ordered.append({"value": value, "label": label})
+        used.add(value)
+    return ordered
+
+
+LISTENING_ANIMATION_OPTIONS = _animation_options(
+    "directional", "pulse", "spinner", "breathe"
+)
+THINKING_ANIMATION_OPTIONS = _animation_options(
+    "sparkle", "shimmer", "twinkle", "breathe"
+)
+TOOL_CALL_ANIMATION_OPTIONS = _animation_options(
+    "ping_pong", "scanner", "orbit", "comet"
+)
+REPLYING_ANIMATION_OPTIONS = _animation_options(
+    "audio_glow",
+    "voice_ring",
+    "wave",
+    "ripple",
+    "equalizer",
+    include_audio_glow=True,
+)
+MUSIC_ANIMATION_OPTIONS = [
+    {"value": "off", "label": "No Animation"},
+    {"value": "audio_glow", "label": "Audio Glow"},
+    {"value": "music_pulse", "label": "Beat Pulse"},
+    {"value": "music_bars", "label": "Level Bars"},
+    {"value": "music_orbit", "label": "Reactive Orbit"},
+    {"value": "music_wave", "label": "Reactive Wave"},
 ]
 
 WAKE_SENSITIVITY_ADJUSTMENTS = {
@@ -524,25 +571,36 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "led_listening_animation",
                 "label": "Listening animation",
                 "type": "select",
-                "options": ANIMATION_OPTIONS,
+                "options": LISTENING_ANIMATION_OPTIONS,
             },
             {
                 "key": "led_thinking_animation",
                 "label": "Thinking animation",
                 "type": "select",
-                "options": ANIMATION_OPTIONS,
+                "options": THINKING_ANIMATION_OPTIONS,
             },
             {
                 "key": "led_tool_call_animation",
                 "label": "Tool-call animation",
                 "type": "select",
-                "options": ANIMATION_OPTIONS,
+                "options": TOOL_CALL_ANIMATION_OPTIONS,
             },
             {
                 "key": "led_replying_animation",
                 "label": "Replying animation",
                 "type": "select",
-                "options": ANIMATION_OPTIONS,
+                "options": REPLYING_ANIMATION_OPTIONS,
+            },
+            {
+                "key": "led_music_animation",
+                "label": "Music animation",
+                "type": "select",
+                "include_boards": ["biscuit"],
+                "options": MUSIC_ANIMATION_OPTIONS,
+                "description": (
+                    "Audio-reactive Biscuit ring animation for music playback, "
+                    "including Sendspin."
+                ),
             },
         ],
     },
@@ -576,10 +634,15 @@ _ALLOWED = {
     "wake_verifier_mode": {"off", "observe", "enforce"},
     "wake_sound": {row["value"] for row in WAKE_SOUND_OPTIONS},
     "logging_level": {"error", "warning", "info", "debug"},
-    "led_listening_animation": {row["value"] for row in ANIMATION_OPTIONS},
-    "led_thinking_animation": {row["value"] for row in ANIMATION_OPTIONS},
-    "led_tool_call_animation": {row["value"] for row in ANIMATION_OPTIONS},
-    "led_replying_animation": {row["value"] for row in ANIMATION_OPTIONS},
+    "led_listening_animation": {
+        row["value"] for row in LISTENING_ANIMATION_OPTIONS
+    },
+    "led_thinking_animation": {row["value"] for row in THINKING_ANIMATION_OPTIONS},
+    "led_tool_call_animation": {
+        row["value"] for row in TOOL_CALL_ANIMATION_OPTIONS
+    },
+    "led_replying_animation": {row["value"] for row in REPLYING_ANIMATION_OPTIONS},
+    "led_music_animation": {row["value"] for row in MUSIC_ANIMATION_OPTIONS},
 }
 _BOOL_KEYS = {
     "wake_mww_enabled",
@@ -642,6 +705,17 @@ def board_supports_led_settings(board: Any) -> bool:
         "s3box3",
         "esp32s3box",
         "esp32s3box3",
+    }
+
+
+def board_supports_music_led_settings(board: Any) -> bool:
+    """Return whether a board supports the audio-reactive music LED setting."""
+    token = str(board or "").strip().lower().replace("_", "-").replace(" ", "-")
+    compact = token.replace("-", "")
+    return token in {"biscuit", "echo-dot-2", "echo-dot-2nd-gen"} or compact in {
+        "biscuit",
+        "echodot2",
+        "echodot2ndgen",
     }
 
 
@@ -852,6 +926,8 @@ def firmware_payload(
             "screen_night_end",
         ):
             payload.pop(key, None)
+    if not board_supports_music_led_settings(board):
+        payload.pop("led_music_animation", None)
     base_threshold = float(normalized["wake_threshold"])
     adjustment = WAKE_SENSITIVITY_ADJUSTMENTS.get(
         str(normalized["wake_sensitivity"]), 0.0

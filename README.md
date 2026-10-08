@@ -59,8 +59,9 @@ integration from **Devices & services**.
   microWakeWord settings, while Echo satellites can use MWW, OWW, or matched
   Dual Wake Word detection
 - Shared voice defaults and per-satellite settings for sensitivity, wake sounds,
-  trainer captures, conversation behavior, AEC, microphone mute, LEDs, S3 Box
-  screen brightness and night dimming, and firmware logging
+  trainer captures, conversation behavior, AEC, microphone mute, voice-state
+  LEDs, Biscuit music-reactive LEDs, S3 Box screen brightness and night dimming,
+  and firmware logging
 - Per-satellite speaker volume with a main-card slider and a standard Home
   Assistant number entity
 - Official Tater Wake Word Catalog selection with versioned microWakeWord

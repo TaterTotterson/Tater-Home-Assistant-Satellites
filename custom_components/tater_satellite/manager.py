@@ -159,6 +159,7 @@ _SETTINGS_WIRE_GROUPS = (
         "led_thinking_animation",
         "led_tool_call_animation",
         "led_replying_animation",
+        "led_music_animation",
         "logging_level",
     ),
     (

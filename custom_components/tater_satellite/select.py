@@ -11,9 +11,14 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
 from .settings import (
-    ANIMATION_OPTIONS,
+    LISTENING_ANIMATION_OPTIONS,
+    MUSIC_ANIMATION_OPTIONS,
+    REPLYING_ANIMATION_OPTIONS,
+    THINKING_ANIMATION_OPTIONS,
+    TOOL_CALL_ANIMATION_OPTIONS,
     WAKE_SOUND_OPTIONS,
     board_supports_led_settings,
+    board_supports_music_led_settings,
 )
 
 PREFERRED_PIPELINE = "preferred"
@@ -29,7 +34,10 @@ class SelectDefinition:
     icon: str
 
 
-_ANIMATIONS = tuple(str(row["value"]) for row in ANIMATION_OPTIONS)
+def _option_values(rows) -> tuple[str, ...]:
+    return tuple(str(row["value"]) for row in rows)
+
+
 DEFINITIONS = (
     SelectDefinition(
         "wake_sensitivity",
@@ -52,26 +60,32 @@ DEFINITIONS = (
     SelectDefinition(
         "led_listening_animation",
         "Listening animation",
-        _ANIMATIONS,
+        _option_values(LISTENING_ANIMATION_OPTIONS),
         "mdi:led-strip-variant",
     ),
     SelectDefinition(
         "led_thinking_animation",
         "Thinking animation",
-        _ANIMATIONS,
+        _option_values(THINKING_ANIMATION_OPTIONS),
         "mdi:led-strip-variant",
     ),
     SelectDefinition(
         "led_tool_call_animation",
         "Tool-call animation",
-        _ANIMATIONS,
+        _option_values(TOOL_CALL_ANIMATION_OPTIONS),
         "mdi:led-strip-variant",
     ),
     SelectDefinition(
         "led_replying_animation",
         "Replying animation",
-        _ANIMATIONS,
+        _option_values(REPLYING_ANIMATION_OPTIONS),
         "mdi:led-strip-variant",
+    ),
+    SelectDefinition(
+        "led_music_animation",
+        "Music animation",
+        _option_values(MUSIC_ANIMATION_OPTIONS),
+        "mdi:music-circle",
     ),
     SelectDefinition(
         "logging_level",
@@ -97,8 +111,16 @@ async def async_setup_entry(
             *[
                 TaterSettingsSelect(runtime, definition)
                 for definition in DEFINITIONS
-                if not definition.key.startswith("led_")
-                or board_supports_led_settings(runtime.board)
+                if (
+                    not definition.key.startswith("led_")
+                    or (
+                        board_supports_led_settings(runtime.board)
+                        and (
+                            definition.key != "led_music_animation"
+                            or board_supports_music_led_settings(runtime.board)
+                        )
+                    )
+                )
             ],
         ]
 

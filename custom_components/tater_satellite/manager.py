@@ -37,6 +37,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from .bluetooth_proxy import TaterBluetoothProxyManager
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
 from .intercom import TaterIntercomCoordinator, is_intercom_request
 from .media import TaterMediaCoordinator
@@ -730,6 +731,7 @@ class TaterSatelliteManager:
         self.trainer = TrainerLinkManager(self)
         self.media = TaterMediaCoordinator(self)
         self.intercom = TaterIntercomCoordinator(self)
+        self.bluetooth = TaterBluetoothProxyManager(self)
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
         self._pairing_expires = 0.0
@@ -790,6 +792,7 @@ class TaterSatelliteManager:
         self.data["wake_family_settings"] = normalized_families
         self.data.setdefault("devices", {})
         self.data.setdefault("assets", {})
+        self.data.setdefault("bluetooth_devices", {})
         self.media.setup()
         self.trainer.setup()
         if (
@@ -831,6 +834,7 @@ class TaterSatelliteManager:
     async def async_shutdown(self) -> None:
         """Close all device connections."""
         self._shutting_down = True
+        await self.bluetooth.async_shutdown()
         await self.intercom.async_shutdown()
         await self.media.async_shutdown()
         for runtime in tuple(self.runtimes.values()):
@@ -2144,6 +2148,7 @@ class TaterSatelliteManager:
             "assets": assets,
             "stereo_pairs": self.media.list_pairs(),
             "intercom": self.intercom.snapshot(),
+            "bluetooth": self.bluetooth.snapshot(),
             "pipelines": self.pipelines_snapshot(),
             "firmware": self.firmware.snapshot(),
             "devices": [
@@ -2185,6 +2190,9 @@ class TaterSatelliteManager:
         payload = message_payload(message)
         runtime.last_seen = time.time()
         if kind.endswith(".result") and runtime.resolve_request(payload):
+            return
+        if self.bluetooth.handle_message(runtime, kind, payload):
+            runtime.notify()
             return
         if self.media.handle_message(runtime, kind, payload):
             runtime.notify()
@@ -2435,6 +2443,7 @@ class TaterSatelliteManager:
             runtime.last_seen = time.time()
             runtime.last_error = ""
             await self._update_record_from_hello(runtime, payload)
+            self.bluetooth.async_connect_runtime(runtime)
             ota_was_in_progress = runtime.ota.in_progress
             runtime.ota.note_reconnect(
                 runtime.connection_generation,
@@ -2533,6 +2542,7 @@ class TaterSatelliteManager:
                 if abnormal_close and not self._shutting_down:
                     runtime.last_error = close_detail
                 self.intercom.handle_disconnect(runtime)
+                self.bluetooth.disconnect_runtime(runtime)
                 if runtime.assist_entity is not None:
                     with contextlib.suppress(Exception):
                         await runtime.assist_entity.async_device_voice_stop(

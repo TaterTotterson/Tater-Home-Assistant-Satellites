@@ -74,6 +74,47 @@ class PairingView(HomeAssistantView):
         return self.json(_manager(request).start_pairing())
 
 
+class BluetoothPairView(HomeAssistantView):
+    """Pair a Bluetooth peripheral through an Echo satellite."""
+
+    url = f"{API_BASE_PATH}/bluetooth/pair"
+    name = "api:tater_satellite:bluetooth_pair"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Connect and bond using the peripheral's six-digit PIN."""
+        body = await _json_body(request)
+        try:
+            device = await _manager(request).bluetooth.async_pair(
+                body.get("address"),
+                body.get("pin"),
+                str(body.get("satellite_id") or ""),
+            )
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "device": device})
+
+
+class BluetoothUnpairView(HomeAssistantView):
+    """Remove a Bluetooth bond from an Echo satellite."""
+
+    url = f"{API_BASE_PATH}/bluetooth/unpair"
+    name = "api:tater_satellite:bluetooth_unpair"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Forget a paired Bluetooth peripheral."""
+        body = await _json_body(request)
+        try:
+            await _manager(request).bluetooth.async_unpair(
+                body.get("address"),
+                str(body.get("satellite_id") or ""),
+            )
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True})
+
+
 class GlobalSettingsView(HomeAssistantView):
     """Manage global satellite defaults."""
 
@@ -516,6 +557,8 @@ VIEWS = (
     SatelliteWebSocketView,
     ManageView,
     PairingView,
+    BluetoothPairView,
+    BluetoothUnpairView,
     GlobalSettingsView,
     WakeFamilySettingsView,
     DeviceSettingsView,

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0
+
+- Added native Home Assistant Bluetooth proxy support through compatible Echo
+  satellites running Tater Echo Firmware 2.4.0 or newer. Each connected Echo
+  registers as a connectable scanner and forwards raw advertisements, GATT
+  service discovery, reads, writes, and notifications over its existing secure
+  satellite connection.
+- Added a Bluetooth tab to Tater Satellites with live Echo capacity, nearby
+  devices, six-digit PIN pairing, saved bond details, and unpair controls.
+- Bluetooth PINs are used only for the pairing request and are never stored by
+  Home Assistant. A paired device remains routed through the Echo that owns its
+  encrypted bond.
+
 ## 0.7.2
 
 - Added per-device Satellite1 audio output controls for automatic jack

@@ -1,7 +1,7 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "codeowners": [
     "@TaterTotterson"
   ],
@@ -9,6 +9,7 @@
   "dependencies": [
     "assist_pipeline",
     "assist_satellite",
+    "bluetooth",
     "ffmpeg",
     "intent",
     "panel_custom",

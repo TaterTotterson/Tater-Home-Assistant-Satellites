@@ -55,6 +55,9 @@ integration from **Devices & services**.
 - Saved left/right stereo-pair media players plus Sendspin-synchronized
   multi-room playback
 - Secure six-digit first pairing followed by a per-device credential
+- Native Home Assistant Bluetooth proxying through compatible Echo satellites,
+  including active GATT connections and six-digit PIN pairing without storing
+  the PIN
 - Capability-routed wake profiles: ESP and MWW-only satellites use their own
   microWakeWord settings, while Echo satellites can use MWW, OWW, or matched
   Dual Wake Word detection
@@ -93,6 +96,21 @@ without waiting on the rest of the connection. Existing satellites can be
 returned to setup mode
 using the physical setup-reset gesture documented in the
 [Tater Native firmware guide](https://github.com/TaterTotterson/Tater-Native-Firmware#physical-setup-reset).
+
+## Bluetooth through an Echo satellite
+
+Echo Dot 2nd Generation (Biscuit), Echo Show 5 1st Generation (Checkers), and
+Echo Spot 1st Generation (Rook) satellites running Tater Echo Firmware 2.4.0 or
+newer can act as native Home Assistant Bluetooth scanners. Advertisements and
+active GATT traffic use the satellite's existing authenticated WebSocket; no
+separate Bluetooth bridge service or network listener is required.
+
+Open **Tater Satellites -> Bluetooth** to see connected Echo scanners and nearby
+devices. For a PIN-protected peripheral, choose the Echo that will hold the bond,
+enter the device's six-digit Bluetooth PIN, and select **Pair**. The PIN is sent
+only for that pairing attempt and is not saved. Home Assistant then uses the
+bonded Echo as the device's connectable Bluetooth path. Use **Unpair** to remove
+the saved bond from that Echo.
 
 ## Tater Audio, stereo, and multi-room playback
 

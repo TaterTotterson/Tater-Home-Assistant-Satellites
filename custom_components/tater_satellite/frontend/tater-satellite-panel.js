@@ -387,6 +387,35 @@ class TaterSatellitePanel extends HTMLElement {
       .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px; background: var(--secondary-background-color); font-size: 12px; }
       .badge.online { color: #228b50; background: color-mix(in srgb, #2eae67 14%, transparent); }
       .badge.update { color: var(--tater-accent); background: var(--tater-accent-soft); }
+      .bluetooth-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 18px;
+        align-items: center;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 100% 0, var(--tater-accent-soft), transparent 42%),
+          var(--card-background-color);
+      }
+      .bluetooth-mark {
+        display: grid;
+        place-items: center;
+        width: 54px;
+        height: 54px;
+        border-radius: 16px;
+        color: #fff;
+        background: var(--tater-accent);
+        font-size: 27px;
+        font-weight: 800;
+      }
+      .bluetooth-proxies { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 13px; }
+      .bluetooth-device { display: grid; gap: 13px; }
+      .bluetooth-device-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+      .bluetooth-address { margin-top: 3px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--secondary-text-color); }
+      .bluetooth-signal { color: var(--tater-accent); font-weight: 750; white-space: nowrap; }
+      .bluetooth-pair-grid { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(120px, .65fr) auto; gap: 9px; align-items: end; }
+      .bluetooth-paired-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+      .bluetooth-paired-copy { min-width: 0; }
       .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 12px 0 16px; }
       .fact label { display: block; color: var(--secondary-text-color); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
       .fact span { display: block; margin-top: 2px; overflow-wrap: anywhere; }
@@ -621,6 +650,9 @@ class TaterSatellitePanel extends HTMLElement {
         .firmware-mode-grid { grid-template-columns: 1fr; }
         .firmware-hosted-flasher { align-items: stretch; flex-direction: column; }
         .firmware-hosted-flasher-link { text-align: center; }
+        .bluetooth-hero, .bluetooth-pair-grid { grid-template-columns: 1fr; }
+        .bluetooth-mark { display: none; }
+        .bluetooth-paired-row { align-items: stretch; flex-direction: column; }
         .pair-code { font-size: 25px; }
         .facts { grid-template-columns: 1fr; }
       }
@@ -665,6 +697,7 @@ class TaterSatellitePanel extends HTMLElement {
       </section>
       <nav class="tabs">
         ${this.tabButton("satellites", "Satellites")}
+        ${this.tabButton("bluetooth", "Bluetooth")}
         ${this.tabButton("audio", "Tater Audio")}
         ${this.tabButton("defaults", "Voice Defaults")}
         ${this.tabButton("verifier", "STT Wake Check")}
@@ -676,6 +709,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this._tab === "trainer" ? this.renderTrainer() : ""}
       ${this._tab === "firmware" ? this.renderFirmware() : ""}
       ${this._tab === "audio" ? this.renderAudio() : ""}
+      ${this._tab === "bluetooth" ? this.renderBluetooth() : ""}
       ${this._tab === "satellites" ? this.renderSatellites() : ""}
     `;
   }
@@ -700,6 +734,76 @@ class TaterSatellitePanel extends HTMLElement {
       `;
     }
     return `<div class="grid">${devices.map((device) => this.renderDeviceCard(device)).join("")}</div>`;
+  }
+
+  renderBluetooth() {
+    const bluetooth = this._data.bluetooth || {};
+    const scanners = bluetooth.scanners || [];
+    const paired = bluetooth.paired || [];
+    const grouped = new Map();
+    for (const row of bluetooth.nearby || []) {
+      if (paired.some((item) => item.address === row.address)) continue;
+      const current = grouped.get(row.address);
+      if (!current) {
+        grouped.set(row.address, { ...row, paths: [row] });
+      } else {
+        current.paths.push(row);
+        if (Number(row.rssi) > Number(current.rssi)) Object.assign(current, row, { paths: current.paths });
+      }
+    }
+    const nearby = [...grouped.values()];
+    const scannerBadges = scanners.length
+      ? scanners.map((scanner) => {
+          const capacity = scanner.slots
+            ? `${scanner.free}/${scanner.slots} connections free`
+            : "Bluetooth ready";
+          return `<span class="badge online">${escapeHtml(scanner.satellite_name)} · ${escapeHtml(capacity)}</span>`;
+        }).join("")
+      : `<span class="badge">No compatible Echo connected</span>`;
+    const pairedCards = paired.length
+      ? paired.map((device) => `
+          <section class="card bluetooth-paired-row">
+            <div class="bluetooth-paired-copy">
+              <h3>${escapeHtml(device.name || device.address)}</h3>
+              <div class="bluetooth-address">${escapeHtml(device.address)}</div>
+              <div class="muted" style="margin-top:6px">Bond stored on ${escapeHtml(device.satellite_name || device.satellite_id || "Echo satellite")}. The PIN is not stored.</div>
+            </div>
+            <button class="danger" data-action="bluetooth-unpair" data-address="${escapeHtml(device.address)}" data-satellite-id="${escapeHtml(device.satellite_id || "")}" ${this._loading ? "disabled" : ""}>Unpair</button>
+          </section>
+        `).join("")
+      : `<section class="card empty"><h3>No paired Bluetooth devices</h3><p class="muted">Nearby devices appear below when a compatible Echo can hear them.</p></section>`;
+    const nearbyCards = nearby.length
+      ? nearby.map((device) => {
+          const paths = [...device.paths].sort((a, b) => Number(b.rssi) - Number(a.rssi));
+          const options = paths.map((path) => `<option value="${escapeHtml(path.satellite_id)}">${escapeHtml(path.satellite_name)} · ${escapeHtml(path.rssi)} dBm</option>`).join("");
+          return `
+            <section class="card bluetooth-device" data-bluetooth-device="${escapeHtml(device.address)}">
+              <div class="bluetooth-device-head">
+                <div><h3>${escapeHtml(device.name || "Unknown Bluetooth device")}</h3><div class="bluetooth-address">${escapeHtml(device.address)}</div></div>
+                <div class="bluetooth-signal">${escapeHtml(device.rssi)} dBm</div>
+              </div>
+              <div class="bluetooth-pair-grid">
+                <label class="field"><span>Echo satellite</span><select data-bluetooth-satellite>${options}</select></label>
+                <label class="field"><span>Six-digit PIN</span><input data-bluetooth-pin inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456"></label>
+                <button class="primary" data-action="bluetooth-pair" data-address="${escapeHtml(device.address)}" ${this._loading ? "disabled" : ""}>Pair</button>
+              </div>
+            </section>`;
+        }).join("")
+      : `<section class="card empty"><h3>No nearby devices yet</h3><p class="muted">Keep this page open near the device, make sure it is advertising, then refresh.</p></section>`;
+    return `
+      <section class="card section-card bluetooth-hero">
+        <div>
+          <h2>Echo Bluetooth Proxy</h2>
+          <p class="muted">Compatible Echo satellites now act as native Home Assistant Bluetooth scanners. Home Assistant automatically selects the best available path for normal Bluetooth integrations.</p>
+          <div class="bluetooth-proxies">${scannerBadges}</div>
+        </div>
+        <div class="bluetooth-mark">ᛒ</div>
+      </section>
+      <div class="device-head" style="margin:22px 0 10px"><div><h2>Paired devices</h2><div class="muted">PIN-protected bonds saved on an Echo satellite.</div></div></div>
+      <div class="grid">${pairedCards}</div>
+      <div class="device-head" style="margin:24px 0 10px"><div><h2>Nearby devices</h2><div class="muted">Choose a path or leave the strongest Echo selected.</div></div><button data-action="refresh" ${this._loading ? "disabled" : ""}>Refresh nearby</button></div>
+      <div class="grid">${nearbyCards}</div>
+    `;
   }
 
   renderAudio() {
@@ -1537,6 +1641,38 @@ class TaterSatellitePanel extends HTMLElement {
           this._data.pairing = pairing;
         }, "Pairing mode started. Enter the code during satellite setup."),
       ),
+    );
+    root.querySelectorAll('[data-action="bluetooth-pair"]').forEach((button) =>
+      button.addEventListener("click", () => {
+        const card = button.closest("[data-bluetooth-device]");
+        const pin = String(card?.querySelector("[data-bluetooth-pin]")?.value || "").replace(/\D/g, "");
+        const satelliteId = String(card?.querySelector("[data-bluetooth-satellite]")?.value || "");
+        if (pin.length !== 6) {
+          this._error = "Enter the Bluetooth device’s six-digit PIN.";
+          this.render();
+          return;
+        }
+        this.run(
+          () => this.api("POST", "bluetooth/pair", {
+            address: button.dataset.address,
+            satellite_id: satelliteId,
+            pin,
+          }),
+          "Bluetooth pairing completed. Home Assistant can now use this Echo for the device.",
+        );
+      }),
+    );
+    root.querySelectorAll('[data-action="bluetooth-unpair"]').forEach((button) =>
+      button.addEventListener("click", () => {
+        if (!window.confirm(`Unpair ${button.dataset.address} from this Echo satellite?`)) return;
+        this.run(
+          () => this.api("POST", "bluetooth/unpair", {
+            address: button.dataset.address,
+            satellite_id: button.dataset.satelliteId,
+          }),
+          "Bluetooth device unpaired.",
+        );
+      }),
     );
     root.querySelector('[data-action="save-stereo"]')?.addEventListener("click", () => {
       const value = (selector) => root.querySelector(selector)?.value ?? "";

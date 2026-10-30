@@ -227,6 +227,30 @@ WAKE_FAMILY_SETTING_KEYS = {
 WAKE_DEVICE_SETTING_KEYS = {"wake_sensitivity", "wake_environment"}
 SHARED_WAKE_MODEL_SETTING_KEYS = WAKE_FAMILY_SETTING_KEYS - WAKE_DEVICE_SETTING_KEYS
 
+# Keep each settings form on the same explicit boundary used by Tater. These
+# are API allowlists, not merely UI groupings: unrelated draft fields must not
+# be able to change wake, verifier, trainer, or voice-default state.
+VOICE_DEFAULT_SETTING_KEYS = {
+    "wake_sound_enabled",
+    "wake_sound",
+    "wake_sound_url",
+    "wake_sound_asset_id",
+    "muted",
+    "continued_chat",
+    "barge_in_enabled",
+    "aec_enabled",
+    "aec_strength_percent",
+    "aec_delay_ms",
+    "logging_level",
+}
+TRAINER_SETTING_KEYS = {
+    "capture_wake_audio",
+    "capture_close_misses",
+    "close_miss_threshold",
+    "trainer_app_url",
+}
+WAKE_VERIFIER_SETTING_KEYS = {"wake_verifier_mode"}
+
 WAKE_SOUND_OPTIONS = [
     {"value": "no_sound", "label": "No sound"},
     {"value": "default", "label": "Default"},

@@ -7,49 +7,32 @@ const PANEL_ELEMENT_NAME = `tater-satellite-panel-${
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "dev"
 }`;
-const WAKE_FAMILY_SETTING_KEYS = new Set([
-  "wake_engine",
-  "wake_detector_mode",
-  "wake_mww_enabled",
-  "wake_oww_enabled",
-  "wake_nww_enabled",
-  "wake_word",
-  "wake_word_catalog_url",
-  "wake_word_url",
-  "wake_model_revision",
-  "wake_model_asset_id",
-  "oww_wake_word",
-  "oww_wake_word_catalog_url",
-  "oww_wake_word_url",
-  "oww_model_revision",
-  "nww_wake_word",
-  "nww_wake_word_url",
-  "nww_model_revision",
-  "nww_architecture",
-  "nww_available_architectures",
-  "wake_profile_threshold",
-  "wake_profile_sliding_window",
-  "wake_profile_close_miss_threshold",
-  "oww_profile_threshold",
-  "oww_profile_patience",
-  "oww_profile_confirmation_threshold",
-  "oww_profile_confirmation_patience",
-  "nww_profile_threshold",
-  "nww_profile_patience",
-  "nww_cnn_profile_threshold",
-  "nww_cnn_profile_patience",
-  "nww_gru_profile_threshold",
-  "nww_gru_profile_patience",
-  "mww_tuning_override_enabled",
-  "mww_threshold_override",
-  "mww_sliding_window_override",
-  "oww_tuning_override_enabled",
-  "oww_threshold_override",
-  "oww_patience_override",
-  "nww_tuning_override_enabled",
-  "nww_threshold_override",
-  "nww_patience_override",
+const VOICE_DEFAULT_SETTING_KEYS = new Set([
+  "wake_sound_enabled",
+  "wake_sound",
+  "wake_sound_url",
+  "wake_sound_asset_id",
+  "muted",
+  "continued_chat",
+  "barge_in_enabled",
+  "aec_enabled",
+  "aec_strength_percent",
+  "aec_delay_ms",
+  "logging_level",
 ]);
+const TRAINER_SETTING_KEYS = new Set([
+  "capture_wake_audio",
+  "capture_close_misses",
+  "close_miss_threshold",
+  "trainer_app_url",
+]);
+const WAKE_VERIFIER_SETTING_KEYS = new Set(["wake_verifier_mode"]);
+
+function pickSettings(values, allowedKeys) {
+  return Object.fromEntries(
+    Object.entries(values || {}).filter(([key]) => allowedKeys.has(key)),
+  );
+}
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -1420,7 +1403,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["feedback"] })}
       <div class="sticky-actions">
         <button data-action="reset-draft">Discard changes</button>
-        <button class="primary" data-action="save-global" ${this._loading ? "disabled" : ""}>Save trainer settings</button>
+        <button class="primary" data-action="save-trainer" ${this._loading ? "disabled" : ""}>Save trainer settings</button>
       </div>
     `;
   }
@@ -1476,7 +1459,7 @@ class TaterSatellitePanel extends HTMLElement {
       }
       <div class="sticky-actions">
         <button data-action="reset-draft">Discard changes</button>
-        <button class="primary" data-action="save-global" ${this._loading ? "disabled" : ""}>Apply to all satellites</button>
+        <button class="primary" data-action="save-verifier" ${this._loading ? "disabled" : ""}>Apply to all satellites</button>
       </div>
     `;
   }
@@ -2143,14 +2126,26 @@ class TaterSatellitePanel extends HTMLElement {
     );
     root.querySelector('[data-action="save-global"]')?.addEventListener("click", () =>
       this.run(
-        () => {
-          const settings = clone(this._globalDraft);
-          WAKE_FAMILY_SETTING_KEYS.forEach((key) => delete settings[key]);
-          return this.api("POST", "settings/global", { settings });
-        },
-        this._tab === "verifier"
-          ? "STT wake verification updated for all satellites."
-          : "Shared satellite settings saved and pushed live.",
+        () => this.api("POST", "settings/global", {
+          settings: pickSettings(this._globalDraft, VOICE_DEFAULT_SETTING_KEYS),
+        }),
+        "Shared satellite settings saved and pushed live.",
+      ),
+    );
+    root.querySelector('[data-action="save-trainer"]')?.addEventListener("click", () =>
+      this.run(
+        () => this.api("POST", "settings/trainer", {
+          settings: pickSettings(this._globalDraft, TRAINER_SETTING_KEYS),
+        }),
+        "Trainer settings saved and pushed live.",
+      ),
+    );
+    root.querySelector('[data-action="save-verifier"]')?.addEventListener("click", () =>
+      this.run(
+        () => this.api("POST", "settings/verifier", {
+          settings: pickSettings(this._globalDraft, WAKE_VERIFIER_SETTING_KEYS),
+        }),
+        "STT wake verification updated for all satellites.",
       ),
     );
     root.querySelector("[data-save-shared-wake]")?.addEventListener("click", () =>

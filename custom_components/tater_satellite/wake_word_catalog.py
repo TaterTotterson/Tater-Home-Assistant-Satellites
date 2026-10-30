@@ -65,12 +65,16 @@ def require_catalog_url(value: Any, *, minimum_version: int = 1) -> str:
     return token
 
 
-def resolve_wake_word_source_values(values: dict[str, Any]) -> dict[str, Any]:
+def resolve_wake_word_source_values(
+    values: dict[str, Any],
+    *,
+    allow_catalog_only: bool = False,
+) -> dict[str, Any]:
     """Translate the panel-only catalog source into firmware settings."""
     resolved = dict(values or {})
     source = _text(resolved.get("wake_word")).lower().replace("-", "_")
     catalog_url = _text(resolved.get("wake_word_catalog_url"))
-    if source == "catalog" or (not source and catalog_url):
+    if source == "catalog" or (allow_catalog_only and not source and catalog_url):
         resolved["wake_word"] = "custom_url"
         resolved["wake_word_url"] = require_catalog_url(
             catalog_url
@@ -82,7 +86,7 @@ def resolve_wake_word_source_values(values: dict[str, Any]) -> dict[str, Any]:
     )
     companion_catalog_url = _text(resolved.get("oww_wake_word_catalog_url"))
     if companion_source == "catalog" or (
-        not companion_source and companion_catalog_url
+        allow_catalog_only and not companion_source and companion_catalog_url
     ):
         mode = _text(resolved.get("wake_detector_mode")).lower()
         minimum_version = 8 if mode in {"nww", "mww_nww"} else 7

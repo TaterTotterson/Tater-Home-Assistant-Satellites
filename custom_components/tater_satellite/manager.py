@@ -60,8 +60,11 @@ from .settings import (
     ECHO_SCREEN_DEFAULTS,
     SETTINGS_SCHEMA,
     SHARED_WAKE_MODEL_SETTING_KEYS,
+    TRAINER_SETTING_KEYS,
+    VOICE_DEFAULT_SETTING_KEYS,
     WAKE_FAMILIES,
     WAKE_FAMILY_SETTING_KEYS,
+    WAKE_VERIFIER_SETTING_KEYS,
     board_is_echo_screen,
     board_is_s3_screen,
     firmware_payload,
@@ -1499,12 +1502,17 @@ class TaterSatelliteManager:
         self,
         family: str,
         values: dict[str, Any],
+        *,
+        allow_catalog_only: bool = False,
     ) -> dict[str, Any]:
         """Save the shared wake profile and update every connected satellite."""
         token = text(family).lower()
         if token not in WAKE_FAMILIES:
             raise ValueError(f"Unsupported wake family: {family}")
-        incoming = resolve_wake_word_source_values(values)
+        incoming = resolve_wake_word_source_values(
+            values,
+            allow_catalog_only=allow_catalog_only,
+        )
         incoming = {
             key: value
             for key, value in incoming.items()
@@ -1713,75 +1721,65 @@ class TaterSatelliteManager:
         return await self.async_set_wake_family_settings("echo", values)
 
     async def async_set_global_settings(self, values: dict[str, Any]) -> dict[str, Any]:
-        """Save global defaults and update every connected satellite."""
-        values = resolve_wake_word_source_values(values)
+        """Save Voice Defaults and update every connected satellite."""
+        return await self._async_set_global_setting_group(
+            values,
+            allowed_keys=VOICE_DEFAULT_SETTING_KEYS,
+            label="Voice Defaults",
+        )
+
+    async def async_set_trainer_settings(
+        self,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Save trainer feedback settings through their dedicated API."""
+        return await self._async_set_global_setting_group(
+            values,
+            allowed_keys=TRAINER_SETTING_KEYS,
+            label="trainer",
+        )
+
+    async def async_set_wake_verifier_settings(
+        self,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Save STT wake-check settings through their dedicated API."""
+        mode = text(values.get("wake_verifier_mode")).lower().replace("-", "_")
+        if mode not in {"off", "observe", "enforce"}:
+            raise ValueError("Unsupported STT wake-check mode.")
+        return await self._async_set_global_setting_group(
+            {"wake_verifier_mode": mode},
+            allowed_keys=WAKE_VERIFIER_SETTING_KEYS,
+            label="STT wake-check",
+        )
+
+    async def _async_set_global_setting_group(
+        self,
+        values: dict[str, Any],
+        *,
+        allowed_keys: set[str],
+        label: str,
+    ) -> dict[str, Any]:
+        """Save one allowlisted global settings form and push it live."""
+        values = {
+            key: value
+            for key, value in (values or {}).items()
+            if key in allowed_keys
+        }
+        if not values:
+            raise ValueError(f"No {label} settings were provided.")
         current = normalize_settings(self.data.get("global_settings"))
         patch = normalize_settings(values, base=current, partial=True)
-        if "wake_word_url" in patch and text(patch.get("wake_word_url")) != text(
-            current.get("wake_word_url")
-        ):
-            patch["wake_model_asset_id"] = ""
-            patch["wake_model_revision"] = ""
         if "wake_sound_url" in patch and text(patch.get("wake_sound_url")) != text(
             current.get("wake_sound_url")
         ):
             patch["wake_sound_asset_id"] = ""
         next_settings = normalize_settings({**current, **patch})
-        if (
-            next_settings.get("wake_word") == "custom_url"
-            and text(next_settings.get("wake_word_url"))
-            and not text(next_settings.get("wake_model_asset_id"))
-        ):
-            phrase = await self._async_wake_phrase_from_url(
-                text(next_settings.get("wake_word_url"))
-            )
-            if not phrase and text(current.get("wake_verifier_phrase_url")) == text(
-                next_settings.get("wake_word_url")
-            ):
-                phrase = normalize_phrase(current.get("wake_verifier_phrase"))
-            next_settings["wake_verifier_phrase"] = phrase
-            next_settings["wake_verifier_phrase_url"] = text(
-                next_settings.get("wake_word_url")
-            )
-        elif next_settings.get("wake_word") != "custom_url" or text(
-            next_settings.get("wake_model_asset_id")
-        ):
-            next_settings["wake_verifier_phrase"] = ""
-            next_settings["wake_verifier_phrase_url"] = ""
         changed_keys = {
             key for key, value in next_settings.items() if value != current.get(key)
         }
         override_keys = self._global_override_keys(changed_keys)
         self.data["global_settings"] = next_settings
-        legacy_family_patch = {
-            key: value
-            for key, value in values.items()
-            if key in WAKE_FAMILY_SETTING_KEYS
-        }
-        if legacy_family_patch:
-            families = self.data.setdefault("wake_family_settings", {})
-            shared_current = self.shared_wake_settings()
-            if (
-                shared_current.get("wake_detector_mode")
-                in {"oww", "nww", "mww_oww", "mww_nww", "dual"}
-                and legacy_family_patch.get("wake_word") == "custom_url"
-                and "oww_wake_word_url" not in legacy_family_patch
-            ):
-                # A legacy global client only supplied an MWW package. Select
-                # MWW for the shared profile instead of pairing different words.
-                legacy_family_patch["wake_detector_mode"] = "mww"
-            shared_next = normalize_wake_family_settings(
-                "echo",
-                {**shared_current, **legacy_family_patch},
-                base=next_settings,
-            )
-            families["echo"] = shared_next
-            families["mww"] = normalize_wake_family_settings(
-                "mww",
-                shared_next,
-                base=next_settings,
-            )
-            self.data[_UNIFIED_WAKE_SETTINGS_MIGRATION_KEY] = True
         if override_keys:
             for runtime in self.runtimes.values():
                 overrides = runtime.record.get("overrides")
@@ -1791,9 +1789,6 @@ class TaterSatelliteManager:
                         for key, value in overrides.items()
                         if key not in override_keys
                     }
-                if override_keys.intersection(_WAKE_MODEL_SETTING_KEYS):
-                    runtime.record.pop("wake_verifier_phrase", None)
-                    runtime.record.pop("wake_verifier_phrase_url", None)
         await self.async_save()
         connected = [runtime for runtime in self.runtimes.values() if runtime.connected]
         results = await asyncio.gather(
@@ -1923,7 +1918,7 @@ class TaterSatelliteManager:
         base = self.effective_settings(device_id)
         device_values = {
             key: value
-            for key, value in resolve_wake_word_source_values(values).items()
+            for key, value in values.items()
             if key not in _GLOBAL_WAKE_VERIFIER_KEYS
             and key not in SHARED_WAKE_MODEL_SETTING_KEYS
         }

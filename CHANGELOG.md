@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.4
+
+- Matched Tater's proven settings boundaries: wake models, STT Wake Check,
+  trainer feedback, and Voice Defaults now use separate requests with explicit
+  allowlists in both the panel and bridge.
+- Limited official-catalog validation to explicit catalog selections so stale
+  or unrelated draft fields cannot cause an HTTP 400 while saving another tab.
+- Kept the legacy wake-family route compatible with older catalog-only clients
+  without weakening validation on the current shared-wake API.
+
 ## 1.1.3
 
 - Fixed HTTP 400 responses when saving Voice Defaults, including STT Wake

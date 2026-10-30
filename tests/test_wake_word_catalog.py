@@ -153,13 +153,21 @@ class WakeWordCatalogTests(unittest.TestCase):
                 }
             )
 
-    def test_partial_device_patch_can_change_only_the_catalog_choice(self) -> None:
+    def test_legacy_catalog_only_patch_remains_supported(self) -> None:
         resolved = catalog.resolve_wake_word_source_values(
-            {"wake_word_catalog_url": V1_URL}
+            {"wake_word_catalog_url": V1_URL},
+            allow_catalog_only=True,
         )
 
         self.assertEqual(resolved["wake_word"], "custom_url")
         self.assertEqual(resolved["wake_word_url"], V1_URL)
+
+    def test_current_api_ignores_catalog_url_without_catalog_source(self) -> None:
+        resolved = catalog.resolve_wake_word_source_values(
+            {"wake_word_catalog_url": V1_URL}
+        )
+
+        self.assertEqual(resolved, {})
 
     def test_empty_orphaned_catalog_fields_do_not_block_global_saves(self) -> None:
         resolved = catalog.resolve_wake_word_source_values(
@@ -295,15 +303,20 @@ class WakeWordCatalogTests(unittest.TestCase):
             ROOT / "custom_components" / "tater_satellite" / "assist_satellite.py"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(manager.count("resolve_wake_word_source_values(values)"), 3)
+        self.assertEqual(manager.count("resolve_wake_word_source_values("), 1)
+        self.assertIn("allow_catalog_only=allow_catalog_only", manager)
         self.assertIn("self.wake_word_catalog.async_refresh()", manager)
         self.assertIn("class WakeWordCatalogView", http)
+        self.assertIn("class WakeVerifierSettingsView", http)
+        self.assertIn("class TrainerSettingsView", http)
+        self.assertIn('settings/verifier"', http)
+        self.assertIn('settings/trainer"', http)
         self.assertIn('this.api("GET", "wake-word/catalog")', panel)
+        self.assertIn('this.api("POST", "settings/verifier"', panel)
+        self.assertIn('this.api("POST", "settings/trainer"', panel)
+        self.assertIn("pickSettings(this._globalDraft, VOICE_DEFAULT_SETTING_KEYS)", panel)
         self.assertIn("prepareSettingsDraft", panel)
-        wake_keys = panel.split(
-            "const WAKE_FAMILY_SETTING_KEYS = new Set([", 1
-        )[1].split("]);", 1)[0]
-        self.assertIn('"oww_wake_word_catalog_url"', wake_keys)
+        self.assertIn('input.dataset.setting === "oww_wake_word_catalog_url"', panel)
         self.assertIn('_CATALOG_WAKE_PREFIX = "catalog:"', assist)
         self.assertIn("wake_word_catalog.snapshot()", assist)
         self.assertIn("async_get_integration(hass, DOMAIN)", integration)

@@ -135,6 +135,46 @@ class GlobalSettingsView(HomeAssistantView):
         return self.json({"ok": True, "settings": saved})
 
 
+class TrainerSettingsView(HomeAssistantView):
+    """Manage trainer feedback settings."""
+
+    url = f"{API_BASE_PATH}/settings/trainer"
+    name = "api:tater_satellite:settings_trainer"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Save trainer settings."""
+        body = await _json_body(request)
+        values = body.get("settings")
+        if not isinstance(values, dict):
+            values = body
+        try:
+            saved = await _manager(request).async_set_trainer_settings(values)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "settings": saved})
+
+
+class WakeVerifierSettingsView(HomeAssistantView):
+    """Manage STT wake-check settings."""
+
+    url = f"{API_BASE_PATH}/settings/verifier"
+    name = "api:tater_satellite:settings_verifier"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Save STT wake-check settings."""
+        body = await _json_body(request)
+        values = body.get("settings")
+        if not isinstance(values, dict):
+            values = body
+        try:
+            saved = await _manager(request).async_set_wake_verifier_settings(values)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "settings": saved})
+
+
 class WakeFamilySettingsView(HomeAssistantView):
     """Keep the former family endpoint available for older clients."""
 
@@ -152,6 +192,7 @@ class WakeFamilySettingsView(HomeAssistantView):
             saved = await _manager(request).async_set_wake_family_settings(
                 family,
                 values,
+                allow_catalog_only=True,
             )
         except (KeyError, ValueError, RuntimeError) as err:
             raise web.HTTPBadRequest(text=str(err)) from err
@@ -580,6 +621,8 @@ VIEWS = (
     BluetoothPairView,
     BluetoothUnpairView,
     GlobalSettingsView,
+    TrainerSettingsView,
+    WakeVerifierSettingsView,
     SharedWakeSettingsView,
     WakeFamilySettingsView,
     DeviceSettingsView,

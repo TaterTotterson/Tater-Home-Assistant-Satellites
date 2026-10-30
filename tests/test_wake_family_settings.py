@@ -211,15 +211,49 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertIn("class SharedWakeSettingsView", http)
         self.assertIn("class WakeFamilySettingsView", http)
         self.assertIn('settings/wake-family/{{family}}', http)
+        self.assertIn("allow_catalog_only=True", http)
         self.assertIn("How should satellites wake?", panel)
         self.assertNotIn("How should ESP firmware wake?", panel)
         self.assertNotIn("How should Echo firmware wake?", panel)
         self.assertIn('"settings/wake"', panel)
         self.assertIn("this._wakeDraft", panel)
-        self.assertIn("WAKE_FAMILY_SETTING_KEYS.forEach", panel)
+        self.assertIn("VOICE_DEFAULT_SETTING_KEYS", panel)
+        self.assertIn("TRAINER_SETTING_KEYS", panel)
+        self.assertIn("WAKE_VERIFIER_SETTING_KEYS", panel)
+        self.assertIn('"settings/verifier"', panel)
+        self.assertIn('"settings/trainer"', panel)
         self.assertIn("MWW + NWW", panel)
         self.assertIn("renderWakeTuningOverrides", panel)
         self.assertGreaterEqual(assist.count('"wake_detector_mode": "mww"'), 3)
+
+    def test_global_forms_have_disjoint_explicit_allowlists(self) -> None:
+        self.assertEqual(
+            settings.WAKE_VERIFIER_SETTING_KEYS,
+            {"wake_verifier_mode"},
+        )
+        self.assertEqual(
+            settings.TRAINER_SETTING_KEYS,
+            {
+                "capture_wake_audio",
+                "capture_close_misses",
+                "close_miss_threshold",
+                "trainer_app_url",
+            },
+        )
+        groups = (
+            settings.VOICE_DEFAULT_SETTING_KEYS,
+            settings.TRAINER_SETTING_KEYS,
+            settings.WAKE_VERIFIER_SETTING_KEYS,
+            settings.SHARED_WAKE_MODEL_SETTING_KEYS,
+        )
+        for index, group in enumerate(groups):
+            for other in groups[index + 1 :]:
+                self.assertTrue(group.isdisjoint(other))
+
+        manager = MANAGER_PATH.read_text(encoding="utf-8")
+        self.assertIn("allowed_keys=VOICE_DEFAULT_SETTING_KEYS", manager)
+        self.assertIn("allowed_keys=TRAINER_SETTING_KEYS", manager)
+        self.assertIn("allowed_keys=WAKE_VERIFIER_SETTING_KEYS", manager)
 
     def test_oww_only_mode_is_preserved(self) -> None:
         profile = settings.normalize_wake_family_settings(

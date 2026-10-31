@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added a per-satellite Clock format setting (12-hour or 24-hour) for Echo
+  screens: Checkers, Crown, Athena, and Rook. It appears under Display & Night
+  and as a select entity only when firmware advertises `screen_clock_format`;
+  older firmware never receives the new setting.
+
 ## 1.1.4
 
 - Matched Tater's proven settings boundaries: wake models, STT Wake Check,

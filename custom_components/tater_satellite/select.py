@@ -21,6 +21,7 @@ from .settings import (
     board_supports_audio_output_settings,
     board_supports_led_settings,
     board_supports_music_led_settings,
+    supports_screen_clock_format,
     supports_screen_power_management,
 )
 
@@ -42,6 +43,12 @@ def _option_values(rows) -> tuple[str, ...]:
 
 
 DEFINITIONS = (
+    SelectDefinition(
+        "screen_clock_format",
+        "Clock format",
+        ("12h", "24h"),
+        "mdi:clock-digital",
+    ),
     SelectDefinition(
         "screen_night_display",
         "Night display",
@@ -128,6 +135,12 @@ async def async_setup_entry(
                 for definition in DEFINITIONS
                 if (
                     (
+                        definition.key != "screen_clock_format"
+                        or supports_screen_clock_format(
+                            runtime.board, runtime.capabilities
+                        )
+                    )
+                    and (
                         definition.key != "screen_night_display"
                         or (
                             supports_screen_power_management(

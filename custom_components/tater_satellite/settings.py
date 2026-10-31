@@ -84,6 +84,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "screen_night_start": "22:00",
     "screen_night_end": "07:00",
     "screen_night_display": "red_clock",
+    "screen_clock_format": "12h",
     "led_brightness": 80,
     "led_color": "#ff5a1f",
     "led_listening_animation": "directional",
@@ -103,6 +104,7 @@ ECHO_SCREEN_DEFAULTS: dict[str, Any] = {
     "screen_night_start": "22:00",
     "screen_night_end": "07:00",
     "screen_night_display": "red_clock",
+    "screen_clock_format": "12h",
 }
 
 FIRMWARE_SETTING_KEYS = {
@@ -154,6 +156,7 @@ FIRMWARE_SETTING_KEYS = {
     "screen_night_start",
     "screen_night_end",
     "screen_night_display",
+    "screen_clock_format",
     "led_brightness",
     "led_color",
     "led_listening_animation",
@@ -781,6 +784,17 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         "capability_fallback_boards": ["s3_box"],
         "fields": [
             {
+                "key": "screen_clock_format",
+                "label": "Clock format",
+                "type": "select",
+                "exclude_boards": ["s3_box"],
+                "required_capability": "screen_clock_format",
+                "options": [
+                    {"value": "12h", "label": "12-hour (6:48 PM)"},
+                    {"value": "24h", "label": "24-hour (18:48)"},
+                ],
+            },
+            {
                 "key": "screen_brightness",
                 "label": "Screen brightness",
                 "type": "number",
@@ -968,6 +982,7 @@ _ALLOWED = {
     "wake_sound": {row["value"] for row in WAKE_SOUND_OPTIONS},
     "audio_output_mode": {"auto", "internal", "aux", "both"},
     "screen_night_display": {"dim", "red_clock", "off"},
+    "screen_clock_format": {"12h", "24h"},
     "logging_level": {"error", "warning", "info", "debug"},
     "led_listening_animation": {
         row["value"] for row in LISTENING_ANIMATION_OPTIONS
@@ -1180,6 +1195,17 @@ def supports_screen_power_management(
         return False
 
 
+def supports_screen_clock_format(
+    board: Any,
+    capabilities: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether Echo screen firmware accepts a 12/24-hour clock."""
+    if board_is_s3_screen(board):
+        return False
+    values = capabilities if isinstance(capabilities, dict) else {}
+    return values.get("screen_clock_format") is True
+
+
 def board_supports_audio_output_settings(board: Any) -> bool:
     """Return whether a board supports Satellite1 output routing."""
     token = str(board or "").strip().lower().replace("_", "-").replace(" ", "-")
@@ -1267,6 +1293,8 @@ def normalize_settings(
                     "red": "red_clock",
                     "screen_off": "off",
                 }.get(token, token)
+            if key == "screen_clock_format":
+                token = {"12": "12h", "24": "24h"}.get(token, token)
             result[key] = token if token in _ALLOWED[key] else default
         elif key in _BOOL_KEYS:
             result[key] = _boolean(value, bool(default))
@@ -1415,6 +1443,8 @@ def firmware_payload(
         "screen_night_end",
         "screen_night_display",
     )
+    if not supports_screen_clock_format(board, capabilities):
+        payload.pop("screen_clock_format", None)
     if supports_screen_power_management(board, capabilities):
         if board_is_s3_screen(board):
             for key in (

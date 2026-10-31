@@ -174,6 +174,7 @@ _SETTINGS_WIRE_GROUPS = (
         "screen_night_start",
         "screen_night_end",
         "screen_night_display",
+        "screen_clock_format",
         "screen_local_time_seconds",
     ),
 )

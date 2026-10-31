@@ -13,6 +13,7 @@ import secrets
 import time
 from collections import deque
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,7 @@ from homeassistant.components.assist_pipeline.error import PipelineNotFound
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -37,6 +39,11 @@ from .const import (
     STORAGE_VERSION,
 )
 from .bluetooth_proxy import TaterBluetoothProxyManager
+from .display_clock import (
+    DISPLAY_CLOCK_INTERVAL_SECONDS,
+    display_clock_payload,
+    supports_display_clock,
+)
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
 from .intercom import TaterIntercomCoordinator, is_intercom_request
 from .media import TaterMediaCoordinator
@@ -973,6 +980,13 @@ class TaterSatelliteManager:
             if not safe_id:
                 continue
             self.runtimes[safe_id] = SatelliteRuntime(self, safe_id, record)
+        self.entry.async_on_unload(
+            async_track_time_interval(
+                self.hass,
+                self._async_push_display_clocks,
+                timedelta(seconds=DISPLAY_CLOCK_INTERVAL_SECONDS),
+            )
+        )
         with contextlib.suppress(Exception):
             await self.firmware.async_refresh()
 
@@ -1275,6 +1289,24 @@ class TaterSatelliteManager:
         )
         payload["output_channel_mode"] = self.media.output_channel_mode(device_id)
         return payload
+
+    async def async_push_display_clock(self, runtime: SatelliteRuntime) -> bool:
+        """Send Home Assistant's local clock to an Echo screen satellite."""
+        if not runtime.connected or not supports_display_clock(runtime.capabilities):
+            return False
+        return await runtime.async_send(
+            "display.weather",
+            display_clock_payload(
+                dt_util.utcnow(),
+                dt_util.get_default_time_zone(),
+                self.hass.config.time_zone,
+            ),
+        )
+
+    async def _async_push_display_clocks(self, _now: datetime) -> None:
+        """Refresh every connected screen clock, including UTC offset changes."""
+        for runtime in tuple(self.runtimes.values()):
+            await self.async_push_display_clock(runtime)
 
     async def async_push_settings(
         self,
@@ -2708,6 +2740,7 @@ class TaterSatelliteManager:
                 )
             await runtime.async_send("state", {"state": "idle"})
             await self.async_push_settings(runtime)
+            await self.async_push_display_clock(runtime)
             runtime.notify()
             await self.sat_chat.async_refresh_directories()
 

@@ -6,6 +6,9 @@
   screens: Checkers, Crown, Athena, and Rook. It appears under Display & Night
   and as a select entity only when firmware advertises `screen_clock_format`;
   older firmware never receives the new setting.
+- Fixed Echo screen clocks showing UTC by sending Home Assistant's configured
+  local time and current UTC offset on connection and every minute, including
+  daylight-saving changes.
 
 ## 1.1.4
 

@@ -7,7 +7,9 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.camera import async_get_image
+from haffmpeg.camera import CameraMjpeg
+from homeassistant.components.camera import async_get_image, async_get_stream_source
+from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import Event, EventStateChangedData, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
@@ -15,7 +17,9 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
+from .camera_mjpeg import MjpegFrameParser
 from .display_payloads import (
+    MAX_CAMERA_FRAME_BYTES,
     MAX_ROOM_TEMPERATURES,
     camera_frame,
     cameras_payload,
@@ -34,6 +38,12 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 CAMERA_FRAME_INTERVAL_SECONDS = 1.0
+CAMERA_STREAM_FRAME_RATE = 3
+CAMERA_STREAM_JPEG_QUALITY = 5
+CAMERA_STREAM_READ_BYTES = 64 * 1024
+CAMERA_STREAM_SOURCE_TIMEOUT_SECONDS = 10.0
+CAMERA_STREAM_STARTUP_TIMEOUT_SECONDS = 8.0
+CAMERA_STREAM_STALL_TIMEOUT_SECONDS = 10.0
 # Stop streaming if the screen never closes the camera view.
 CAMERA_STREAM_MAX_SECONDS = 15 * 60
 CAMERA_FRAME_WIDTH = 1280
@@ -86,7 +96,9 @@ class TaterDisplayPanelCoordinator:
             if state.attributes.get("device_class") != "temperature":
                 continue
             area = self._area_name(state.entity_id)
-            label = f"{area} · {state.name}" if area and area != state.name else state.name
+            label = (
+                f"{area} · {state.name}" if area and area != state.name else state.name
+            )
             rows.append({"value": state.entity_id, "label": label})
         return sorted(rows, key=lambda row: row["label"].lower())
 
@@ -131,7 +143,6 @@ class TaterDisplayPanelCoordinator:
         """Track the satellite's thermostat and push its current state."""
         self._track_climate(runtime)
         await self.async_push_climate(runtime)
-
 
     def _track_climate(self, runtime: SatelliteRuntime) -> None:
         unsub = self._climate_unsubs.pop(runtime.device_id, None)
@@ -210,7 +221,9 @@ class TaterDisplayPanelCoordinator:
     ) -> None:
         entity_id = self.climate_entity_id(runtime)
         if not entity_id or _text(payload.get("room_id")) != entity_id:
-            runtime.add_log("warning", "Ignored a climate action for an unassigned thermostat")
+            runtime.add_log(
+                "warning", "Ignored a climate action for an unassigned thermostat"
+            )
             return
         action = _text(payload.get("action"))
         try:
@@ -226,7 +239,9 @@ class TaterDisplayPanelCoordinator:
                 modes = state.attributes.get("hvac_modes", []) if state else []
                 mode = entity_hvac_mode(payload.get("mode"), modes)
                 if not mode:
-                    raise ValueError(f"{entity_id} does not support {payload.get('mode')}")
+                    raise ValueError(
+                        f"{entity_id} does not support {payload.get('mode')}"
+                    )
                 await self.hass.services.async_call(
                     "climate",
                     "set_hvac_mode",
@@ -256,8 +271,12 @@ class TaterDisplayPanelCoordinator:
             )
         ]
 
-    async def _async_send_cameras(self, runtime: SatelliteRuntime, **kwargs: Any) -> None:
-        await runtime.async_send("display.cameras", cameras_payload(self._camera_rows(), **kwargs))
+    async def _async_send_cameras(
+        self, runtime: SatelliteRuntime, **kwargs: Any
+    ) -> None:
+        await runtime.async_send(
+            "display.cameras", cameras_payload(self._camera_rows(), **kwargs)
+        )
 
     async def _async_stop_camera(self, device_id: str) -> None:
         task = self._camera_tasks.pop(device_id, None)
@@ -266,10 +285,112 @@ class TaterDisplayPanelCoordinator:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    async def _async_stream_camera(self, runtime: SatelliteRuntime, entity_id: str) -> None:
+    @staticmethod
+    def _replace_camera_frame(
+        queue: asyncio.Queue[bytes | None], frame: bytes | None
+    ) -> None:
+        """Keep only the newest decoded camera frame."""
+        if queue.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        queue.put_nowait(frame)
+
+    async def _async_read_mjpeg(
+        self,
+        reader: asyncio.StreamReader,
+        queue: asyncio.Queue[bytes | None],
+    ) -> None:
+        """Read FFmpeg's multipart output without allowing frame backlog."""
+        parser = MjpegFrameParser(MAX_CAMERA_FRAME_BYTES)
+        try:
+            while chunk := await reader.read(CAMERA_STREAM_READ_BYTES):
+                for jpeg in parser.feed(chunk):
+                    self._replace_camera_frame(queue, jpeg)
+        finally:
+            self._replace_camera_frame(queue, None)
+
+    async def _async_relay_camera_stream(
+        self,
+        runtime: SatelliteRuntime,
+        entity_id: str,
+        deadline: float,
+    ) -> bool:
+        """Relay a supported HA camera stream; return whether a frame was sent."""
+        try:
+            source = await asyncio.wait_for(
+                async_get_stream_source(self.hass, entity_id),
+                timeout=CAMERA_STREAM_SOURCE_TIMEOUT_SECONDS,
+            )
+        except (HomeAssistantError, OSError, RuntimeError, TimeoutError) as err:
+            _LOGGER.debug("Camera %s has no usable stream source: %s", entity_id, err)
+            return False
+        if not source:
+            return False
+
+        try:
+            stream = CameraMjpeg(get_ffmpeg_manager(self.hass).binary)
+        except (RuntimeError, ValueError) as err:
+            _LOGGER.debug("FFmpeg is unavailable for camera %s: %s", entity_id, err)
+            return False
+        reader_task: asyncio.Task[None] | None = None
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
+        sent_frame = False
+        try:
+            opened = await stream.open_camera(
+                source,
+                extra_cmd=(
+                    f"-vf fps={CAMERA_STREAM_FRAME_RATE} "
+                    f"-q:v {CAMERA_STREAM_JPEG_QUALITY}"
+                ),
+            )
+            if not opened:
+                return False
+            reader = await stream.get_reader()
+            reader_task = asyncio.create_task(
+                self._async_read_mjpeg(reader, queue),
+                name=f"tater_camera_mjpeg_{runtime.device_id}",
+            )
+            loop = asyncio.get_running_loop()
+            while runtime.connected and loop.time() < deadline:
+                remaining = deadline - loop.time()
+                timeout = min(
+                    remaining,
+                    CAMERA_STREAM_STALL_TIMEOUT_SECONDS
+                    if sent_frame
+                    else CAMERA_STREAM_STARTUP_TIMEOUT_SECONDS,
+                )
+                try:
+                    jpeg = await asyncio.wait_for(queue.get(), timeout=timeout)
+                except TimeoutError:
+                    break
+                if jpeg is None:
+                    break
+                frame = camera_frame(jpeg)
+                if frame is None:
+                    continue
+                if not await runtime.async_send_bytes(frame):
+                    return sent_frame
+                if not sent_frame:
+                    sent_frame = True
+                    await self._async_send_cameras(runtime, selected_id=entity_id)
+        except (HomeAssistantError, OSError, RuntimeError) as err:
+            _LOGGER.debug("Camera stream relay failed for %s: %s", entity_id, err)
+        finally:
+            if reader_task is not None:
+                reader_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reader_task
+            await stream.close()
+        return sent_frame
+
+    async def _async_stream_camera(
+        self, runtime: SatelliteRuntime, entity_id: str
+    ) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + CAMERA_STREAM_MAX_SECONDS
-        loading = True
+        loading = not await self._async_relay_camera_stream(
+            runtime, entity_id, deadline
+        )
         while runtime.connected and loop.time() < deadline:
             started = loop.time()
             try:
@@ -298,16 +419,24 @@ class TaterDisplayPanelCoordinator:
                 max(0.0, CAMERA_FRAME_INTERVAL_SECONDS - (loop.time() - started))
             )
 
-    async def _async_select_camera(self, runtime: SatelliteRuntime, entity_id: str) -> None:
+    async def _async_select_camera(
+        self, runtime: SatelliteRuntime, entity_id: str
+    ) -> None:
         await self._async_stop_camera(runtime.device_id)
-        if self.hass.states.get(entity_id) is None or not entity_id.startswith("camera."):
-            await self._async_send_cameras(runtime, error="That camera is not available")
+        if self.hass.states.get(entity_id) is None or not entity_id.startswith(
+            "camera."
+        ):
+            await self._async_send_cameras(
+                runtime, error="That camera is not available"
+            )
             return
         await self._async_send_cameras(runtime, selected_id=entity_id, loading=True)
-        self._camera_tasks[runtime.device_id] = self.manager.entry.async_create_background_task(
-            self.hass,
-            self._async_stream_camera(runtime, entity_id),
-            f"tater_satellite_camera_{runtime.device_id}",
+        self._camera_tasks[runtime.device_id] = (
+            self.manager.entry.async_create_background_task(
+                self.hass,
+                self._async_stream_camera(runtime, entity_id),
+                f"tater_satellite_camera_{runtime.device_id}",
+            )
         )
 
     # Routing and lifecycle

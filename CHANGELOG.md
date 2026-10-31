@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.1
+
+- Improved Echo screen cameras by preferring a camera's continuous Home
+  Assistant stream and converting it to a bounded three-frame-per-second MJPEG
+  relay over the existing authenticated `TCAM1` connection.
+- Kept the 1 FPS Home Assistant snapshot path as an automatic fallback for
+  snapshot-only, WebRTC-only, unavailable, or stalled camera streams.
+- Added latest-frame-only buffering so a slow satellite drops stale video
+  frames instead of accumulating latency, while retaining the existing
+  15-minute limit and close/disconnect cleanup.
+
 ## 1.2.0
 
 - Added a per-satellite Clock format setting (12-hour or 24-hour) for Echo

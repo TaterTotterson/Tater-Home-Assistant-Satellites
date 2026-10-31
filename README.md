@@ -49,6 +49,8 @@ integration from **Devices & services**.
 - Announcements, continued conversations, timers, TTS playback, and diagnostics
 - Direct Sat Chat audio and video calls between compatible satellites, relayed
   locally over their existing authenticated connections
+- Echo screen Climate and Cameras panels, including continuous Home Assistant
+  camera streams with automatic snapshot fallback
 - Native Home Assistant media-player entities with URL and media-source music
   playback, seek, stop, mute, volume, and dynamic grouping
 - Saved left/right stereo-pair media players plus Sendspin-synchronized

@@ -8,6 +8,7 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .display_payloads import supports_display_climate
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
 from .settings import (
@@ -26,6 +27,7 @@ from .settings import (
 )
 
 PREFERRED_PIPELINE = "preferred"
+NO_THERMOSTAT = "None"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +132,11 @@ async def async_setup_entry(
         return [
             TaterPipelineSelect(runtime),
             TaterVadSelect(runtime),
+            *(
+                [TaterThermostatSelect(runtime)]
+                if supports_display_climate(runtime.capabilities)
+                else []
+            ),
             *[
                 TaterSettingsSelect(runtime, definition)
                 for definition in DEFINITIONS
@@ -242,6 +249,54 @@ class TaterPipelineSelect(TaterSatelliteEntity, SelectEntity):
         await self.runtime.manager.async_set_device_settings(
             self.runtime.device_id, {}, pipeline_id=pipeline_id
         )
+
+
+class TaterThermostatSelect(TaterSatelliteEntity, SelectEntity):
+    """Select the thermostat shown on the screen's Climate panel."""
+
+    _attr_name = "Thermostat"
+    _attr_icon = "mdi:thermostat"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, runtime: SatelliteRuntime) -> None:
+        super().__init__(runtime, "climate_entity")
+
+    @property
+    def options(self) -> list[str]:
+        """Return the available thermostats."""
+        return [
+            NO_THERMOSTAT,
+            *[
+                label
+                for label, _ in self.runtime.manager.display_panels.climate_options()
+            ],
+        ]
+
+    @property
+    def current_option(self) -> str:
+        """Return the selected thermostat's label."""
+        selected = self.runtime.manager.display_panels.climate_entity_id(self.runtime)
+        for label, entity_id in self.runtime.manager.display_panels.climate_options():
+            if entity_id == selected:
+                return label
+        return NO_THERMOSTAT
+
+    async def async_select_option(self, option: str) -> None:
+        """Assign the thermostat."""
+        panels = self.runtime.manager.display_panels
+        entity_id = ""
+        if option != NO_THERMOSTAT:
+            entity_id = next(
+                (
+                    row_id
+                    for label, row_id in panels.climate_options()
+                    if label == option
+                ),
+                "",
+            )
+            if not entity_id:
+                raise ValueError(f"Unknown thermostat: {option}")
+        await panels.async_set_climate_entity(self.runtime, entity_id)
 
 
 class TaterVadSelect(TaterSatelliteEntity, SelectEntity):

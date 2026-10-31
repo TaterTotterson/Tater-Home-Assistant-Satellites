@@ -587,6 +587,7 @@ class TaterSatellitePanel extends HTMLElement {
       .device-volume input[type="range"]:disabled { opacity: .55; cursor: wait; }
       .toggle-field { flex-direction: row; align-items: center; justify-content: space-between; min-height: 42px; padding: 8px 10px; border: 1px solid var(--divider-color); border-radius: 9px; }
       .toggle-field input { width: 42px; min-height: 22px; accent-color: var(--tater-accent); }
+      .entity-list { display: grid; gap: 6px; max-height: 280px; overflow-y: auto; }
       .asset-row { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
       .editor-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 15px; }
       .sticky-actions { position: sticky; bottom: 12px; z-index: 3; margin-top: 15px; padding: 12px; display: flex; justify-content: flex-end; gap: 9px; background: color-mix(in srgb, var(--card-background-color) 92%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--divider-color); border-radius: 12px; }
@@ -1572,6 +1573,35 @@ class TaterSatellitePanel extends HTMLElement {
         </label>
       `;
     }
+    if (field.type === "entity_list") {
+      const selected = String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const limit = Number(field.max_items || 0);
+      const full = limit > 0 && selected.length >= limit;
+      const options = clone(field.options || []);
+      return `
+        <div class="field">
+          <span>${escapeHtml(field.label)}${limit ? ` (${selected.length}/${limit})` : ""}</span>
+          <div class="entity-list">
+            ${options.length
+              ? options.map((option) => {
+                  const checked = selected.includes(String(option.value));
+                  return `
+                    <label class="toggle-field">
+                      <span>${escapeHtml(option.label)}</span>
+                      <input type="checkbox" data-setting-list="${escapeHtml(field.key)}" data-scope="${scope}"
+                        value="${escapeHtml(option.value)}" ${checked ? "checked" : ""} ${full && !checked ? "disabled" : ""}>
+                    </label>
+                  `;
+                }).join("")
+              : `<small>${escapeHtml(field.empty_label || "Nothing to choose from.")}</small>`}
+          </div>
+          ${field.description ? `<small>${escapeHtml(field.description)}</small>` : ""}
+        </div>
+      `;
+    }
     if (field.type === "select") {
       const mode = String(values?.wake_detector_mode || "mww_oww");
       const catalogType = ["nww", "mww_nww"].includes(mode) ? "nww" : "oww";
@@ -2026,6 +2056,21 @@ class TaterSatellitePanel extends HTMLElement {
           target.oww_wake_word_url = selected?.value || "";
           target.nww_available_architectures = (selected?.architectures || []).join(",");
         }
+        this._dirty = true;
+        this.render();
+      }),
+    );
+    root.querySelectorAll("[data-setting-list]").forEach((input) =>
+      input.addEventListener("change", () => {
+        const target = {
+          global: this._globalDraft,
+          wake: this._wakeDraft,
+        }[input.dataset.scope] || this._deviceDraft;
+        const key = input.dataset.settingList;
+        target[key] = [...root.querySelectorAll("[data-setting-list]")]
+          .filter((item) => item.dataset.settingList === key && item.checked)
+          .map((item) => item.value)
+          .join(",");
         this._dirty = true;
         this.render();
       }),

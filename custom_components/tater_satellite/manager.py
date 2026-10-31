@@ -44,6 +44,7 @@ from .display_clock import (
     display_clock_payload,
     supports_display_clock,
 )
+from .display_panels import TaterDisplayPanelCoordinator
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
 from .intercom import TaterIntercomCoordinator, is_intercom_request
 from .media import TaterMediaCoordinator
@@ -782,6 +783,7 @@ class TaterSatelliteManager:
         self.media = TaterMediaCoordinator(self)
         self.intercom = TaterIntercomCoordinator(self)
         self.sat_chat = TaterSatChatCoordinator(self)
+        self.display_panels = TaterDisplayPanelCoordinator(self)
         self.bluetooth = TaterBluetoothProxyManager(self)
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
@@ -997,6 +999,7 @@ class TaterSatelliteManager:
         self._shutting_down = True
         await self.bluetooth.async_shutdown()
         await self.sat_chat.async_shutdown()
+        await self.display_panels.async_shutdown()
         await self.intercom.async_shutdown()
         await self.media.async_shutdown()
         for runtime in tuple(self.runtimes.values()):
@@ -1942,6 +1945,19 @@ class TaterSatelliteManager:
             "wake_word_name": wake_word,
         }
 
+    def _settings_schema(self) -> list[dict[str, Any]]:
+        """Return the panel schema with Home Assistant entity choices filled in."""
+        schema = _json_copy(SETTINGS_SCHEMA, [])
+        for section in schema:
+            for field in section.get("fields", []):
+                if field.get("key") == "screen_climate_entity":
+                    field["options"] = self.display_panels.climate_field_options()
+                elif field.get("key") == "screen_room_temperature_entities":
+                    field["options"] = (
+                        self.display_panels.room_temperature_field_options()
+                    )
+        return schema
+
     async def async_set_device_settings(
         self,
         device_id: str,
@@ -1978,6 +1994,9 @@ class TaterSatelliteManager:
         patch = normalize_settings(device_values, base=base, partial=True)
         existing.update(patch)
         runtime.record["overrides"] = existing
+        climate_changed = bool(
+            {"screen_climate_entity", "screen_room_temperature_entities"} & set(patch)
+        )
         if pipeline_id is not None:
             runtime.record["pipeline_id"] = text(pipeline_id)
         if vad_sensitivity is not None:
@@ -1986,6 +2005,8 @@ class TaterSatelliteManager:
                 value if value in {"default", "relaxed", "aggressive"} else "default"
             )
         await self.async_save()
+        if climate_changed:
+            await self.display_panels.async_refresh_runtime(runtime)
         if runtime.connected and not await self.async_push_settings(runtime):
             raise RuntimeError(
                 f"Settings were saved, but they could not be sent to {runtime.name}."
@@ -2001,7 +2022,9 @@ class TaterSatelliteManager:
         runtime.record["overrides"] = {}
         runtime.record.pop("wake_verifier_phrase", None)
         runtime.record.pop("wake_verifier_phrase_url", None)
+        runtime.record.pop("climate_entity_id", None)
         await self.async_save()
+        await self.display_panels.async_refresh_runtime(runtime)
         if runtime.connected and not await self.async_push_settings(runtime):
             raise RuntimeError(
                 f"Settings were reset, but they could not be sent to {runtime.name}."
@@ -2375,7 +2398,7 @@ class TaterSatelliteManager:
                 family: self.wake_family_settings(family)
                 for family in sorted(WAKE_FAMILIES)
             },
-            "settings_schema": _json_copy(SETTINGS_SCHEMA, []),
+            "settings_schema": self._settings_schema(),
             "assets": assets,
             "stereo_pairs": self.media.list_pairs(),
             "intercom": self.intercom.snapshot(),
@@ -2429,6 +2452,10 @@ class TaterSatelliteManager:
             return
         if self.media.handle_message(runtime, kind, payload):
             runtime.notify()
+            return
+        if kind.startswith("display.") and await self.display_panels.async_handle_message(
+            runtime, kind, payload
+        ):
             return
         if kind.startswith("sat_chat."):
             result = await self.sat_chat.async_handle_message(runtime, kind, payload)
@@ -2758,6 +2785,7 @@ class TaterSatelliteManager:
             await runtime.async_send("state", {"state": "idle"})
             await self.async_push_settings(runtime)
             await self.async_push_display_clock(runtime)
+            await self.display_panels.async_refresh_runtime(runtime)
             runtime.notify()
             await self.sat_chat.async_refresh_directories()
 
@@ -2844,6 +2872,7 @@ class TaterSatelliteManager:
                 runtime.websocket = None
                 runtime.connected = False
                 await self.sat_chat.async_handle_disconnect(runtime)
+                await self.display_panels.async_handle_disconnect(runtime)
                 runtime.ota.note_disconnect()
                 runtime.finish_audio()
                 runtime.fail_playback_waiters()

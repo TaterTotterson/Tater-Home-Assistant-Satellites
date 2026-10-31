@@ -12,6 +12,12 @@
 - Stopped high-frequency Bluetooth proxy advertisements from rewriting every
   satellite entity, and cached effective settings for each entity refresh to
   prevent Bluetooth traffic from pinning a Home Assistant CPU core.
+- Enabled the Climate panel on compatible Echo screens with a per-satellite
+  thermostat selector, live setpoint and HVAC-mode controls, and up to six
+  selected room-temperature sensors.
+- Enabled the Cameras panel on compatible Echo screens with Home Assistant's
+  camera list and authenticated `TCAM1` JPEG snapshots, refreshed about once a
+  second and automatically stopped on close, disconnect, or after 15 minutes.
 
 ## 1.1.4
 

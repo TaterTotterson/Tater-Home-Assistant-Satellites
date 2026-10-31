@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - Added a per-satellite Clock format setting (12-hour or 24-hour) for Echo
   screens: Checkers, Crown, Athena, and Rook. It appears under Display & Night
@@ -18,6 +18,12 @@
 - Enabled the Cameras panel on compatible Echo screens with Home Assistant's
   camera list and authenticated `TCAM1` JPEG snapshots, refreshed about once a
   second and automatically stopped on close, disconnect, or after 15 minutes.
+
+### New contributor
+
+- Welcome and thank you to [Martin Tremblay](https://github.com/MartyTremblay)
+  for the Echo screen clock, local-time, Climate, and Cameras work, plus the
+  Bluetooth proxy performance fix included in this release.
 
 ## 1.1.4
 

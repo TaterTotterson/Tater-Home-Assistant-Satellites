@@ -9,6 +9,9 @@
 - Fixed Echo screen clocks showing UTC by sending Home Assistant's configured
   local time and current UTC offset on connection and every minute, including
   daylight-saving changes.
+- Stopped high-frequency Bluetooth proxy advertisements from rewriting every
+  satellite entity, and cached effective settings for each entity refresh to
+  prevent Bluetooth traffic from pinning a Home Assistant CPU core.
 
 ## 1.1.4
 

@@ -774,6 +774,8 @@ class TaterSatelliteManager:
         self.store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self.data: dict[str, Any] = {}
         self.runtimes: dict[str, SatelliteRuntime] = {}
+        # Settings resolved once per entity refresh; None outside a refresh.
+        self._settings_cache: dict[str, dict[str, Any]] | None = None
         self.firmware = FirmwareCatalog(hass)
         self.wake_word_catalog = WakeWordCatalog(async_get_clientsession(hass))
         self.trainer = TrainerLinkManager(self)
@@ -1163,11 +1165,17 @@ class TaterSatelliteManager:
 
     def notify_runtime(self, runtime: SatelliteRuntime) -> None:
         """Schedule entity state refreshes for one runtime."""
-        for entity in runtime._entities:
-            if getattr(entity, "hass", None) is not None:
-                with contextlib.suppress(Exception):
-                    entity.async_write_ha_state()
-        self.media.notify()
+        # Every entity reads the effective settings while computing its state,
+        # so resolve them once for the whole refresh instead of per read.
+        self._settings_cache = {}
+        try:
+            for entity in runtime._entities:
+                if getattr(entity, "hass", None) is not None:
+                    with contextlib.suppress(Exception):
+                        entity.async_write_ha_state()
+            self.media.notify()
+        finally:
+            self._settings_cache = None
 
     def attach_entity(self, runtime: SatelliteRuntime, entity: Any) -> None:
         """Track an entity for state updates."""
@@ -1175,6 +1183,14 @@ class TaterSatelliteManager:
 
     def effective_settings(self, device_id: str) -> dict[str, Any]:
         """Resolve global settings and per-device overrides."""
+        cache = self._settings_cache
+        if cache is not None:
+            if device_id not in cache:
+                cache[device_id] = self._resolve_settings(device_id)
+            return dict(cache[device_id])
+        return self._resolve_settings(device_id)
+
+    def _resolve_settings(self, device_id: str) -> dict[str, Any]:
         runtime = self.runtimes.get(device_id)
         overrides = (
             runtime.record.get("overrides")
@@ -2407,8 +2423,9 @@ class TaterSatelliteManager:
         runtime.last_seen = time.time()
         if kind.endswith(".result") and runtime.resolve_request(payload):
             return
+        # Bluetooth proxy traffic (advertisements arrive several times a
+        # second) changes no entity state, so it must not refresh entities.
         if self.bluetooth.handle_message(runtime, kind, payload):
-            runtime.notify()
             return
         if self.media.handle_message(runtime, kind, payload):
             runtime.notify()

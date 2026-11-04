@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.0
+
 - Added per-satellite Speaker Equalizer settings for Echo satellites: eight
   EQ bands, presence boost, bass protection with an adjustable floor, and the
   peak limiter. They appear only when firmware advertises `output_chain`.
@@ -13,6 +15,16 @@
   the panel and as switch, time, and binary sensor entities only when firmware
   advertises `do_not_disturb`, and the window follows Home Assistant's time
   zone across daylight-saving changes.
+- Kept daylight-saving offset changes eligible for retry when a settings send
+  fails, preventing a satellite from retaining a stale DND schedule offset.
+
+### Contributor
+
+Contributions from [Martin Tremblay](https://github.com/MartyTremblay) included
+in this release:
+
+- [#15 — Add Speaker Equalizer settings for Echo satellites](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/15)
+- [#16 — Add Do Not Disturb for Echo satellites](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/16)
 
 ## 1.2.1
 

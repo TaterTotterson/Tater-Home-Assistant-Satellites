@@ -8,6 +8,11 @@
 - Defaulted the bass protection floor to -10 dB on the larger Echo speakers
   (Radar, Crown, and Athena) instead of the firmware's -30 dB, which suits the
   small Dot, Show 5, and Spot drivers. Values set on a satellite still win.
+- Added per-satellite Do Not Disturb for Echo satellites, matching Tater: a
+  manual control and a daily window, enforced by the firmware. It appears in
+  the panel and as switch, time, and binary sensor entities only when firmware
+  advertises `do_not_disturb`, and the window follows Home Assistant's time
+  zone across daylight-saving changes.
 
 ## 1.2.1
 

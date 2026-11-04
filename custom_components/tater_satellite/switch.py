@@ -10,7 +10,11 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
-from .settings import board_is_s3_screen, supports_screen_power_management
+from .settings import (
+    board_is_s3_screen,
+    supports_do_not_disturb,
+    supports_screen_power_management,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,12 @@ DEFINITIONS = (
         "screen_night_mode_enabled",
         "Scheduled night dimming",
         "mdi:theme-light-dark",
+    ),
+    SwitchDefinition(
+        "dnd_enabled", "Do Not Disturb", "mdi:minus-circle", category=None
+    ),
+    SwitchDefinition(
+        "dnd_schedule_enabled", "Daily Do Not Disturb schedule", "mdi:calendar-clock"
     ),
     SwitchDefinition("muted", "Microphone mute", "mdi:microphone-off"),
     SwitchDefinition("continued_chat", "Continued conversation", "mdi:account-voice"),
@@ -61,6 +71,10 @@ async def async_setup_entry(
             TaterSettingsSwitch(runtime, definition)
             for definition in DEFINITIONS
             if (
+                not definition.key.startswith("dnd_")
+                or supports_do_not_disturb(runtime.capabilities)
+            )
+            and (
                 not definition.key.startswith("screen_")
                 or (
                     supports_screen_power_management(

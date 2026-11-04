@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
-from .settings import supports_screen_power_management
+from .settings import supports_do_not_disturb, supports_screen_power_management
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,10 @@ DEFINITIONS = (
     TimeDefinition("screen_night_start", "Screen dim time", "mdi:weather-night"),
     TimeDefinition("screen_night_end", "Screen restore time", "mdi:weather-sunset-up"),
 )
+DND_DEFINITIONS = (
+    TimeDefinition("dnd_start", "Do Not Disturb start", "mdi:bell-sleep"),
+    TimeDefinition("dnd_end", "Do Not Disturb end", "mdi:bell-ring"),
+)
 
 
 async def async_setup_entry(
@@ -34,7 +38,7 @@ async def async_setup_entry(
     entry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up satellite display schedule entities."""
+    """Set up satellite display and Do Not Disturb schedule entities."""
     manager: TaterSatelliteManager = entry.runtime_data
     manager.register_platform(
         "time",
@@ -46,6 +50,14 @@ async def async_setup_entry(
             if supports_screen_power_management(
                 runtime.board, runtime.capabilities
             )
+            else []
+        )
+        + (
+            [
+                TaterSettingsTime(runtime, definition)
+                for definition in DND_DEFINITIONS
+            ]
+            if supports_do_not_disturb(runtime.capabilities)
             else []
         ),
         async_add_entities,

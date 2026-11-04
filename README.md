@@ -130,6 +130,19 @@ The controls are exposed per satellite and only when Echo firmware advertises
 the screen power-management capability. ESP32-S3-BOX-3 retains its established
 manual-brightness and scheduled-dimming controls.
 
+## Speaker equalizer and bass protection
+
+Open an Echo satellite's settings in **Tater Satellites** to tune its speaker
+under **Speaker Equalizer**: an eight-band equalizer (125 Hz low shelf to 8 kHz
+high shelf, ±12 dB), a presence boost, bass protection, and a peak limiter.
+Bass protection compresses bass below about 115 Hz and by default may cut it by
+up to 30 dB, which can make music sound thin; raise **Bass protection floor**
+toward 0 dB to keep more bass, and listen for distortion at high volume.
+
+The controls are exposed per satellite and only when Echo firmware advertises
+the `output_chain` capability. The defaults match the firmware's own, so a
+satellite sounds the same until a value is changed.
+
 ## Tater Audio, stereo, and multi-room playback
 
 Current Tater Native, Tater Echo, and Tater ThirdReality firmware expose a

@@ -76,6 +76,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "volume_percent": 80,
     "muted": False,
     "audio_output_mode": "auto",
+    "eq_band_125": 0.0,
+    "eq_band_250": 0.0,
+    "eq_band_500": 0.0,
+    "eq_band_1k": 0.0,
+    "eq_band_2k": 0.0,
+    "eq_band_3k5": 0.0,
+    "eq_band_5k5": 0.0,
+    "eq_band_8k": 0.0,
+    "eq_loudness": False,
+    "bass_guard_enabled": True,
+    "bass_guard_db": -30.0,
+    "limiter_enabled": True,
+    "limiter_threshold_db": -1.0,
+    "limiter_release_ms": 150.0,
     "screen_brightness": 80,
     "screen_auto_brightness_enabled": False,
     "screen_auto_brightness_minimum": 12,
@@ -167,6 +181,27 @@ FIRMWARE_SETTING_KEYS = {
     "led_replying_animation",
     "led_music_animation",
     "logging_level",
+}
+
+# The Echo firmware's speaker output chain takes the eight bands as one
+# eq_bands array, low shelf first; the panel edits them as separate numbers.
+EQ_BANDS: tuple[tuple[str, str], ...] = (
+    ("eq_band_125", "125 Hz"),
+    ("eq_band_250", "250 Hz"),
+    ("eq_band_500", "500 Hz"),
+    ("eq_band_1k", "1 kHz"),
+    ("eq_band_2k", "2 kHz"),
+    ("eq_band_3k5", "3.5 kHz"),
+    ("eq_band_5k5", "5.5 kHz"),
+    ("eq_band_8k", "8 kHz"),
+)
+OUTPUT_CHAIN_SETTING_KEYS = {key for key, _label in EQ_BANDS} | {
+    "eq_loudness",
+    "bass_guard_enabled",
+    "bass_guard_db",
+    "limiter_enabled",
+    "limiter_threshold_db",
+    "limiter_release_ms",
 }
 
 WAKE_WORD_OPTIONS = [
@@ -773,6 +808,84 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         ],
     },
     {
+        "section": "output_chain",
+        "title": "Speaker Equalizer",
+        "description": (
+            "Tune this satellite's speaker response. Changes apply on the "
+            "satellite without a firmware rebuild."
+        ),
+        "scopes": ["device"],
+        "required_capability": "output_chain",
+        "fields": [
+            *(
+                {
+                    "key": key,
+                    "label": f"EQ {label}",
+                    "type": "number",
+                    "min": -12,
+                    "max": 12,
+                    "step": 0.5,
+                }
+                for key, label in EQ_BANDS
+            ),
+            {
+                "key": "eq_loudness",
+                "label": "Presence boost",
+                "type": "boolean",
+                "description": (
+                    "Adds a broad +5 dB lift centred near 2.5 kHz for clearer "
+                    "speech."
+                ),
+            },
+            {
+                "key": "bass_guard_enabled",
+                "label": "Bass protection",
+                "type": "boolean",
+                "description": (
+                    "Compresses bass below about 115 Hz to protect the driver "
+                    "from over-excursion."
+                ),
+            },
+            {
+                "key": "bass_guard_db",
+                "label": "Bass protection floor (dB)",
+                "type": "number",
+                "min": -60,
+                "max": 0,
+                "step": 1,
+                "show_when": {"key": "bass_guard_enabled", "equals": True},
+                "description": (
+                    "Maximum bass reduction. -30 dB is the firmware default; "
+                    "values closer to 0 keep more bass."
+                ),
+            },
+            {
+                "key": "limiter_enabled",
+                "label": "Peak limiter",
+                "type": "boolean",
+                "description": "Prevents boosted EQ bands from clipping the output.",
+            },
+            {
+                "key": "limiter_threshold_db",
+                "label": "Limiter ceiling (dBFS)",
+                "type": "number",
+                "min": -12,
+                "max": 0,
+                "step": 0.5,
+                "show_when": {"key": "limiter_enabled", "equals": True},
+            },
+            {
+                "key": "limiter_release_ms",
+                "label": "Limiter release (ms)",
+                "type": "number",
+                "min": 20,
+                "max": 1000,
+                "step": 10,
+                "show_when": {"key": "limiter_enabled", "equals": True},
+            },
+        ],
+    },
+    {
         "section": "display",
         "title": "Display & Night",
         "description": (
@@ -1041,6 +1154,9 @@ _BOOL_KEYS = {
     "muted",
     "screen_auto_brightness_enabled",
     "screen_night_mode_enabled",
+    "eq_loudness",
+    "bass_guard_enabled",
+    "limiter_enabled",
 }
 _INT_RANGES = {
     "wake_sliding_window": (1, 10),
@@ -1081,6 +1197,10 @@ _FLOAT_RANGES = {
     "nww_threshold": (0.01, 1.0),
     "wake_verifier_threshold": (0.5, 1.0),
     "close_miss_threshold": (0.01, 0.99),
+    **{key: (-12.0, 12.0) for key, _label in EQ_BANDS},
+    "bass_guard_db": (-60.0, 0.0),
+    "limiter_threshold_db": (-12.0, 0.0),
+    "limiter_release_ms": (20.0, 1000.0),
 }
 _TEXT_LIMITS = {
     "screen_climate_entity": 255,
@@ -1226,6 +1346,12 @@ def supports_screen_power_management(
         return int(value or 0) >= 1
     except (TypeError, ValueError):
         return False
+
+
+def supports_output_chain(capabilities: dict[str, Any] | None = None) -> bool:
+    """Return whether Echo firmware runs the configurable speaker output chain."""
+    values = capabilities if isinstance(capabilities, dict) else {}
+    return values.get("output_chain") is True
 
 
 def supports_screen_clock_format(
@@ -1499,6 +1625,11 @@ def firmware_payload(
         payload.pop("led_music_animation", None)
     if not board_supports_audio_output_settings(board):
         payload.pop("audio_output_mode", None)
+    if supports_output_chain(capabilities):
+        payload["eq_bands"] = [float(normalized[key]) for key, _label in EQ_BANDS]
+        for key in OUTPUT_CHAIN_SETTING_KEYS:
+            if not key.startswith("eq_band_"):
+                payload[key] = normalized[key]
     profile_threshold = float(normalized["wake_profile_threshold"])
     adjustment = WAKE_SENSITIVITY_ADJUSTMENTS.get(
         str(normalized["wake_sensitivity"]), 0.0

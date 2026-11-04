@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added per-satellite Speaker Equalizer settings for Echo satellites: eight
+  EQ bands, presence boost, bass protection with an adjustable floor, and the
+  peak limiter. They appear only when firmware advertises `output_chain`, and
+  their defaults match the firmware's built-in values.
+
 ## 1.2.1
 
 - Improved Echo screen cameras by preferring a camera's continuous Home

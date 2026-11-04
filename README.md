@@ -135,13 +135,15 @@ manual-brightness and scheduled-dimming controls.
 Open an Echo satellite's settings in **Tater Satellites** to tune its speaker
 under **Speaker Equalizer**: an eight-band equalizer (125 Hz low shelf to 8 kHz
 high shelf, ±12 dB), a presence boost, bass protection, and a peak limiter.
-Bass protection compresses bass below about 115 Hz and by default may cut it by
-up to 30 dB, which can make music sound thin; raise **Bass protection floor**
-toward 0 dB to keep more bass, and listen for distortion at high volume.
+Bass protection compresses bass below about 115 Hz. Its **Bass protection
+floor** is the most it may cut: -30 dB on the small Echo Dot, Show 5, and Spot
+speakers, and -10 dB on the larger Echo 2nd generation (Radar) and Echo Show 8
+(Crown and Athena) speakers, where -30 dB makes music sound thin. Raise the
+floor toward 0 dB to keep more bass, and listen for distortion at high volume.
 
 The controls are exposed per satellite and only when Echo firmware advertises
-the `output_chain` capability. The defaults match the firmware's own, so a
-satellite sounds the same until a value is changed.
+the `output_chain` capability. A value set on a satellite always replaces the
+board default.
 
 ## Tater Audio, stereo, and multi-room playback
 

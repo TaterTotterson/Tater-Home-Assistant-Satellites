@@ -95,5 +95,14 @@ class OutputChainSettingsTests(unittest.TestCase):
         )
 
 
+    def test_larger_speakers_default_to_a_shallower_bass_floor(self) -> None:
+        for board in ("radar", "crown", "athena", "Echo Show 8", "echo-show-8-2nd-gen"):
+            self.assertEqual(
+                settings.speaker_defaults_for(board), {"bass_guard_db": -10.0}, board
+            )
+        for board in ("biscuit", "checkers", "cronos", "rook", "voice_pe", ""):
+            self.assertEqual(settings.speaker_defaults_for(board), {}, board)
+
+
 if __name__ == "__main__":
     unittest.main()

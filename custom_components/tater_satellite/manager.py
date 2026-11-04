@@ -79,6 +79,7 @@ from .settings import (
     merged_settings,
     normalize_settings,
     normalize_wake_family_settings,
+    speaker_defaults_for,
     wake_family_for,
 )
 from .trainer import TrainerLinkManager
@@ -1211,6 +1212,10 @@ class TaterSatelliteManager:
         )
         if runtime is not None and board_is_echo_screen(runtime.board):
             for key, value in ECHO_SCREEN_DEFAULTS.items():
+                if key not in overrides:
+                    resolved[key] = value
+        if runtime is not None:
+            for key, value in speaker_defaults_for(runtime.board).items():
                 if key not in overrides:
                     resolved[key] = value
         return resolved

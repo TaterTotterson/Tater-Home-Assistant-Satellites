@@ -4,8 +4,10 @@
 
 - Added per-satellite Speaker Equalizer settings for Echo satellites: eight
   EQ bands, presence boost, bass protection with an adjustable floor, and the
-  peak limiter. They appear only when firmware advertises `output_chain`, and
-  their defaults match the firmware's built-in values.
+  peak limiter. They appear only when firmware advertises `output_chain`.
+- Defaulted the bass protection floor to -10 dB on the larger Echo speakers
+  (Radar, Crown, and Athena) instead of the firmware's -30 dB, which suits the
+  small Dot, Show 5, and Spot drivers. Values set on a satellite still win.
 
 ## 1.2.1
 

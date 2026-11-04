@@ -80,6 +80,7 @@ from .settings import (
     normalize_settings,
     normalize_wake_family_settings,
     speaker_defaults_for,
+    supports_do_not_disturb,
     wake_family_for,
 )
 from .trainer import TrainerLinkManager
@@ -266,6 +267,12 @@ def _settings_messages(
     return messages
 
 
+def _local_utc_offset_seconds() -> int:
+    """Return Home Assistant's current local UTC offset in seconds."""
+    offset = dt_util.now().utcoffset()
+    return int(offset.total_seconds()) if offset is not None else 0
+
+
 def _as_int(value: Any) -> int:
     """Return an integer without trusting device-provided status values."""
     try:
@@ -320,6 +327,7 @@ class SatelliteRuntime:
         self.settings_last_confirmed = 0.0
         self.settings_push_baseline = 0
         self.settings_push_count = 0
+        self.settings_utc_offset: int | None = None
 
     @property
     def name(self) -> str:
@@ -573,7 +581,14 @@ class SatelliteRuntime:
 
     def playback_finished(self, ok: bool, error: str = "") -> None:
         """Resolve the oldest pending playback waiter."""
-        if not ok:
+        if not ok and text(error) == "do not disturb is active":
+            # Expected while DND is on: the firmware refuses non-critical audio.
+            self.add_log(
+                "info",
+                "Playback skipped: Do Not Disturb is active.",
+                kind="playback.finished",
+            )
+        elif not ok:
             detail = text(error) or "The satellite did not provide an error message."
             message = f"Voice playback failed: {detail}"
             self.add_log("error", message, kind="playback.finished")
@@ -1310,6 +1325,7 @@ class TaterSatelliteManager:
             board=board,
             capabilities=runtime.capabilities if runtime is not None else {},
             local_time_seconds=local_time_seconds,
+            utc_offset_seconds=_local_utc_offset_seconds(),
         )
         payload["output_channel_mode"] = self.media.output_channel_mode(device_id)
         return payload
@@ -1331,6 +1347,16 @@ class TaterSatelliteManager:
         """Refresh every connected screen clock, including UTC offset changes."""
         for runtime in tuple(self.runtimes.values()):
             await self.async_push_display_clock(runtime)
+        # A DND window is evaluated with the offset in the last settings push,
+        # so a daylight-saving change needs a fresh push.
+        offset = _local_utc_offset_seconds()
+        for runtime in tuple(self.runtimes.values()):
+            if (
+                runtime.connected
+                and supports_do_not_disturb(runtime.capabilities)
+                and runtime.settings_utc_offset != offset
+            ):
+                await self.async_push_settings(runtime)
 
     async def async_push_settings(
         self,
@@ -1366,6 +1392,7 @@ class TaterSatelliteManager:
             runtime.notify()
             return False
 
+        runtime.settings_utc_offset = settings.get("utc_offset_seconds")
         runtime.settings_sync_state = "sent"
         runtime.settings_sync_message = "Waiting for the satellite to confirm settings."
         runtime.notify()

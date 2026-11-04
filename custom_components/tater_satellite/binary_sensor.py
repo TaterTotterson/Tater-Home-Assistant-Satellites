@@ -11,6 +11,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
+from .settings import supports_do_not_disturb
 
 
 async def async_setup_entry(
@@ -18,11 +19,16 @@ async def async_setup_entry(
     entry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up satellite connection sensors."""
+    """Set up satellite connection and Do Not Disturb sensors."""
     manager: TaterSatelliteManager = entry.runtime_data
     manager.register_platform(
         "binary_sensor",
-        lambda runtime: [TaterConnectionSensor(runtime)],
+        lambda runtime: [TaterConnectionSensor(runtime)]
+        + (
+            [TaterDndActiveSensor(runtime)]
+            if supports_do_not_disturb(runtime.capabilities)
+            else []
+        ),
         async_add_entities,
     )
 
@@ -46,3 +52,23 @@ class TaterConnectionSensor(TaterSatelliteEntity, BinarySensorEntity):
     def is_on(self) -> bool:
         """Return connection status."""
         return self.runtime.connected
+
+
+class TaterDndActiveSensor(TaterSatelliteEntity, BinarySensorEntity):
+    """Whether the satellite is enforcing Do Not Disturb right now.
+
+    On while the manual switch is on or the daily window is open, as the
+    firmware reports it in each status message.
+    """
+
+    _attr_name = "Do Not Disturb active"
+    _attr_icon = "mdi:minus-circle"
+
+    def __init__(self, runtime: SatelliteRuntime) -> None:
+        super().__init__(runtime, "dnd_active")
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the firmware's reported DND state."""
+        value = self.runtime.last_status.get("dnd_active")
+        return value if isinstance(value, bool) else None

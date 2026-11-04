@@ -366,6 +366,8 @@ firmware channels.
 
 Tater Home Assistant Satellites is licensed under the
 [GNU Affero General Public License v3](LICENSE).
+The Tater name and logo are governed by the
+[Tater Trademark Policy](TRADEMARKS.md).
 
 ## Related projects
 

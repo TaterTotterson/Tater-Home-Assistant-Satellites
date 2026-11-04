@@ -7,6 +7,9 @@
   <a href="https://taterassistant.com">
     <img alt="Visit Tater Assistant" src="https://img.shields.io/badge/Tater%20Assistant-Visit%20Website-F28C28?style=for-the-badge&logo=googlechrome&logoColor=white" />
   </a>
+  <a href="LICENSE">
+    <img alt="License: GNU AGPL v3" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" />
+  </a>
 </p>
 
 # Tater Home Assistant Satellites
@@ -358,6 +361,11 @@ Satellite1 Public Batch #1 / Beta.1 HAT and Core rev4.1 uses its own
 first USB install; Public Batch #2 and later hardware should use `Satellite1`.
 After pairing, the distinct board IDs keep OTA updates on their matching
 firmware channels.
+
+## License
+
+Tater Home Assistant Satellites is licensed under the
+[GNU Affero General Public License v3](LICENSE).
 
 ## Related projects
 

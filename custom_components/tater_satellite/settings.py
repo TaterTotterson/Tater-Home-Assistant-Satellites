@@ -203,6 +203,20 @@ OUTPUT_CHAIN_SETTING_KEYS = {key for key, _label in EQ_BANDS} | {
     "limiter_threshold_db",
     "limiter_release_ms",
 }
+# The firmware's -30 dB bass protection floor suits the small Dot, Show 5
+# and Spot drivers but makes music thin on the larger Echo and Show 8
+# speakers. These apply until a value is set for the satellite.
+LARGE_SPEAKER_DEFAULTS: dict[str, Any] = {"bass_guard_db": -10.0}
+_LARGE_SPEAKER_BOARDS = {
+    "radar",
+    "echo2ndgen",
+    "crown",
+    "echoshow8",
+    "echoshow81stgen",
+    "athena",
+    "a8h3n2",
+    "echoshow82ndgen",
+}
 
 WAKE_WORD_OPTIONS = [
     {"value": "hey_tater", "label": "Hey Tater (built in)"},
@@ -1346,6 +1360,14 @@ def supports_screen_power_management(
         return int(value or 0) >= 1
     except (TypeError, ValueError):
         return False
+
+
+def speaker_defaults_for(board: Any) -> dict[str, Any]:
+    """Return per-board speaker output defaults for larger Echo drivers."""
+    token = str(board or "").strip().lower()
+    for separator in ("_", "-", " "):
+        token = token.replace(separator, "")
+    return dict(LARGE_SPEAKER_DEFAULTS) if token in _LARGE_SPEAKER_BOARDS else {}
 
 
 def supports_output_chain(capabilities: dict[str, Any] | None = None) -> bool:

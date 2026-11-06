@@ -23,6 +23,7 @@ from homeassistant.components.media_player import async_process_play_media_url
 from homeassistant.core import callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .conversation_display import ConversationDisplayState
 from .manager import SatelliteRuntime, TaterSatelliteManager
 from .timers import timer_event_command
 from .wake_audio import WakePrerollGate
@@ -98,6 +99,7 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         self._attr_name = "Voice Assistant"
         self._bridge_task: asyncio.Task[None] | None = None
         self._pipeline_event_lock = asyncio.Lock()
+        self._conversation_display = ConversationDisplayState(runtime.device_id)
         self._wake_preroll_gate = WakePrerollGate()
         self._attr_tts_options = {
             tts.ATTR_PREFERRED_FORMAT: "wav",
@@ -448,6 +450,13 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
             if state:
                 await self.runtime.async_send(
                     "state", {"state": state, "event": event_name}
+                )
+            display_payload = self._conversation_display.pipeline_event(
+                event_name, data
+            )
+            if display_payload is not None and self.runtime.capabilities.get("screen"):
+                await self.runtime.async_send(
+                    "display.conversation", display_payload
                 )
             if event_name == "STT_VAD_END":
                 self.runtime.finish_audio()

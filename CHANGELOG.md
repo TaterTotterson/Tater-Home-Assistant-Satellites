@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.3.1
+
+- Added live Assist conversation text to compatible Tater Echo screens. The
+  bridge now shows the listening screen, Home Assistant's final STT transcript,
+  the thinking state, and the assistant's final reply using the firmware's
+  ordered `display.conversation` protocol.
+- Kept the existing `voice.event` state and audio flow unchanged. Home
+  Assistant currently exposes final STT text to the satellite entity, so the
+  completed user sentence appears at `STT_END` without claiming unsupported
+  word-by-word transcript streaming.
+
 ## 1.3.0
 
 - Added per-satellite Speaker Equalizer settings for Echo satellites: eight

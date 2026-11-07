@@ -1671,6 +1671,11 @@ class TaterSatelliteManager:
                         "oww_model_revision": "",
                         "nww_model_revision": "",
                         "nww_available_architectures": "cnn,gru",
+                        "wake_bundle_schema_version": 0,
+                        "wake_boundary_available": False,
+                        "wake_boundary_threshold": 0.0,
+                        "wake_boundary_model_revision": "",
+                        "wake_boundary_model_size_bytes": 0,
                         **{
                             key: DEFAULT_SETTINGS[key]
                             for key in (
@@ -1721,6 +1726,40 @@ class TaterSatelliteManager:
                     "oww_wake_word_url": bundle_url,
                 }
             )
+        else:
+            selected_source = text(
+                incoming.get("wake_word", current.get("wake_word"))
+            ).lower()
+            incoming.update(
+                {
+                    "wake_bundle_schema_version": 0,
+                    "wake_boundary_available": False,
+                    "wake_boundary_threshold": 0.0,
+                    "wake_boundary_model_revision": "",
+                    "wake_boundary_model_size_bytes": 0,
+                }
+            )
+            if selected_source != "custom_url":
+                incoming.update(
+                    {
+                        key: DEFAULT_SETTINGS[key]
+                        for key in (
+                            "wake_profile_threshold",
+                            "wake_profile_sliding_window",
+                            "wake_profile_close_miss_threshold",
+                            "oww_profile_threshold",
+                            "oww_profile_patience",
+                            "oww_profile_confirmation_threshold",
+                            "oww_profile_confirmation_patience",
+                            "nww_profile_threshold",
+                            "nww_profile_patience",
+                            "nww_cnn_profile_threshold",
+                            "nww_cnn_profile_patience",
+                            "nww_gru_profile_threshold",
+                            "nww_gru_profile_patience",
+                        )
+                    }
+                )
         incoming["wake_detector_mode"] = mode
         next_settings = normalize_wake_family_settings(
             "echo",
@@ -1899,29 +1938,49 @@ class TaterSatelliteManager:
         wake_word_url: str,
     ) -> dict[str, Any]:
         """Make a trainer-published wake word authoritative for every satellite."""
+        bundle_profile: dict[str, Any] = {}
+        bundle_url = text(wake_word_url)
+        firmware_url = bundle_url
+        if bundle_url.split("?", 1)[0].lower().endswith(".wake-bundle.json"):
+            bundle_profile = await self._async_wake_bundle(
+                bundle_url,
+                required_engine="mww",
+            )
+            firmware_url = text(bundle_profile.get("manifest_url"))
+        revision = text(bundle_profile.get("wake_model_revision")) or secrets.token_hex(
+            16
+        )
+        profile_settings = {
+            key: value
+            for key, value in bundle_profile.items()
+            if key in WAKE_FAMILY_SETTING_KEYS
+        }
         current = normalize_settings(self.data.get("global_settings"))
         self.data["global_settings"] = normalize_settings(
             {
                 **current,
+                **profile_settings,
                 "wake_word": "custom_url",
-                "wake_word_url": wake_word_url,
-                "wake_model_revision": secrets.token_hex(16),
+                "wake_word_url": firmware_url,
+                "wake_model_revision": revision,
                 "wake_model_asset_id": "",
                 "wake_verifier_phrase": wake_word,
-                "wake_verifier_phrase_url": wake_word_url,
+                "wake_verifier_phrase_url": bundle_url,
             }
         )
         families = self.data.setdefault("wake_family_settings", {})
-        revision = secrets.token_hex(16)
         shared = normalize_wake_family_settings(
             "echo",
             {
                 **self.shared_wake_settings(),
+                **profile_settings,
                 "wake_detector_mode": "mww",
                 "wake_word": "custom_url",
-                "wake_word_url": wake_word_url,
+                "wake_word_url": firmware_url,
                 "wake_model_revision": revision,
                 "wake_model_asset_id": "",
+                "oww_wake_word": "custom_url" if bundle_profile else "hey_tater",
+                "oww_wake_word_url": bundle_url if bundle_profile else "",
             },
             base=self.data["global_settings"],
         )

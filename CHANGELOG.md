@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 1.3.2
+
+- Added schema-v4 wake-bundle support for custom and V9 catalog wake words.
+  The bridge validates the hash, size, runtime contract, search window, and
+  calibration threshold of the detector-independent wake-boundary model before
+  a package can be selected.
+- Switched schema-v4 MWW, OWW, and NWW cache revisions to the complete bundle
+  hash. Retraining only the boundary model now refreshes the matched Echo
+  package even when all detector weights remain unchanged.
+- Updated linked Wake Word Trainer publishing to accept the canonical bundle,
+  route its adjacent ESPHome manifest to MWW-only satellites, and retain the
+  same bundle for Echo companion and boundary installation.
+- Added read-only schema, threshold, size, and availability details for the
+  boundary model in the shared wake-word UI, plus V9 catalog coverage.
+- Preserved schema-v1 through schema-v3 bundle compatibility. Schema-v4 wake
+  boundaries require Tater Echo Firmware 4.2.0 or newer.
+
 ## 1.3.1
 
 - Added live Assist conversation text to compatible Tater Echo screens. The

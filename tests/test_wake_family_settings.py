@@ -224,6 +224,10 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertIn('"settings/trainer"', panel)
         self.assertIn("MWW + NWW", panel)
         self.assertIn("renderWakeTuningOverrides", panel)
+        self.assertIn("Wake boundary model", panel)
+        self.assertIn("wake_boundary_available", panel)
+        self.assertIn('endswith(".wake-bundle.json")', manager)
+        self.assertIn("bundle_profile = await self._async_wake_bundle(", manager)
         self.assertGreaterEqual(assist.count('"wake_detector_mode": "mww"'), 3)
 
     def test_global_forms_have_disjoint_explicit_allowlists(self) -> None:
@@ -354,6 +358,37 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertFalse(payload["wake_oww_enabled"])
         self.assertNotIn("oww_wake_word", payload)
         self.assertNotIn("oww_wake_word_url", payload)
+
+    def test_boundary_bundle_details_are_read_only_bridge_metadata(self) -> None:
+        profile = settings.normalize_wake_family_settings(
+            "echo",
+            {
+                "wake_bundle_schema_version": 4,
+                "wake_boundary_available": True,
+                "wake_boundary_threshold": 0.82,
+                "wake_boundary_model_revision": "d" * 64,
+                "wake_boundary_model_size_bytes": 137984,
+            },
+        )
+        payload = settings.firmware_payload(
+            profile,
+            board="biscuit",
+            capabilities={"openwakeword": True},
+        )
+
+        self.assertEqual(profile["wake_bundle_schema_version"], 4)
+        self.assertTrue(profile["wake_boundary_available"])
+        self.assertEqual(profile["wake_boundary_threshold"], 0.82)
+        self.assertEqual(profile["wake_boundary_model_revision"], "d" * 64)
+        self.assertEqual(profile["wake_boundary_model_size_bytes"], 137984)
+        for key in (
+            "wake_bundle_schema_version",
+            "wake_boundary_available",
+            "wake_boundary_threshold",
+            "wake_boundary_model_revision",
+            "wake_boundary_model_size_bytes",
+        ):
+            self.assertNotIn(key, payload)
 
     def test_panel_live_refresh_preserves_active_editor_controls(self) -> None:
         panel = PANEL_PATH.read_text(encoding="utf-8")

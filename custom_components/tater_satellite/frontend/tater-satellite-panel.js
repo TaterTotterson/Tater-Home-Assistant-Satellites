@@ -436,6 +436,11 @@ class TaterSatellitePanel extends HTMLElement {
       .wake-tuning { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--divider-color); }
       .wake-tuning-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 12px; }
       .wake-tuning-head h3 { margin: 0 0 4px; }
+      .wake-boundary-card { display: grid; grid-template-columns: auto 1fr auto; gap: 11px; align-items: center; margin: 0 0 12px; padding: 12px 13px; border: 1px solid color-mix(in srgb, var(--tater-accent) 35%, var(--divider-color)); border-radius: 12px; background: color-mix(in srgb, var(--tater-accent-soft) 55%, var(--secondary-background-color)); }
+      .wake-boundary-card.missing { border-color: var(--divider-color); background: var(--secondary-background-color); }
+      .wake-boundary-card i { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--tater-accent-soft); color: var(--tater-accent); font-style: normal; font-weight: 850; }
+      .wake-boundary-card span:not(.badge) { display: grid; gap: 2px; }
+      .wake-boundary-card small { color: var(--secondary-text-color); line-height: 1.35; }
       .wake-tuning-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); gap: 11px; }
       .wake-tuning-card { padding: 13px; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--secondary-background-color); }
       .wake-tuning-card.active { border-color: color-mix(in srgb, var(--tater-accent) 55%, var(--divider-color)); box-shadow: inset 0 0 0 1px var(--tater-accent-soft); }
@@ -1260,6 +1265,13 @@ class TaterSatellitePanel extends HTMLElement {
       },
     ].filter((model) => active[model.key]);
     if (!models.length) return "";
+    const bundleSchema = Number(values?.wake_bundle_schema_version || 0);
+    const boundaryAvailable = Boolean(values?.wake_boundary_available);
+    const boundaryDetails = bundleSchema >= 4
+      ? `Schema V${bundleSchema} · ${boundaryAvailable
+        ? `threshold ${values?.wake_boundary_threshold ?? "—"} · ${formatBytes(values?.wake_boundary_model_size_bytes)}`
+        : "no endpoint model included"}`
+      : "";
     return `
       <div class="wake-tuning">
         <div class="wake-tuning-head">
@@ -1268,6 +1280,13 @@ class TaterSatellitePanel extends HTMLElement {
             <div class="muted">Bundle values stay active until you enable an override for that model.</div>
           </div>
         </div>
+        ${bundleSchema >= 4 ? `
+          <div class="wake-boundary-card ${boundaryAvailable ? "" : "missing"}">
+            <i>END</i>
+            <span><strong>Wake boundary model</strong><small>${escapeHtml(boundaryDetails)}. Echo firmware keeps this model loaded to separate the wake phrase from immediate speech.</small></span>
+            <span class="badge ${boundaryAvailable ? "online" : ""}">${boundaryAvailable ? "Included" : "Unavailable"}</span>
+          </div>
+        ` : ""}
         <div class="wake-tuning-grid">
           ${models.map((model) => {
             const enabled = Boolean(values?.[model.enabled]);

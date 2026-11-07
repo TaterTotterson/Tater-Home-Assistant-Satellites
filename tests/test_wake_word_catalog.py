@@ -53,6 +53,10 @@ V8_BUNDLE_URL = (
     "https://raw.githubusercontent.com/TaterTotterson/"
     "Tater-Wake-Words/main/microWakeWordsV8/hey_tater.wake-bundle.json"
 )
+V9_BUNDLE_URL = (
+    "https://raw.githubusercontent.com/TaterTotterson/"
+    "Tater-Wake-Words/main/microWakeWordsV9/hey_tater.wake-bundle.json"
+)
 
 
 class _FakeContent:
@@ -241,6 +245,20 @@ class WakeWordCatalogTests(unittest.TestCase):
                         ],
                         "nanowakeword_architectures": ["cnn", "gru"],
                     },
+                    {
+                        "source": "microWakeWordsV9",
+                        "slug": "hey_tater",
+                        "label": "Hey Tater",
+                        "url": V9_BUNDLE_URL,
+                        "bundle_url": V9_BUNDLE_URL,
+                        "available_engines": [
+                            "micro_wake_word",
+                            "open_wake_word",
+                            "nano_wake_word",
+                            "wake_boundary",
+                        ],
+                        "nanowakeword_architectures": ["cnn", "gru"],
+                    },
                 ]
             }
         )
@@ -251,7 +269,7 @@ class WakeWordCatalogTests(unittest.TestCase):
 
         self.assertEqual(
             [row["value"] for row in snapshot["oww_options"]],
-            [V7_BUNDLE_URL, V8_BUNDLE_URL],
+            [V7_BUNDLE_URL, V8_BUNDLE_URL, V9_BUNDLE_URL],
         )
         self.assertEqual(
             snapshot["nww_options"],
@@ -260,7 +278,12 @@ class WakeWordCatalogTests(unittest.TestCase):
                     "value": V8_BUNDLE_URL,
                     "label": "Hey Tater [V8]",
                     "architectures": ["cnn", "gru"],
-                }
+                },
+                {
+                    "value": V9_BUNDLE_URL,
+                    "label": "Hey Tater [V9]",
+                    "architectures": ["cnn", "gru"],
+                },
             ],
         )
 

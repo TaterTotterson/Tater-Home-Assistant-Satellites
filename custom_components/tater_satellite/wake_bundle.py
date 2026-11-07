@@ -9,6 +9,10 @@ from urllib.parse import urljoin, urlparse
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+_BOUNDARY_MODEL_FORMAT = "tflite_stream_state_internal_quant"
+_BOUNDARY_QUANTIZATION = "int8"
+_BOUNDARY_SAMPLE_RATE = 16_000
+_MAX_BOUNDARY_MODEL_BYTES = 200 * 1024
 
 
 def _text(value: Any) -> str:
@@ -93,6 +97,59 @@ def _revision(section: Any, raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _wake_boundary(section: Any, schema: int) -> dict[str, Any]:
+    """Validate schema-v4 endpoint metadata and return display-safe details."""
+    if section is None:
+        return {
+            "available": False,
+            "threshold": 0.0,
+            "model_revision": "",
+            "model_size_bytes": 0,
+        }
+    if not isinstance(section, dict) or schema != 4:
+        raise ValueError("The wake bundle boundary model is invalid.")
+
+    model = _text(section.get("model"))
+    digest = _text(section.get("model_sha256")).lower()
+    try:
+        size = int(section.get("model_size_bytes") or 0)
+        threshold = float(section.get("threshold") or 0.0)
+        tensor_arena_size = int(section.get("tensor_arena_size") or 0)
+        sample_rate = int(section.get("sample_rate") or 0)
+        search_before_ms = int(section.get("search_before_ms") or 0)
+        search_after_ms = int(section.get("search_after_ms") or 0)
+    except (TypeError, ValueError) as err:
+        raise ValueError("The wake bundle boundary model is invalid.") from err
+
+    bare_model = (
+        bool(model)
+        and "/" not in model
+        and "\\" not in model
+        and model.lower().endswith(".tflite")
+    )
+    if (
+        _text(section.get("type")) != "wake_word_end"
+        or not bare_model
+        or not _SHA256.fullmatch(digest)
+        or not 0 < size <= _MAX_BOUNDARY_MODEL_BYTES
+        or _text(section.get("model_format")) != _BOUNDARY_MODEL_FORMAT
+        or _text(section.get("quantization")) != _BOUNDARY_QUANTIZATION
+        or sample_rate != _BOUNDARY_SAMPLE_RATE
+        or not 0.0 < threshold <= 1.0
+        or not 64 * 1024 <= tensor_arena_size <= 256 * 1024
+        or not 0 < search_before_ms <= 2_000
+        or not 0 <= search_after_ms <= 500
+    ):
+        raise ValueError("The wake bundle boundary model is invalid.")
+
+    return {
+        "available": True,
+        "threshold": round(threshold, 3),
+        "model_revision": digest,
+        "model_size_bytes": size,
+    }
+
+
 def _esphome_manifest_url(bundle_url: str, payload: dict[str, Any], micro: dict[str, Any]) -> str:
     manifest = _text(micro.get("manifest"))
     if manifest.lower().endswith(".json"):
@@ -114,17 +171,17 @@ def parse_wake_bundle(
     required_engine: str = "",
     nww_architecture: str = "cnn",
 ) -> dict[str, Any]:
-    """Validate a schema-v1/v3 bundle and return firmware profile metadata."""
+    """Validate a schema-v1/v4 bundle and return firmware profile metadata."""
     if not isinstance(payload, dict):
         raise ValueError("The Tater wake bundle must contain a JSON object.")
     schema = payload.get("schema_version")
-    if schema not in {1, 2, 3} or _text(payload.get("type")) != "tater_wake_word_bundle":
+    if schema not in {1, 2, 3, 4} or _text(payload.get("type")) != "tater_wake_word_bundle":
         raise ValueError("The URL is not a supported Tater wake bundle.")
 
     micro = payload.get("micro_wake_word")
     oww = payload.get("open_wake_word")
     nano = payload.get("nano_wake_word")
-    strict_artifacts = schema == 3
+    strict_artifacts = schema >= 3
     has_mww = isinstance(micro, dict) and (
         _has_verified_model(micro, (".tflite",))
         if strict_artifacts
@@ -183,19 +240,34 @@ def parse_wake_bundle(
     )
     oww = oww if isinstance(oww, dict) else {}
     selected_nww = valid_variants.get(architecture, {})
+    boundary = _wake_boundary(payload.get("wake_boundary"), int(schema))
+    bundle_revision = hashlib.sha256(raw).hexdigest()
+    # A boundary-only training run intentionally leaves detector hashes alone.
+    # Schema v4 therefore uses the complete bundle revision for every engine,
+    # forcing Echo firmware to refresh the matched endpoint model as well.
+    wake_revision = bundle_revision if schema == 4 else _revision(micro, raw)
+    oww_revision = bundle_revision if schema == 4 else _revision(oww, raw)
+    nww_revision = (
+        bundle_revision if schema == 4 else _revision(selected_nww or nano, raw)
+    )
     result: dict[str, Any] = {
         "schema_version": int(schema),
+        "wake_bundle_schema_version": int(schema),
         "wake_word": _text(
             payload.get("wake_word") or payload.get("label") or payload.get("key")
         ),
         "bundle_has_mww": has_mww,
         "bundle_has_oww": has_oww,
+        "wake_boundary_available": bool(boundary["available"]),
+        "wake_boundary_threshold": float(boundary["threshold"]),
+        "wake_boundary_model_revision": _text(boundary["model_revision"]),
+        "wake_boundary_model_size_bytes": int(boundary["model_size_bytes"]),
         "manifest_url": _esphome_manifest_url(bundle_url, payload, micro)
         if has_mww
         else "",
-        "wake_model_revision": _revision(micro, raw),
-        "oww_model_revision": _revision(oww, raw),
-        "nww_model_revision": _revision(selected_nww or nano, raw),
+        "wake_model_revision": wake_revision,
+        "oww_model_revision": oww_revision,
+        "nww_model_revision": nww_revision,
         "nww_available_architectures": ",".join(valid_variants),
         "nww_architecture": architecture,
         "wake_profile_threshold": _number(

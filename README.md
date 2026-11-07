@@ -242,22 +242,27 @@ for every connected satellite. Choose a single-model or dual-model policy:
 
 For custom companion or dual detection, select the canonical
 `.wake-bundle.json` produced by a Tater Wake Word Trainer. Home Assistant
-supports schema-v1 through schema-v3 bundles, including the new bundles that
-can contain MWW, OWW, NWW CNN, and NWW GRU together. The bridge validates the
-selected engine, reads the trainer-tested threshold/window/patience values, and
-sends only the models each satellite can run.
+supports schema-v1 through schema-v4 bundles, including V9 catalog bundles that
+can contain MWW, OWW, NWW CNN, NWW GRU, and the detector-independent wake-end
+model together. The bridge validates the selected engines and every schema-v4
+boundary artifact field, reads the trainer-tested threshold/window/patience
+values, and sends only the models each satellite can run. Schema-v4 bundle
+revisions cover the complete package so boundary-only retraining refreshes the
+cached Echo package even when the detector weights have not changed.
 
 Model-specific override cards appear for the engines active in the selected
 policy. With an override disabled, the trainer bundle values remain in effect.
-Wake sensitivity and environment—including **TV Nearby**—remain per-satellite
-room settings.
+For schema-v4 bundles, the same section shows the included boundary model,
+threshold, and size as read-only information. Wake sensitivity and
+environment—including **TV Nearby**—remain per-satellite room settings.
 
 ## Choose a catalog microWakeWord
 
 While using MWW, set **Wake word** to **Tater Wake Word Catalog** and choose any
 versioned model. Companion modes offer only compatible bundles: OWW starts at
-V7 and NWW starts at V8. Home Assistant validates that the selected package
-belongs to the official catalog before sending it to satellites.
+V7, NWW starts at V8, and V9 adds the schema-v4 wake boundary. Home Assistant
+validates that the selected package belongs to the official catalog before
+sending it to satellites.
 
 The catalog is fetched asynchronously and cached for ten minutes. If a refresh
 temporarily fails, the bridge keeps the last successfully loaded list. You can

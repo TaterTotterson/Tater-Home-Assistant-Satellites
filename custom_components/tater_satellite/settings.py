@@ -1812,11 +1812,26 @@ def firmware_payload(
         for key in ("openwakeword", "wake_detector_selection", "dual_wake_confirmation")
     )
     supports_nww = _boolean(caps.get("nanowakeword"), False)
+    try:
+        wake_boundary_version = int(caps.get("wake_boundary_version") or 0)
+    except (TypeError, ValueError):
+        wake_boundary_version = 0
+    supports_wake_boundary = _boolean(caps.get("wake_boundary"), False) or wake_boundary_version >= 1
     if family == "mww" or (mode in {"oww", "mww_oww"} and not supports_oww) or (
         mode in {"nww", "mww_nww"} and not supports_nww
     ):
         mode = "mww"
         payload["wake_mww_enabled"] = True
+        boundary_bundle_url = str(normalized.get("oww_wake_word_url") or "").strip()
+        if (
+            supports_wake_boundary
+            and _boolean(normalized.get("wake_boundary_available"), False)
+            and int(normalized.get("wake_bundle_schema_version") or 0) >= 4
+            and str(normalized.get("oww_wake_word") or "").lower() == "custom_url"
+            and boundary_bundle_url.lower().split("?", 1)[0].endswith(".wake-bundle.json")
+        ):
+            payload["wake_word"] = "custom_url"
+            payload["wake_word_url"] = boundary_bundle_url
         for key in (
             "wake_oww_enabled",
             "wake_nww_enabled",

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.3.3
+
+- Added boundary-aware wake-bundle delivery for Tater Native ESP32 satellites.
+  Satellites advertising wake-boundary support now receive the complete,
+  verified schema-v4 bundle through the bridge instead of only its ESPHome MWW
+  manifest.
+- Kept older native firmware fully compatible by continuing to project and
+  deliver the MWW-only manifest when wake-boundary support is not advertised.
+- Removed Echo-only bundle fields before native delivery while retaining the
+  boundary model, runtime contract, calibration, and integrity metadata needed
+  by compatible native firmware.
+
 ## 1.3.2
 
 - Added schema-v4 wake-bundle support for custom and V9 catalog wake words.

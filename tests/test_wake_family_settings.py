@@ -94,6 +94,35 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertNotIn("oww_wake_word", payload)
         self.assertNotIn("oww_wake_word_url", payload)
 
+    def test_boundary_capable_native_satellite_receives_the_v4_bundle(self) -> None:
+        bundle_url = "https://example.test/hey.wake-bundle.json"
+        profile = settings.normalize_wake_family_settings(
+            "mww",
+            {
+                "wake_detector_mode": "mww",
+                "wake_word": "custom_url",
+                "wake_word_url": "https://example.test/hey.esphome.json",
+                "oww_wake_word": "custom_url",
+                "oww_wake_word_url": bundle_url,
+                "wake_bundle_schema_version": 4,
+                "wake_boundary_available": True,
+            },
+        )
+
+        capable = settings.firmware_payload(
+            profile,
+            board="voice-pe",
+            capabilities={"wake_boundary": True, "wake_boundary_version": 1},
+        )
+        legacy = settings.firmware_payload(profile, board="voice-pe")
+
+        self.assertEqual(capable["wake_word_url"], bundle_url)
+        self.assertNotIn("oww_wake_word_url", capable)
+        self.assertEqual(
+            legacy["wake_word_url"],
+            "https://example.test/hey.esphome.json",
+        )
+
     def test_echo_dual_mode_sends_both_detectors_and_one_paired_bundle(self) -> None:
         profile = settings.normalize_wake_family_settings(
             "echo",

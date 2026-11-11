@@ -1870,8 +1870,21 @@ class TaterSatelliteManager:
         mode = text(values.get("wake_verifier_mode")).lower().replace("-", "_")
         if mode not in {"off", "observe", "enforce"}:
             raise ValueError("Unsupported STT wake-check mode.")
+        patch: dict[str, Any] = {"wake_verifier_mode": mode}
+        if "wake_verifier_threshold" in values:
+            try:
+                threshold = float(values["wake_verifier_threshold"])
+            except (TypeError, ValueError) as err:
+                raise ValueError(
+                    "STT match threshold must be between 50% and 100%."
+                ) from err
+            if not 0.5 <= threshold <= 1.0:
+                raise ValueError(
+                    "STT match threshold must be between 50% and 100%."
+                )
+            patch["wake_verifier_threshold"] = threshold
         return await self._async_set_global_setting_group(
-            {"wake_verifier_mode": mode},
+            patch,
             allowed_keys=WAKE_VERIFIER_SETTING_KEYS,
             label="STT wake-check",
         )

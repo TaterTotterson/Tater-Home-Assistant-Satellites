@@ -322,7 +322,10 @@ TRAINER_SETTING_KEYS = {
     "close_miss_threshold",
     "trainer_app_url",
 }
-WAKE_VERIFIER_SETTING_KEYS = {"wake_verifier_mode"}
+WAKE_VERIFIER_SETTING_KEYS = {
+    "wake_verifier_mode",
+    "wake_verifier_threshold",
+}
 
 WAKE_SOUND_OPTIONS = [
     {"value": "no_sound", "label": "No sound"},
@@ -702,6 +705,20 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                     {"value": "observe", "label": "Observe"},
                     {"value": "enforce", "label": "Enabled"},
                 ],
+            },
+            {
+                "key": "wake_verifier_threshold",
+                "label": "STT match threshold",
+                "type": "percentage_range",
+                "default": 0.85,
+                "min": 0.5,
+                "max": 1.0,
+                "step": 0.01,
+                "description": (
+                    "Minimum transcript similarity required in Enabled mode. "
+                    "Higher is stricter; lower tolerates harmless STT substitutions. "
+                    "The on-device wake model remains the first check."
+                ),
             },
         ],
     },

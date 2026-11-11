@@ -26,7 +26,10 @@ const TRAINER_SETTING_KEYS = new Set([
   "close_miss_threshold",
   "trainer_app_url",
 ]);
-const WAKE_VERIFIER_SETTING_KEYS = new Set(["wake_verifier_mode"]);
+const WAKE_VERIFIER_SETTING_KEYS = new Set([
+  "wake_verifier_mode",
+  "wake_verifier_threshold",
+]);
 
 function pickSettings(values, allowedKeys) {
   return Object.fromEntries(
@@ -377,6 +380,31 @@ class TaterSatellitePanel extends HTMLElement {
         background: color-mix(in srgb, #1cb8f2 9%, transparent);
         color: var(--secondary-text-color);
       }
+      .percentage-range-field {
+        display: grid;
+        gap: 9px;
+        padding: 13px 14px;
+        border: 1px solid color-mix(in srgb, var(--tater-accent) 34%, var(--divider-color));
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--tater-accent-soft) 45%, var(--secondary-background-color));
+      }
+      .percentage-range-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .percentage-range-head span { font-size: 13px; font-weight: 700; }
+      .percentage-range-head output {
+        min-width: 58px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        color: var(--tater-accent);
+        background: var(--tater-accent-soft);
+        text-align: center;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+      .percentage-range-field input[type="range"] { width: 100%; accent-color: var(--tater-accent); }
+      .percentage-range-scale { display: flex; justify-content: space-between; gap: 12px; color: var(--secondary-text-color); font-size: 11px; }
+      .percentage-range-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+      .percentage-range-footer small { color: var(--secondary-text-color); line-height: 1.4; }
+      .percentage-range-footer button { flex: 0 0 auto; }
       .verifier-device.rejected { border-color: color-mix(in srgb, var(--error-color) 55%, var(--divider-color)); }
       .verifier-device.fail-open { border-color: color-mix(in srgb, #e5a323 55%, var(--divider-color)); }
       .badge.rejected { color: var(--error-color); background: color-mix(in srgb, var(--error-color) 14%, transparent); }
@@ -1527,7 +1555,7 @@ class TaterSatellitePanel extends HTMLElement {
           <div class="fact"><label>Accepted</label><span>${Number(verifier.accepted || 0)}</span></div>
           <div class="fact"><label>Rejected</label><span>${Number(verifier.rejections || 0)}</span></div>
           <div class="fact"><label>Fail-open</label><span>${Number(verifier.fail_open || 0)}</span></div>
-          <div class="fact"><label>Last score</label><span>${hasLast && last.available !== false ? Number(last.score || 0).toFixed(3) : "—"}</span></div>
+          <div class="fact"><label>Last match</label><span>${hasLast && last.available !== false ? `${Math.round(Number(last.score || 0) * 100)}% match · ${Math.round(Number(last.threshold ?? this._globalDraft?.wake_verifier_threshold ?? 0.85) * 100)}% required` : "—"}</span></div>
           <div class="fact"><label>STT latency</label><span>${hasLast ? `${Number(last.stt_ms || 0).toFixed(1)} ms` : "—"}</span></div>
           <div class="fact"><label>Reason</label><span>${escapeHtml(reason)}</span></div>
         </div>
@@ -1584,6 +1612,24 @@ class TaterSatellitePanel extends HTMLElement {
   renderField(field, values, scope) {
     const value = values?.[field.key] ?? "";
     const common = `data-setting="${escapeHtml(field.key)}" data-scope="${scope}"`;
+    if (field.type === "percentage_range") {
+      const minimum = Number(field.min ?? 0.5);
+      const maximum = Number(field.max ?? 1);
+      const step = Number(field.step ?? 0.01);
+      const defaultValue = Number(field.default ?? 0.85);
+      const numericValue = Math.max(minimum, Math.min(maximum, Number(value || defaultValue)));
+      return `
+        <div class="percentage-range-field">
+          <div class="percentage-range-head"><span>${escapeHtml(field.label)}</span><output>${Math.round(numericValue * 100)}%</output></div>
+          <input type="range" ${common} min="${minimum}" max="${maximum}" step="${step}" value="${numericValue}">
+          <div class="percentage-range-scale"><span>${Math.round(minimum * 100)}% · more tolerant</span><span>${Math.round(maximum * 100)}% · exact match</span></div>
+          <div class="percentage-range-footer">
+            <small>${escapeHtml(field.description || "")}</small>
+            <button type="button" data-reset-setting="${escapeHtml(field.key)}" data-reset-scope="${scope}" data-reset-value="${defaultValue}" ${numericValue === defaultValue ? "disabled" : ""}>Reset to ${Math.round(defaultValue * 100)}%</button>
+          </div>
+        </div>
+      `;
+    }
     if (field.type === "boolean") {
       return `
         <label class="toggle-field">
@@ -2094,6 +2140,17 @@ class TaterSatellitePanel extends HTMLElement {
         this.render();
       }),
     );
+    root.querySelectorAll("[data-reset-setting]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const target = {
+          global: this._globalDraft,
+          wake: this._wakeDraft,
+        }[button.dataset.resetScope] || this._deviceDraft;
+        target[button.dataset.resetSetting] = Number(button.dataset.resetValue);
+        this._dirty = true;
+        this.render();
+      }),
+    );
     root.querySelectorAll("[data-setting]").forEach((input) => {
       input.addEventListener("change", () => {
         const target = {
@@ -2101,7 +2158,7 @@ class TaterSatellitePanel extends HTMLElement {
           wake: this._wakeDraft,
         }[input.dataset.scope] || this._deviceDraft;
         let value = input.type === "checkbox" ? input.checked : input.value;
-        if (input.type === "number") value = Number(value);
+        if (input.type === "number" || input.type === "range") value = Number(value);
         target[input.dataset.setting] = value;
         if (input.dataset.setting === "wake_word") {
           if (value === "catalog") {
@@ -2169,7 +2226,7 @@ class TaterSatellitePanel extends HTMLElement {
         );
         if (
           controlsConditionalFields ||
-          ["wake_word", "wake_detector_mode", "oww_wake_word", "oww_wake_word_catalog_url", "nww_architecture", "mww_tuning_override_enabled", "oww_tuning_override_enabled", "nww_tuning_override_enabled", "wake_sound", "aec_enabled", "wake_verifier_mode"].includes(
+          ["wake_word", "wake_detector_mode", "oww_wake_word", "oww_wake_word_catalog_url", "nww_architecture", "mww_tuning_override_enabled", "oww_tuning_override_enabled", "nww_tuning_override_enabled", "wake_sound", "aec_enabled", "wake_verifier_mode", "wake_verifier_threshold"].includes(
             input.dataset.setting,
           )
         ) {

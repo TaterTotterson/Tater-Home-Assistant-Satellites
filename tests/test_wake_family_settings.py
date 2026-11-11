@@ -255,6 +255,8 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertIn("renderWakeTuningOverrides", panel)
         self.assertIn("Wake boundary model", panel)
         self.assertIn("wake_boundary_available", panel)
+        self.assertIn('"wake_verifier_threshold"', panel)
+        self.assertIn("percentage-range-field", panel)
         self.assertIn('endswith(".wake-bundle.json")', manager)
         self.assertIn("bundle_profile = await self._async_wake_bundle(", manager)
         self.assertGreaterEqual(assist.count('"wake_detector_mode": "mww"'), 3)
@@ -262,8 +264,20 @@ class WakeFamilySettingsTests(unittest.TestCase):
     def test_global_forms_have_disjoint_explicit_allowlists(self) -> None:
         self.assertEqual(
             settings.WAKE_VERIFIER_SETTING_KEYS,
-            {"wake_verifier_mode"},
+            {"wake_verifier_mode", "wake_verifier_threshold"},
         )
+        verifier_section = next(
+            section
+            for section in settings.SETTINGS_SCHEMA
+            if section.get("section") == "verifier"
+        )
+        verifier_fields = {
+            field["key"]: field for field in verifier_section["fields"]
+        }
+        threshold = verifier_fields["wake_verifier_threshold"]
+        self.assertEqual(threshold["type"], "percentage_range")
+        self.assertEqual(threshold["default"], 0.85)
+        self.assertEqual((threshold["min"], threshold["max"]), (0.5, 1.0))
         self.assertEqual(
             settings.TRAINER_SETTING_KEYS,
             {

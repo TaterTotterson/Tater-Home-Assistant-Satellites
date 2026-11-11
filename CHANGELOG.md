@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.3.4
+
+- Added an adjustable STT wake-verification match threshold to the STT Wake
+  Check tab. The global control ranges from 50% to 100% in one-percent steps,
+  keeps the existing 85% default, and includes a one-click reset.
+- Clarified that this threshold tunes only the secondary STT confirmation; the
+  satellite's on-device wake model remains the first wake gate.
+- Updated per-satellite results to show the latest transcript match beside the
+  threshold required for that decision, making Observe mode easier to tune for
+  benign substitutions such as “Juniper” being transcribed as “Jennifer.”
+- Saved and pushed threshold changes through the dedicated verifier endpoint,
+  with validation that preserves compatibility with existing firmware.
+
 ## 1.3.3
 
 - Added boundary-aware wake-bundle delivery for Tater Native ESP32 satellites.

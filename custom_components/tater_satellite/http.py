@@ -135,6 +135,88 @@ class GlobalSettingsView(HomeAssistantView):
         return self.json({"ok": True, "settings": saved})
 
 
+class TaterAssistantSettingsView(HomeAssistantView):
+    """Manage the complete mini-Tater voice pipeline."""
+
+    url = f"{API_BASE_PATH}/tater/settings"
+    name = "api:tater_satellite:tater_settings"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Save provider, home-control, and Hydra settings."""
+        body = await _json_body(request)
+        values = body.get("settings")
+        if not isinstance(values, dict):
+            values = body
+        try:
+            saved = await _manager(request).tater_assistant.async_update_settings(values)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "settings": saved})
+
+
+class TaterAssistantTestView(HomeAssistantView):
+    """Run one text-only mini-Tater conversation for setup testing."""
+
+    url = f"{API_BASE_PATH}/tater/test"
+    name = "api:tater_satellite:tater_test"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Send a test message through Hydra without invoking STT or TTS."""
+        body = await _json_body(request)
+        text = str(body.get("text") or "").strip()
+        if not text:
+            raise web.HTTPBadRequest(text="Enter a test message")
+        try:
+            result = await _manager(request).tater_assistant.async_process_text(
+                text,
+                conversation_id=str(body.get("conversation_id") or "tater-panel-test"),
+                device_id="management-panel",
+            )
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, **result})
+
+
+class TaterHydraClearView(HomeAssistantView):
+    """Clear mini-Tater Hydra records selected by the administrator."""
+
+    url = f"{API_BASE_PATH}/tater/hydra/clear"
+    name = "api:tater_satellite:tater_hydra_clear"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Clear ledger entries, conversation history, or both."""
+        body = await _json_body(request)
+        return self.json(
+            await _manager(request).tater_assistant.async_clear_hydra(
+                ledger=bool(body.get("ledger", True)),
+                conversations=bool(body.get("conversations", False)),
+            )
+        )
+
+
+class TaterSpeechAudioView(HomeAssistantView):
+    """Serve a short-lived synthesized Tater response to a satellite."""
+
+    url = f"{API_BASE_PATH}/tater/audio/{{clip_id}}"
+    name = "api:tater_satellite:tater_audio"
+    requires_auth = False
+
+    async def get(self, request: web.Request, clip_id: str) -> web.Response:
+        """Return generated speech by its unguessable, expiring identifier."""
+        clip = _manager(request).tater_assistant.clip(clip_id)
+        if clip is None:
+            raise web.HTTPNotFound(text="Tater speech clip expired")
+        content_type, data = clip
+        return web.Response(
+            body=data,
+            content_type=content_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+
 class TrainerSettingsView(HomeAssistantView):
     """Manage trainer feedback settings."""
 
@@ -621,6 +703,10 @@ VIEWS = (
     BluetoothPairView,
     BluetoothUnpairView,
     GlobalSettingsView,
+    TaterAssistantSettingsView,
+    TaterAssistantTestView,
+    TaterHydraClearView,
+    TaterSpeechAudioView,
     TrainerSettingsView,
     WakeVerifierSettingsView,
     SharedWakeSettingsView,

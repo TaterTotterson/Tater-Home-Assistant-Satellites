@@ -1,5 +1,5 @@
 const API = "tater/satellite/v1";
-const ACCENT = "#ff5a1f";
+const ACCENT = "#e87b40";
 const TATER_HOSTED_USB_FLASHER_URL = "https://taterassistant.com/usb-flasher/";
 const PANEL_ASSET_VERSION = new URL(import.meta.url).searchParams.get("v") || "dev";
 const PANEL_ELEMENT_NAME = `tater-satellite-panel-${
@@ -30,6 +30,33 @@ const WAKE_VERIFIER_SETTING_KEYS = new Set([
   "wake_verifier_mode",
   "wake_verifier_threshold",
 ]);
+const WORKSPACE_PAGES = [
+  { id: "assistant", label: "Assistant", icon: "robot-outline", group: "Tater assistant", description: "Choose who owns each voice turn: Home Assistant Assist or the complete Tater pipeline." },
+  { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, speech-to-text, and text-to-speech providers." },
+  { id: "home-control", label: "Home control", icon: "home-automation", group: "Tater assistant", description: "Choose which Home Assistant entities Tater's one built-in device tool can use." },
+  { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every device-control decision." },
+  { id: "satellites", label: "Satellites", icon: "access-point", group: "Your home", description: "Voice around your home, connected directly to Home Assistant." },
+  { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
+  { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Echo scanners and the nearby devices they connect to Home Assistant." },
+  { id: "defaults", label: "Voice defaults", icon: "microphone", group: "Voice & wake", description: "One shared wake profile, with clear defaults for every satellite." },
+  { id: "verifier", label: "STT wake check", icon: "text-recognition", group: "Voice & wake", description: "Confirm wake words through each satellite’s Assist pipeline." },
+  { id: "trainer", label: "Wake Word Trainer", icon: "school-outline", group: "Voice & wake", description: "Link your trainer and publish wake words to your satellites." },
+  { id: "firmware", label: "Firmware & recovery", icon: "package-variant-closed-check", group: "Maintenance", description: "Update wirelessly or prepare a board-specific USB installer." },
+];
+const DEVICE_SETTING_GROUPS = [
+  { id: "voice", label: "Voice", sections: ["audio"] },
+  { id: "wake", label: "Wake", sections: ["wake", "wake_sound", "feedback", "verifier"] },
+  { id: "audio", label: "Audio", sections: ["audio_output", "output_chain"] },
+  { id: "display", label: "Display & lights", sections: ["display", "led"] },
+  { id: "quiet", label: "Quiet hours", sections: ["dnd"] },
+  { id: "diagnostics", label: "Diagnostics", sections: ["diagnostics"] },
+];
+const SHARED_SETTING_GROUPS = [
+  { id: "conversation", label: "Conversation", sections: ["audio"] },
+  { id: "sound", label: "Wake sound", sections: ["wake_sound"] },
+  { id: "diagnostics", label: "Diagnostics", sections: ["diagnostics"] },
+];
+const PICKER_SETTING_KEYS = new Set(["wake_word", "oww_wake_word", "wake_word_catalog_url", "oww_wake_word_catalog_url", "wake_sound"]);
 
 function pickSettings(values, allowedKeys) {
   return Object.fromEntries(
@@ -145,6 +172,10 @@ class TaterSatellitePanel extends HTMLElement {
     this._notice = "";
     this._tab = "satellites";
     this._selectedDeviceId = "";
+    this._taterDraft = null;
+    this._hydraSection = "ledger";
+    this._testMessage = "";
+    this._testConversationId = "tater-panel-test";
     this._globalDraft = null;
     this._wakeDraft = null;
     this._deviceDraft = null;
@@ -160,10 +191,26 @@ class TaterSatellitePanel extends HTMLElement {
     this._wakeWordCatalogLastAttempt = 0;
     this._pollTimer = null;
     this._backgroundRenderPending = false;
+    this._deviceSection = "overview";
+    this._voiceSection = "wake";
+    this._firmwareSection = "updates";
+    this._deviceQuery = "";
+    this._roomFilter = "";
+    this._dialog = "";
+    this._confirmation = null;
+    this._picker = null;
+    this._pickerQuery = "";
+    this._dialogFocus = null;
+    this._dirtyScopes = new Set();
+    this._deviceDrafts = new Map();
+    this._stereoDraft = {};
+    this.addEventListener?.("keydown", (event) => this.handleDialogKeydown(event));
   }
 
   set hass(value) {
     this._hass = value;
+    const darkMode = value?.themes?.darkMode;
+    this.style?.setProperty("color-scheme", typeof darkMode === "boolean" ? darkMode ? "dark" : "light" : "light dark");
     if (!this._data && !this._loading) this.load();
   }
 
@@ -204,6 +251,99 @@ class TaterSatellitePanel extends HTMLElement {
     );
   }
 
+  settingScope(scope, key = "") {
+    if (scope === "device") return `device:${this._selectedDeviceId}`;
+    if (scope === "global") {
+      if (TRAINER_SETTING_KEYS.has(key)) return "trainer";
+      if (WAKE_VERIFIER_SETTING_KEYS.has(key)) return "verifier";
+    }
+    return scope;
+  }
+
+  markDirty(scope, key = "") {
+    this._dirtyScopes.add(this.settingScope(scope, key));
+    this._dirty = true;
+    this.shadowRoot?.querySelectorAll("[data-draft-status]").forEach((node) => {
+      node.textContent = this.isScopeDirty(node.dataset.draftStatus) ? "Unsaved changes" : "Settings synchronized";
+    });
+  }
+
+  isScopeDirty(scope) {
+    return this._dirtyScopes.has(this.settingScope(scope));
+  }
+
+  clearDirty(...scopes) {
+    scopes.forEach((scope) => {
+      const key = this.settingScope(scope);
+      this._dirtyScopes.delete(key);
+      if (key.startsWith("device:")) this._deviceDrafts.delete(key.slice(7));
+    });
+    this._dirty = this._dirtyScopes.size > 0;
+  }
+
+  rememberDeviceDraft() {
+    if (!this._selectedDeviceId || !this.isScopeDirty("device")) return;
+    this._deviceDrafts.set(this._selectedDeviceId, {
+      draft: clone(this._deviceDraft), original: clone(this._deviceOriginal),
+      pipeline: this._pipelineDraft, vad: this._vadDraft,
+    });
+  }
+
+  syncDrafts(data) {
+    const fresh = this.prepareSettingsDraft(data.global_settings);
+    if (!this._globalDraft) this._globalDraft = fresh;
+    else Object.entries(fresh).forEach(([key, value]) => {
+      if (!this._dirtyScopes.has(this.settingScope("global", key))) this._globalDraft[key] = value;
+    });
+    if (!this._wakeDraft || !this.isScopeDirty("wake")) {
+      this._wakeDraft = this.prepareSettingsDraft(data.shared_wake_settings || data.wake_family_settings?.echo || data.wake_family_settings?.mww || {});
+    }
+    if (!this._taterDraft || !this.isScopeDirty("tater")) {
+      this._taterDraft = clone(data.tater_assistant?.settings || {});
+    }
+    if (this._selectedDeviceId && !this.isScopeDirty("device")) this.prepareDeviceDraft(this._selectedDeviceId, false);
+  }
+
+  navigate(tab) {
+    if (!WORKSPACE_PAGES.some((page) => page.id === tab)) return;
+    this.rememberDeviceDraft();
+    this._tab = tab;
+    this._selectedDeviceId = "";
+    this._dialog = "";
+    this.render();
+    this.scrollIntoView?.({ block: "start" });
+    this.shadowRoot.querySelector(".workspace-main")?.scrollTo?.({ top: 0, left: 0 });
+  }
+
+  confirmAction(title, message, label, action) {
+    this._dialogFocus = this.shadowRoot.activeElement;
+    this._confirmation = { title, message, label, action };
+    this.render();
+  }
+
+  closeDialog() {
+    const focus = this._dialogFocus;
+    const action = focus?.dataset?.action;
+    const setting = focus?.dataset?.pickSetting;
+    this._dialog = "";
+    this._confirmation = null;
+    this._picker = null;
+    this.render();
+    const candidates = this.shadowRoot.querySelectorAll("button");
+    [...candidates].find((button) => setting ? button.dataset.pickSetting === setting : action && button.dataset.action === action)?.focus();
+  }
+
+  handleDialogKeydown(event) {
+    const dialog = this.shadowRoot.querySelector(".workspace-dialog");
+    if (!dialog) return;
+    if (event.key === "Escape") { event.preventDefault(); this.closeDialog(); return; }
+    if (event.key !== "Tab") return;
+    const controls = [...dialog.querySelectorAll("button, input, select, textarea, a[href], summary")].filter((node) => !node.disabled && node.getClientRects().length);
+    const first = controls[0], last = controls.at(-1), active = this.shadowRoot.activeElement;
+    if (event.shiftKey && (active === first || !dialog.contains(active))) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && (active === last || !dialog.contains(active))) { event.preventDefault(); first?.focus(); }
+  }
+
   async load(background = false) {
     if (this._loading) return;
     this._loading = true;
@@ -228,18 +368,7 @@ class TaterSatellitePanel extends HTMLElement {
       }
       this._data = data;
       this._error = "";
-      if (!this._globalDraft || !this._dirty) {
-        this._globalDraft = this.prepareSettingsDraft(data.global_settings);
-        this._wakeDraft = this.prepareSettingsDraft(
-          data.shared_wake_settings ||
-            data.wake_family_settings?.echo ||
-            data.wake_family_settings?.mww ||
-            {},
-        );
-      }
-      if (this._selectedDeviceId && !this._dirty) {
-        this.prepareDeviceDraft(this._selectedDeviceId, false);
-      }
+      this.syncDrafts(data);
     } catch (error) {
       this._error = formatApiError(error);
     } finally {
@@ -253,7 +382,8 @@ class TaterSatellitePanel extends HTMLElement {
     }
   }
 
-  async run(action, successMessage = "") {
+  async run(action, successMessage = "", savedScopes = []) {
+    const savedKeys = savedScopes.map((scope) => this.settingScope(scope));
     this._error = "";
     this._notice = "";
     this._loading = true;
@@ -261,7 +391,7 @@ class TaterSatellitePanel extends HTMLElement {
     try {
       await action();
       this._notice = successMessage;
-      this._dirty = false;
+      this.clearDirty(...savedKeys);
       this._loading = false;
       await this.load(true);
     } catch (error) {
@@ -273,16 +403,395 @@ class TaterSatellitePanel extends HTMLElement {
 
   render() {
     if (!this.shadowRoot) return;
+    if (this._dialog === "picker" && !(this._data?.settings_schema || []).some((section) => section.fields?.some((field) => field.key === this._picker?.key))) {
+      this._dialog = "";
+      this._picker = null;
+    }
     this.shadowRoot.innerHTML = `
-      <style>${this.styles()}</style>
-      <main>
-        ${this.renderHeader()}
-        ${this._error ? `<div class="banner error">${escapeHtml(this._error)}</div>` : ""}
-        ${this._notice ? `<div class="banner success">${escapeHtml(this._notice)}</div>` : ""}
-        ${!this._data ? this.renderLoading() : this.renderBody()}
-      </main>
+      <style>${this.styles()}${this.workspaceStyles()}</style>
+      <div class="bridge-workspace">
+        <header class="workspace-topbar"><span class="workspace-brand">Tater</span><span class="muted">/</span><span>Home Assistant bridge</span>
+          <span class="workspace-connection">${this.renderIcon("home-assistant")} Home Assistant</span>
+        </header>
+        <div class="workspace-shell">
+          ${this.renderNavigation()}
+          <main class="workspace-main" ${this._dialog || this._confirmation ? "inert" : ""}>
+            ${this.renderHeader()}
+            ${this._error ? `<div class="banner error" role="alert">${escapeHtml(this._error)}</div>` : ""}
+            ${this._notice ? `<div class="banner success" role="status">${escapeHtml(this._notice)}</div>` : ""}
+            ${!this._data ? this.renderLoading() : this.renderBody()}
+          </main>
+        </div>
+      </div>
+      ${this.renderDialog()}
     `;
     this.bindEvents();
+    this.applyDeviceFilter();
+    this.shadowRoot.querySelector("[data-dialog-initial]")?.focus();
+  }
+
+  renderIcon(name) {
+    return `<ha-icon icon="mdi:${escapeHtml(name)}" aria-hidden="true"></ha-icon>`;
+  }
+
+  renderNavigation() {
+    return `<aside class="workspace-sidebar" ${this._dialog || this._confirmation ? "inert" : ""}>
+      <nav aria-label="Bridge sections">${["Tater assistant", "Your home", "Voice & wake", "Maintenance"].map((group) => `
+        <div class="workspace-nav-group"><span class="workspace-eyebrow">${group}</span>
+          ${WORKSPACE_PAGES.filter((page) => page.group === group).map((page) => `
+            <button type="button" class="workspace-nav-item" data-tab="${page.id}" ${this._tab === page.id ? 'aria-current="page"' : ""}>
+              ${this.renderIcon(page.icon)}<span>${page.label}</span>${this.pageHasDraft(page.id) ? '<span class="draft-dot" aria-label="Unsaved changes"></span>' : ""}
+            </button>`).join("")}
+        </div>`).join("")}</nav>
+      <div class="workspace-sidebar-footer"><strong>${this.renderIcon("home-assistant")} Home Assistant</strong><span>Native Assist satellites</span><span>Local connection</span></div>
+    </aside>`;
+  }
+
+  pageHasDraft(tab) {
+    if (["assistant", "models", "home-control", "hydra"].includes(tab)) return this.isScopeDirty("tater");
+    if (tab === "satellites") return [...this._dirtyScopes].some((scope) => scope.startsWith("device:"));
+    if (tab === "defaults") return this.isScopeDirty("wake") || this.isScopeDirty("global");
+    return this.isScopeDirty(tab === "audio" ? "stereo" : tab);
+  }
+
+  renderDraftFooter(scope, buttons) {
+    return `<footer class="sticky-actions workspace-save-bar"><div><strong data-draft-status="${scope}">${this.isScopeDirty(scope) ? "Unsaved changes" : "Settings synchronized"}</strong><span>${scope === "device" ? "Applies to this satellite." : "Applies to the shared profile."}</span></div><div class="row-actions">${buttons}</div></footer>`;
+  }
+
+  renderDialog() {
+    if (!this._dialog && !this._confirmation) return "";
+    let title = "", content = "";
+    if (this._confirmation) {
+      title = this._confirmation.title;
+      content = `<p class="muted">${escapeHtml(this._confirmation.message)}</p><div class="row-actions dialog-actions"><button type="button" data-action="close-dialog">Cancel</button><button type="button" class="primary" data-action="confirm-dialog">${escapeHtml(this._confirmation.label)}</button></div>`;
+    } else if (["server", "pairing"].includes(this._dialog)) {
+      const pairing = this._data?.pairing || {};
+      title = this._dialog === "pairing" ? "Add a satellite" : "Server & pairing";
+      content = `<p class="muted">Use this Home Assistant address in the satellite’s setup page. The firmware adds the connection path automatically.</p>
+        <div class="workspace-server">${escapeHtml(this._data?.server_address || "Unavailable")}</div>
+        <div class="row-actions"><button type="button" data-copy-trainer-url="${escapeHtml(this._data?.server_address || "")}">Copy address</button></div>
+        ${this._loading ? '<p class="muted" role="status">Generating pairing code…</p>' : pairing.active ? `
+          <span class="workspace-eyebrow">Pairing code</span><div class="pair-code" aria-label="Pairing code">${escapeHtml(pairing.code)}</div>
+          <button type="button" data-copy-pairing-code="${escapeHtml(pairing.code)}">Copy code</button>
+          <ol class="trainer-steps"><li>Put the satellite into setup mode.</li><li>Enter the Home Assistant address and this pairing code.</li><li>Save and let the satellite reconnect.</li></ol>
+        ` : '<button type="button" class="primary" data-action="pair">Generate pairing code</button>'}
+        <details><summary>Connection details</summary><div class="workspace-server">${escapeHtml(this._data?.websocket_path || "/api/tater/satellite/v1/ws")}</div></details>`;
+    } else if (this._dialog === "stereo") {
+      title = "Create stereo pair";
+      content = this.renderStereoPairEditor();
+    } else if (this._dialog === "groups") {
+      title = "Multi-room playback";
+      content = `<ol class="trainer-steps"><li>Choose a Home Assistant media player as the group leader.</li><li>Use Join media players to add satellites or saved stereo pairs.</li><li>Use Unjoin media player to return a player to independent playback.</li></ol><p class="muted">Saved pairs retain left/right routing. Standalone satellites play mono in the group. Music Assistant can also discover compatible devices as Sendspin players.</p>`;
+    } else if (this._dialog === "picker") {
+      const field = (this._data?.settings_schema || []).flatMap((section) => section.fields || []).find((row) => row.key === this._picker?.key);
+      if (!field) return "";
+      const scope = this._picker.scope;
+      const values = { wake: this._wakeDraft, global: this._globalDraft, device: this._deviceDraft }[scope] || {};
+      title = `Choose ${field.label.toLowerCase()}`;
+      content = `<p class="muted">Choose an option, then save settings to apply it.</p><input type="search" data-picker-search data-dialog-initial aria-label="Find ${escapeHtml(field.label.toLowerCase())}" placeholder="Find an option" value="${escapeHtml(this._pickerQuery)}">${this.renderField(field, values, scope, true)}<p class="muted" data-picker-empty hidden>No matching options. Try another search or refresh the bridge.</p>`;
+    }
+    return `<div class="workspace-dialog-backdrop" data-dialog-backdrop><section class="workspace-dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><header><h2>${escapeHtml(title)}</h2><button type="button" data-action="close-dialog" ${this._dialog === "picker" && !this._confirmation ? "" : "data-dialog-initial"} aria-label="Close dialog">${this.renderIcon("close")}</button></header>${this._error ? `<div class="banner error" role="alert">${escapeHtml(this._error)}</div>` : ""}${content}</section></div>`;
+  }
+
+  workspaceStyles() {
+    return `
+      :host {
+        color-scheme: light dark;
+        --workspace-bg: light-dark(#f5f3ef, #111213);
+        --workspace-nav: light-dark(#eeece7, #171819);
+        --workspace-panel: light-dark(#ffffff, #1b1c1e);
+        --workspace-field: light-dark(#f7f6f3, #222426);
+        --workspace-text: light-dark(#292622, #f1eee8);
+        --workspace-muted: light-dark(#6d665d, #b0a79c);
+        --workspace-line: light-dark(#ddd8d0, #343536);
+        --workspace-action: light-dark(#b94b1a, #e87b40);
+        --workspace-action-text: light-dark(#ffffff, #211207);
+        --workspace-good: light-dark(#277348, #82c9a0);
+        --tater-accent: light-dark(#ae4316, #ee8954);
+        --tater-accent-soft: light-dark(#f5e7de, #34271f);
+        --primary-text-color: var(--workspace-text);
+        --secondary-text-color: var(--workspace-muted);
+        --primary-background-color: var(--workspace-bg);
+        --secondary-background-color: var(--workspace-field);
+        --card-background-color: var(--workspace-panel);
+        --divider-color: var(--workspace-line);
+        --input-fill-color: var(--workspace-field);
+        --error-color: light-dark(#ae3434, #f0a09b);
+        background: var(--workspace-bg); color: var(--workspace-text);
+        font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      [hidden] { display: none !important; }
+      ha-icon { --mdc-icon-size: 18px; width: 18px; height: 18px; flex: none; vertical-align: middle; }
+      button, input, select, textarea, .field, .card { min-width: 0; }
+      :is(h1, h2, h3, p) { margin: 0; overflow-wrap: anywhere; }
+      :is(h1, h2, h3, strong, b) { font-weight: 500; }
+      h1 { font-size: 25px; letter-spacing: -.6px; }
+      h2 { font-size: 20px; }
+      h3 { font-size: 16px; }
+      button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 35px; padding: 7px 11px; border-radius: 8px; font-size: 12px; font-weight: 500; }
+      button:hover:not(:disabled) { background: var(--workspace-field); border-color: var(--workspace-line); }
+      button.primary, .firmware-hosted-flasher-link { background: var(--workspace-action); color: var(--workspace-action-text); border-color: transparent; }
+      button.primary:hover:not(:disabled), .firmware-hosted-flasher-link:hover { background: color-mix(in srgb, var(--workspace-action) 88%, var(--workspace-text)); filter: none; }
+      button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--tater-accent); outline-offset: 3px; }
+      input, select, textarea { min-height: 38px; padding: 9px 10px; border: 1px solid var(--workspace-line); border-radius: 7px; background: var(--workspace-field); color: var(--workspace-text); font: inherit; font-size: 13px; }
+      textarea { width: 100%; resize: vertical; line-height: 1.5; }
+      input[type=checkbox], input[type=radio] { accent-color: var(--tater-accent); }
+      .bridge-workspace { container: tater-bridge / inline-size; min-height: 100vh; }
+      .workspace-topbar { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; min-height: 68px; padding: 16px 24px; border-bottom: 1px solid var(--workspace-line); background: var(--workspace-nav); font-size: 13px; }
+      .workspace-brand { color: var(--tater-accent); font: 500 25px/1 "Marker Felt", "Segoe Print", "Trebuchet MS", sans-serif; }
+      .workspace-connection { display: flex; align-items: center; gap: 7px; margin-left: auto; color: var(--workspace-muted); font-size: 11px; }
+      .workspace-shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: start; }
+      .workspace-sidebar { position: sticky; top: 0; min-height: calc(100vh - 68px); padding: 24px 12px; border-right: 1px solid var(--workspace-line); background: var(--workspace-nav); }
+      .workspace-nav-group { display: grid; gap: 4px; margin-bottom: 24px; }
+      .workspace-eyebrow { display: block; color: var(--workspace-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+      .workspace-nav-group > .workspace-eyebrow { margin: 0 9px 6px; }
+      .workspace-nav-item { justify-content: flex-start; padding: 9px; gap: 10px; background: transparent; border-color: transparent; color: var(--workspace-muted); text-align: left; }
+      .workspace-nav-item[aria-current] { color: var(--tater-accent); background: var(--tater-accent-soft); border-color: color-mix(in srgb, var(--tater-accent) 24%, transparent); }
+      .draft-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--tater-accent); margin-left: auto; flex: none; }
+      .workspace-sidebar-footer { display: grid; gap: 3px; padding-top: 16px; margin: 28px 9px 0; border-top: 1px solid var(--workspace-line); color: var(--workspace-muted); font-size: 11px; }
+      .workspace-sidebar-footer strong { color: var(--workspace-text); margin-bottom: 3px; }
+      .workspace-sidebar-footer ha-icon { width: 16px; height: 16px; --mdc-icon-size: 16px; margin-right: 4px; }
+      main.workspace-main { max-width: none; min-width: 0; width: 100%; margin: 0; padding: 24px 24px 90px; }
+      .topbar { gap: 16px; flex-wrap: wrap; margin-bottom: 25px; }
+      .topbar h1 { margin: 3px 0 5px; }
+      .topbar p { color: var(--workspace-muted); max-width: 560px; font-size: 12px; }
+      .top-actions, .row-actions { gap: 7px; align-items: center; }
+      .workspace-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+      .workspace-summary { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; color: var(--workspace-muted); font-size: 12px; }
+      .connection-status { display: inline-flex; align-items: center; gap: 6px; color: var(--workspace-muted); font-size: 11px; white-space: nowrap; }
+      .connection-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .connection-status.online { color: var(--workspace-good); }
+      .workspace-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+      .workspace-filters input { width: 170px; }
+      .workspace-filters select { width: auto; max-width: 210px; }
+      .workspace-device-list { display: grid; }
+      .workspace-device-row { display: grid; grid-template-columns: 37px minmax(0, 1fr) auto; gap: 13px; align-items: start; padding: 23px 0; border-bottom: 1px solid var(--workspace-line); }
+      .workspace-device-icon { display: grid; place-items: center; height: 43px; width: 37px; border: 1px solid var(--workspace-line); border-radius: 11px; background: var(--workspace-panel); color: var(--workspace-muted); }
+      .workspace-device-icon ha-icon { --mdc-icon-size: 20px; width: 20px; height: 20px; }
+      .workspace-device-copy { min-width: 0; }
+      .workspace-device-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 4px; }
+      .workspace-device-name h2 { font-size: 14px; margin: 0; }
+      .workspace-device-meta { font-size: 11px; color: var(--workspace-muted); margin-bottom: 3px; overflow-wrap: anywhere; }
+      .workspace-device-actions { display: grid; justify-items: end; gap: 10px; }
+      .secondary-actions button { min-height: 24px; border: 0; padding: 1px 3px; color: var(--workspace-muted); background: transparent; font-size: 11px; }
+      .secondary-actions button.danger { color: var(--error-color); }
+      .workspace-device-progress { grid-column: 2 / -1; font-size: 11px; }
+      .workspace-device-row .device-volume { max-width: 340px; padding: 0; margin: 12px 0 0; border: 0; border-radius: 0; background: transparent; }
+      .workspace-device-row .device-volume-icon { display: none; }
+      .workspace-device-row .device-volume-head strong, .workspace-device-row .device-volume-head output { font-size: 11px; font-weight: 400; color: var(--workspace-muted); }
+      .workspace-device-row .device-volume-range { grid-template-columns: minmax(0, 1fr); }
+      .workspace-device-row .device-volume-range > span { display: none; }
+      .workspace-filter-empty { padding: 24px 0; }
+      .workspace-profile-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 0; margin-top: 25px; border-top: 1px solid var(--workspace-line); border-bottom: 1px solid var(--workspace-line); font-size: 12px; }
+      .workspace-profile-strip strong, .workspace-profile-strip span { display: block; }
+      .workspace-profile-strip span { font-size: 11px; margin-top: 3px; }
+      .workspace-section-nav { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 22px; }
+      .workspace-section-nav button { color: var(--workspace-muted); }
+      .workspace-section-nav button[aria-current] { background: var(--tater-accent-soft); border-color: var(--tater-accent); color: var(--tater-accent); }
+      .workspace-back { margin-bottom: 18px; padding-left: 0; border-color: transparent; background: transparent; color: var(--workspace-muted); }
+      .workspace-editor-head h2 { font-size: 23px; letter-spacing: -.4px; margin: 3px 0 5px; }
+      .workspace-editor-head p { font-size: 12px; }
+      .card { border-radius: 11px; padding: 20px; box-shadow: none; overflow-wrap: anywhere; }
+      .card > h2, .card > h3 { margin-bottom: 6px; }
+      .card > p, .section-description { color: var(--workspace-muted); font-size: 12px; }
+      .section-card { margin-bottom: 20px; }
+      .grid { grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr)); margin-bottom: 20px; }
+      .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; margin: 20px 0; font-size: 13px; }
+      .fact { min-width: 0; }
+      .fact label { font-weight: 400; text-transform: none; letter-spacing: 0; }
+      .fact span { margin-top: 4px; }
+      .badge { border-radius: 5px; padding: 3px 6px; font-size: 11px; }
+      .badge.online { color: var(--workspace-good); background: color-mix(in srgb, var(--workspace-good) 12%, var(--workspace-panel)); }
+      .badge.fail-open { color: var(--tater-accent); background: var(--tater-accent-soft); }
+      .settings-grid { grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 17px; }
+      .field > span, .percentage-range-head span { font-weight: 500; font-size: 12px; }
+      .field > small, .section-description, .wake-tuning-card small { font-size: 11px; line-height: 1.55; }
+      .toggle-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; background: var(--workspace-field); border-radius: 8px; font-size: 12px; }
+      .toggle-field input { width: 17px; height: 17px; min-height: 17px; flex: none; }
+      .asset-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .workspace-selection { grid-column: 1 / -1; }
+      .workspace-selection-row { display: flex; align-items: center; justify-content: space-between; gap: 13px; padding: 13px 0; border-top: 1px solid var(--workspace-line); border-bottom: 1px solid var(--workspace-line); }
+      .workspace-selection-row strong { min-width: 0; overflow-wrap: anywhere; }
+      .workspace-selection-row button { flex: none; }
+      .wake-mode-option { grid-template-columns: 32px minmax(0, 1fr) 12px; padding: 12px; border-radius: 9px; font-size: 12px; font-weight: 500; }
+      .wake-mode-option i { width: 32px; height: 32px; border-radius: 8px; font-weight: 500; }
+      .wake-mode-option.active { background: var(--tater-accent-soft); box-shadow: none; }
+      .wake-tuning-card { border-radius: 9px; }
+      .wake-tuning-title { flex-wrap: wrap; }
+      .wake-tuning-switch { font-weight: 500; }
+      .wake-boundary-card { grid-template-columns: 34px minmax(0, 1fr); }
+      .wake-boundary-card > .badge { grid-column: 2; justify-self: start; }
+      .device-volume { background: var(--workspace-field); border-color: var(--workspace-line); border-radius: 9px; padding: 13px; }
+      .device-volume-icon { background: var(--workspace-panel); border-color: var(--workspace-line); }
+      .device-volume-range { grid-template-columns: auto minmax(0, 1fr) auto; }
+      .device-volume-head output, .percentage-range-head output { font-weight: 500; }
+      .sticky-actions.workspace-save-bar { bottom: 0; border: 0; border-top: 1px solid var(--workspace-line); border-radius: 0; padding: 17px 0; margin-top: 24px; background: var(--workspace-bg); backdrop-filter: none; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+      .workspace-save-bar > div:first-child { min-width: 0; }
+      .workspace-save-bar strong, .workspace-save-bar span { display: block; font-size: 12px; }
+      .workspace-save-bar span { font-size: 11px; margin-top: 3px; color: var(--workspace-muted); }
+      .workspace-section-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0 0 20px; }
+      .workspace-section-heading h2 { font-size: 18px; margin-bottom: 5px; }
+      .workspace-section-heading p { font-size: 12px; }
+      .workspace-wide { grid-column: 1 / -1; }
+      .assistant-mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+      .assistant-mode-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 13px; padding: 18px; text-align: left; background: var(--workspace-panel); }
+      .assistant-mode-card > span:nth-child(2) { display: grid; gap: 4px; }
+      .assistant-mode-card strong { font-size: 17px; }
+      .assistant-mode-card small { color: var(--workspace-muted); line-height: 1.45; font-weight: 400; }
+      .assistant-mode-card > b, .home-scope-card > b { color: var(--workspace-muted); font-size: 11px; font-weight: 500; }
+      .assistant-mode-card.active, .home-scope-card.active { border-color: var(--tater-accent); background: var(--tater-accent-soft); box-shadow: inset 0 0 0 1px var(--tater-accent); }
+      .assistant-mode-card.active > b, .home-scope-card.active > b { color: var(--tater-accent); }
+      .assistant-mode-icon { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--workspace-line); border-radius: 11px; background: var(--workspace-field); color: var(--workspace-muted); }
+      .assistant-mode-icon.tater { color: var(--workspace-action-text); background: var(--tater-accent); border-color: var(--tater-accent); font: 600 20px/1 "Marker Felt", "Segoe Print", sans-serif; }
+      .assistant-flow-card, .assistant-test-card, .provider-card, .home-tool-card { margin-bottom: 16px; }
+      .assistant-flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 10px; align-items: center; }
+      .assistant-flow > span { display: grid; justify-items: center; gap: 8px; min-height: 84px; padding: 15px 8px; border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-field); font-size: 12px; text-align: center; }
+      .assistant-flow > span ha-icon { color: var(--tater-accent); }
+      .assistant-flow > i { color: var(--workspace-muted); font-style: normal; }
+      .assistant-test-thread { display: grid; gap: 9px; max-height: 340px; overflow: auto; margin-bottom: 13px; }
+      .assistant-test-message { max-width: 82%; padding: 11px 13px; border: 1px solid var(--workspace-line); border-radius: 10px; background: var(--workspace-field); }
+      .assistant-test-message.user { justify-self: end; background: var(--tater-accent-soft); border-color: color-mix(in srgb, var(--tater-accent) 35%, var(--workspace-line)); }
+      .assistant-test-message span { color: var(--workspace-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+      .assistant-test-message p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+      .assistant-test-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+      .provider-status { display: inline-flex; align-items: center; gap: 6px; color: var(--workspace-muted); font-size: 11px; }
+      .provider-status ha-icon { --mdc-icon-size: 17px; width: 17px; height: 17px; }
+      .provider-choice { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-field); }
+      .provider-choice button { min-height: 30px; border-color: transparent; background: transparent; color: var(--workspace-muted); }
+      .provider-choice button[aria-current] { background: var(--workspace-panel); border-color: var(--workspace-line); color: var(--tater-accent); }
+      .home-scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .home-scope-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 17px; text-align: left; background: var(--workspace-field); }
+      .home-scope-card > span { grid-row: 1 / span 2; color: var(--tater-accent); }
+      .home-scope-card > strong { font-size: 14px; }
+      .home-scope-card > small { color: var(--workspace-muted); line-height: 1.45; font-weight: 400; }
+      .home-scope-card > b { grid-column: 3; grid-row: 1 / span 2; }
+      .home-scope-note { display: flex; gap: 9px; align-items: flex-start; margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--workspace-field); color: var(--workspace-muted); font-size: 11px; line-height: 1.5; }
+      .home-scope-note ha-icon { flex: none; color: var(--workspace-good); --mdc-icon-size: 18px; width: 18px; height: 18px; }
+      .entity-preview-list { display: grid; }
+      .entity-preview-list > div { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 11px 0; border-top: 1px solid var(--workspace-line); }
+      .entity-preview-list > div > span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--workspace-field); color: var(--workspace-muted); }
+      .entity-preview-list p, .entity-preview-list strong, .entity-preview-list small { display: block; margin: 0; }
+      .entity-preview-list small { margin-top: 2px; color: var(--workspace-muted); font-size: 10px; }
+      .entity-preview-list > div > b { color: var(--workspace-muted); font-size: 11px; font-weight: 500; }
+      .hydra-toggle-list { display: grid; gap: 10px; margin-top: 18px; }
+      .hydra-toggle-list .toggle-field { padding: 14px; }
+      .hydra-toggle-list .toggle-field span { display: grid; gap: 3px; }
+      .hydra-toggle-list .toggle-field small { color: var(--workspace-muted); font-weight: 400; line-height: 1.45; }
+      .hydra-metrics-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+      .hydra-metrics-grid > div { display: grid; gap: 5px; padding: 15px; border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-panel); }
+      .hydra-metrics-grid span { color: var(--workspace-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+      .hydra-metrics-grid strong { font-size: 23px; font-weight: 500; }
+      .hydra-ledger, .conversation-data-list { display: grid; gap: 9px; }
+      .hydra-ledger details, .conversation-data-list > div { border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-field); }
+      .hydra-ledger summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 13px; cursor: pointer; }
+      .hydra-ledger summary > span { color: var(--workspace-good); font-size: 10px; text-transform: uppercase; }
+      .hydra-ledger summary > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+      .hydra-ledger summary > b { color: var(--workspace-muted); font-size: 10px; font-weight: 500; }
+      .hydra-ledger details > dl, .hydra-ledger details > section { margin: 0 13px 13px; padding-top: 12px; border-top: 1px solid var(--workspace-line); }
+      .hydra-ledger dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; font-size: 11px; }
+      .hydra-ledger dt { color: var(--workspace-muted); }
+      .hydra-ledger dd { margin: 0; overflow-wrap: anywhere; }
+      .hydra-ledger section > .badge { margin-left: 8px; }
+      .hydra-ledger section > p { margin: 8px 0; color: var(--workspace-muted); font-size: 11px; }
+      .hydra-ledger pre { max-height: 260px; overflow: auto; white-space: pre-wrap; }
+      .conversation-data-list > div { padding: 13px; }
+      .conversation-data-list span { color: var(--tater-accent); font-size: 10px; text-transform: uppercase; }
+      .conversation-data-list p { margin: 6px 0; white-space: pre-wrap; font-size: 12px; }
+      .conversation-data-list small { color: var(--workspace-muted); }
+      .trainer-hero::after, .device-card::before { display: none; }
+      .trainer-mark, .bluetooth-mark { background: var(--tater-accent-soft); color: var(--tater-accent); border-radius: 10px; font-weight: 500; font-size: 18px; width: 40px; height: 40px; }
+      .trainer-head h2, .bluetooth-hero h2 { font-size: 18px; }
+      .trainer-head .muted, .bluetooth-hero .muted, .editor-head .muted { font-size: 12px; }
+      .bluetooth-hero { background: var(--workspace-panel); }
+      .bluetooth-pair-grid { grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) auto; }
+      .bluetooth-paired-row { gap: 12px; flex-wrap: wrap; }
+      .verifier-note { background: var(--workspace-field); border-color: var(--workspace-line); border-radius: 8px; font-size: 12px; }
+      .percentage-range-field { padding: 15px; border-radius: 9px; border-color: var(--workspace-line); background: var(--workspace-field); }
+      .percentage-range-head output { background: transparent; padding: 0; min-width: auto; }
+      .percentage-range-field input[type=range] { border: 0; padding: 0; min-height: 24px; background: transparent; }
+      .percentage-range-footer { flex-wrap: wrap; }
+      .firmware-hosted-flasher { border-color: var(--workspace-line); background: var(--workspace-field); }
+      .firmware-hosted-flasher-link { border-radius: 8px; font-size: 12px; font-weight: 500; }
+      .firmware-mode-icon, .firmware-recovery-step-head b { font-weight: 500; }
+      .banner { margin: 0 0 20px; border: 1px solid var(--workspace-line); border-radius: 8px; font-size: 12px; }
+      .banner.success { background: color-mix(in srgb, var(--workspace-good) 9%, var(--workspace-panel)); color: var(--workspace-good); }
+      .banner.error { color: var(--error-color); }
+      details { font-size: 12px; }
+      summary { font-weight: 500; }
+      pre { font-size: 11px; border: 1px solid var(--workspace-line); color: var(--workspace-text); border-radius: 8px; }
+      .workspace-loading { display: grid; justify-items: center; gap: 10px; padding: 38px 15px; font-size: 13px; }
+      .workspace-loading .spinner { margin: 0 0 10px; }
+      .workspace-dialog-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: center; align-items: flex-start; padding: 7vh 18px 20px; background: rgb(5 8 13 / 72%); backdrop-filter: blur(5px); overflow-y: auto; overscroll-behavior: contain; }
+      .workspace-dialog { width: min(640px, 100%); max-height: 86dvh; overflow-y: auto; padding: 23px; border: 1px solid var(--workspace-line); border-radius: 13px; background: var(--workspace-panel); box-shadow: 0 25px 70px rgb(0 0 0 / 25%); overscroll-behavior: contain; }
+      .workspace-dialog > header { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-bottom: 20px; }
+      .workspace-dialog > header h2 { font-size: 20px; }
+      .workspace-dialog p { font-size: 13px; margin-bottom: 16px; }
+      .workspace-dialog .row-actions { margin: 16px 0; }
+      .workspace-dialog .section-card { padding: 0; border: 0; margin: 0; background: transparent; }
+      .workspace-dialog .section-card > h3 { display: none; }
+      .workspace-dialog .pair-code { font-size: clamp(28px, 6vw, 40px); font-weight: 500; margin: 12px 0; white-space: normal; }
+      .workspace-dialog .workspace-eyebrow { margin-top: 22px; }
+      .workspace-server { font: 12px/1.7 ui-monospace, SFMono-Regular, monospace; padding: 12px; border: 1px solid var(--workspace-line); border-radius: 7px; background: var(--workspace-field); overflow-wrap: anywhere; }
+      .workspace-picker-options { display: grid; gap: 7px; margin-top: 16px; }
+      .workspace-picker-option { display: flex; gap: 11px; align-items: center; padding: 12px; border: 1px solid var(--workspace-line); border-radius: 8px; cursor: pointer; font-size: 13px; }
+      .workspace-picker-option:has(input:checked) { background: var(--tater-accent-soft); border-color: var(--tater-accent); }
+      .workspace-picker-option input { width: 16px; min-height: 16px; height: 16px; margin: 0; padding: 0; flex: none; }
+      .workspace-picker-option span { min-width: 0; overflow-wrap: anywhere; }
+      .workspace-picker-option:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+      @container tater-bridge (max-width: 850px) {
+        .workspace-shell { grid-template-columns: 158px minmax(0, 1fr); }
+        .workspace-sidebar { padding-inline: 8px; }
+        main.workspace-main { padding-inline: 18px; }
+        .workspace-device-row { grid-template-columns: 34px minmax(0, 1fr); gap: 11px; }
+        .workspace-device-actions { grid-column: 2; justify-items: start; display: flex; align-items: center; flex-wrap: wrap; }
+        .workspace-device-actions > .connection-status { margin-right: auto; }
+        .workspace-device-copy .device-volume { max-width: none; }
+        .workspace-filters { width: 100%; }
+        .workspace-filters input { flex: 1; width: 150px; }
+        .firmware-board, .bluetooth-hero, .bluetooth-pair-grid { grid-template-columns: 1fr; }
+        .bluetooth-mark { display: none; }
+      }
+      @container tater-bridge (max-width: 620px) {
+        .workspace-topbar { padding: 18px 15px; gap: 10px; }
+        .workspace-connection { display: none; }
+        .workspace-shell { grid-template-columns: minmax(0, 1fr); }
+        .workspace-sidebar { position: static; min-height: 0; border-right: 0; border-bottom: 1px solid var(--workspace-line); padding: 12px; }
+        .workspace-sidebar nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+        .workspace-nav-group { display: contents; }
+        .workspace-nav-group > .workspace-eyebrow, .workspace-sidebar-footer { display: none; }
+        .workspace-nav-item { font-size: 11px; padding: 8px 6px; }
+        main.workspace-main { padding: 18px 15px 90px; }
+        .topbar { display: flex; }
+        .topbar h1 { font-size: 23px; }
+        .workspace-filters select { max-width: 145px; }
+        .workspace-editor-head { flex-wrap: wrap; }
+        .card { padding: 16px; }
+        .facts { gap: 14px; }
+        .firmware-hosted-flasher { flex-direction: column; align-items: stretch; }
+        .firmware-hosted-flasher-link { text-align: center; }
+        .firmware-mode-grid { grid-template-columns: 1fr; }
+        .workspace-save-bar .row-actions { width: 100%; }
+        .trainer-identity { gap: 10px; }
+        .trainer-mark { display: none; }
+        .workspace-section-nav button { font-size: 11px; padding: 7px 9px; }
+        .assistant-mode-grid, .home-scope-grid { grid-template-columns: 1fr; }
+        .assistant-flow { grid-template-columns: 1fr; }
+        .assistant-flow > i { transform: rotate(90deg); justify-self: center; }
+        .hydra-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @container tater-bridge (max-width: 480px) {
+        .wake-mode-grid, .wake-mode-grid.dual, .settings-grid, .wake-tuning-grid { grid-template-columns: minmax(0, 1fr); }
+        .workspace-selection-row { flex-wrap: wrap; }
+        .workspace-filters input { width: 120px; }
+        .assistant-mode-card, .home-scope-card { grid-template-columns: auto minmax(0, 1fr); }
+        .assistant-mode-card > b, .home-scope-card > b { grid-column: 2; grid-row: auto; }
+        .assistant-test-compose { grid-template-columns: 1fr; }
+        .hydra-metrics-grid { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 500px) { .workspace-dialog-backdrop { padding: 18px 10px; } .workspace-dialog { padding: 17px; max-height: calc(100dvh - 36px); } .workspace-dialog .settings-grid { grid-template-columns: minmax(0, 1fr); } }
+      @media (pointer: coarse) { button, .workspace-nav-item { min-height: 44px; } input:not([type=range]):not([type=checkbox]):not([type=radio]), select, textarea { min-height: 44px; font-size: 16px; } }
+      @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+    `;
   }
 
   styles() {
@@ -730,50 +1239,33 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   renderHeader() {
+    const page = WORKSPACE_PAGES.find((row) => row.id === this._tab) || WORKSPACE_PAGES[0];
     return `
       <div class="topbar">
         <div>
-          <h1>Tater Satellites</h1>
-          <div class="muted">Tater Native voice satellites connected directly to Home Assistant Assist.</div>
+          <span class="workspace-eyebrow">Home Assistant bridge</span>
+          <h1>${page.label}</h1>
+          <p class="muted">${page.description}</p>
         </div>
         <div class="top-actions">
-          <button data-action="refresh" ${this._loading ? "disabled" : ""}>Refresh</button>
-          <button class="primary" data-action="pair" ${this._loading ? "disabled" : ""}>Add Satellite</button>
+          <button type="button" data-action="refresh" aria-label="Refresh bridge" ${this._loading ? "disabled" : ""}>${this.renderIcon("refresh")}</button>
+          <button type="button" data-action="server" ${!this._data ? "disabled" : ""}>${this.renderIcon("link-variant")} Server & pairing</button>
+          ${this._tab === "satellites" ? `<button type="button" class="primary" data-action="pair" ${this._loading ? "disabled" : ""}>${this.renderIcon("plus")} Add satellite</button>` : ""}
         </div>
       </div>
     `;
   }
 
   renderLoading() {
-    return `<div class="spinner"></div>`;
+    return `<div class="workspace-loading" role="status"><div class="spinner"></div><strong>Connecting to your satellites</strong><span class="muted">Loading bridge settings and device status.</span></div>`;
   }
 
   renderBody() {
-    const pairing = this._data.pairing || {};
     return `
-      <section class="card pair-card">
-        <div>
-          <h3>Satellite server</h3>
-          <div class="server">${escapeHtml(this._data.server_address)}${escapeHtml(this._data.websocket_path)}</div>
-          <div class="muted" style="margin-top:6px">Use the Home Assistant address as the server during satellite setup. The firmware adds the WebSocket path automatically.</div>
-        </div>
-        <div>
-          ${
-            pairing.active
-              ? `<div class="muted">Pairing code</div><div class="pair-code">${escapeHtml(pairing.code)}</div>`
-              : `<button class="primary" data-action="pair">Generate pairing code</button>`
-          }
-        </div>
-      </section>
-      <nav class="tabs">
-        ${this.tabButton("satellites", "Satellites")}
-        ${this.tabButton("bluetooth", "Bluetooth")}
-        ${this.tabButton("audio", "Tater Audio")}
-        ${this.tabButton("defaults", "Voice Defaults")}
-        ${this.tabButton("verifier", "STT Wake Check")}
-        ${this.tabButton("trainer", "Wake Word Trainer")}
-        ${this.tabButton("firmware", "Firmware & Recovery")}
-      </nav>
+      ${this._tab === "assistant" ? this.renderAssistantChoice() : ""}
+      ${this._tab === "models" ? this.renderModelsAndSpeech() : ""}
+      ${this._tab === "home-control" ? this.renderHomeControl() : ""}
+      ${this._tab === "hydra" ? this.renderHydra() : ""}
       ${this._tab === "defaults" ? this.renderVoiceDefaults() : ""}
       ${this._tab === "verifier" ? this.renderVerifier() : ""}
       ${this._tab === "trainer" ? this.renderTrainer() : ""}
@@ -786,6 +1278,183 @@ class TaterSatellitePanel extends HTMLElement {
 
   tabButton(key, label) {
     return `<button class="tab ${this._tab === key ? "active" : ""}" data-tab="${key}">${label}</button>`;
+  }
+
+  renderAssistantChoice() {
+    const settings = this._taterDraft || {};
+    const runtime = this._data.tater_assistant || {};
+    const ready = runtime.ready || {};
+    const mode = settings.assistant_mode || "home_assistant";
+    const messages = (runtime.messages || []).slice(-6);
+    return `
+      <section class="assistant-mode-grid" aria-label="Conversation pipeline">
+        <button type="button" class="assistant-mode-card ${mode === "home_assistant" ? "active" : ""}" data-assistant-mode="home_assistant">
+          <span class="assistant-mode-icon">${this.renderIcon("home-assistant")}</span>
+          <span><span class="workspace-eyebrow">Existing pipeline</span><strong>Home Assistant</strong><small>HA owns STT, the conversation agent, device tools, and TTS.</small></span>
+          <b>${mode === "home_assistant" ? "Selected" : "Choose"}</b>
+        </button>
+        <button type="button" class="assistant-mode-card ${mode === "tater" ? "active" : ""}" data-assistant-mode="tater">
+          <span class="assistant-mode-icon tater">T</span>
+          <span><span class="workspace-eyebrow">Complete Tater pipeline</span><strong>Tater</strong><small>Tater owns speech, Hydra, home control, conversation memory, and playback.</small></span>
+          <b>${mode === "tater" ? "Selected" : ready.ok ? "Choose" : "Setup needed"}</b>
+        </button>
+      </section>
+
+      <section class="card assistant-flow-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">${mode === "tater" ? "Tater mode" : "Home Assistant mode"}</span><h2>${mode === "tater" ? "A complete voice turn" : "Native Assist stays intact"}</h2><p class="muted">The selected pipeline applies to every connected Tater satellite.</p></div>
+          <span class="badge ${mode === "tater" && !ready.ok ? "update" : "online"}">${mode === "tater" ? ready.ok ? "Ready" : "Setup needed" : "Ready"}</span>
+        </div>
+        <div class="assistant-flow">
+          ${(mode === "tater"
+            ? [["microphone", "Tater STT"], ["creation-outline", "Hydra"], ["home-automation", "Device control"], ["account-voice", "Tater TTS"]]
+            : [["microphone", "HA STT"], ["message-processing-outline", "HA agent"], ["home-assistant", "HA tools"], ["account-voice", "HA TTS"]])
+            .map(([icon, label], index) => `<span>${this.renderIcon(icon)}<b>${label}</b></span>${index < 3 ? '<i aria-hidden="true">→</i>' : ""}`).join("")}
+        </div>
+        ${!ready.ok ? `<div class="verifier-note"><strong>Finish Tater setup</strong><p>${escapeHtml((ready.missing || []).join(" · "))}</p><button type="button" data-tab="models">Open models & speech</button></div>` : ""}
+      </section>
+
+      <section class="card assistant-test-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to mini Tater</h2><p class="muted">Verify the LLM, Hydra, and home-control tool before switching voice turns. No audio is recorded.</p></div></div>
+        <div class="assistant-test-thread">${messages.length ? messages.map((message) => `<div class="assistant-test-message ${message.role === "assistant" ? "assistant" : "user"}"><span>${message.role === "assistant" ? escapeHtml(settings.assistant_name || "Tater") : "You"}</span><p>${escapeHtml(message.content || "")}</p></div>`).join("") : '<p class="muted">No test messages yet.</p>'}</div>
+        <div class="assistant-test-compose"><input type="text" data-tater-test-message placeholder="Ask a question or control a device" value="${escapeHtml(this._testMessage)}" ${!ready.ok ? "disabled" : ""}><button type="button" class="primary" data-action="test-tater" ${!ready.ok || this._loading ? "disabled" : ""}>${this._loading ? "Working…" : "Send"}</button></div>
+      </section>
+
+      ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save assistant</button>`)}
+    `;
+  }
+
+  taterField(key, label, options = {}) {
+    const settings = this._taterDraft || {};
+    const type = options.type || "text";
+    const value = settings[key] ?? options.fallback ?? "";
+    const saved = Boolean(settings[`${key}_set`]);
+    const attributes = [
+      options.min !== undefined ? `min="${options.min}"` : "",
+      options.max !== undefined ? `max="${options.max}"` : "",
+      options.step !== undefined ? `step="${options.step}"` : "",
+      options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : "",
+      options.autocomplete ? `autocomplete="${escapeHtml(options.autocomplete)}"` : "",
+    ].filter(Boolean).join(" ");
+    return `<label class="field"><span>${escapeHtml(label)}</span><input data-tater-setting="${escapeHtml(key)}" type="${escapeHtml(type)}" value="${type === "password" ? "" : escapeHtml(value)}" ${attributes}>${options.help ? `<small>${escapeHtml(options.help)}${type === "password" && saved ? " A key is saved." : ""}</small>` : type === "password" && saved ? '<small>A key is saved. Leave this blank to keep it.</small>' : ""}</label>`;
+  }
+
+  renderModelsAndSpeech() {
+    const settings = this._taterDraft || {};
+    const sttProvider = settings.stt_provider || "openai";
+    const ttsProvider = settings.tts_provider || "openai";
+    return `
+      <section class="card provider-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Hydra model</span><h2>Language model</h2><p class="muted">OpenAI or any compatible Chat Completions endpoint with function tools.</p></div><span class="provider-status">${settings.llm_api_key_set ? this.renderIcon("check-circle-outline") + " Key saved" : this.renderIcon("key-outline") + " Key not set"}</span></div>
+        <div class="settings-grid">
+          ${this.taterField("llm_base_url", "API base URL", { placeholder: "https://api.openai.com/v1" })}
+          ${this.taterField("llm_model", "Model", { placeholder: "Enter a tool-capable model" })}
+          ${this.taterField("llm_api_key", "API key", { type: "password", autocomplete: "new-password" })}
+          ${this.taterField("llm_temperature", "Temperature", { type: "number", min: 0, max: 2, step: 0.1 })}
+          ${this.taterField("assistant_name", "Assistant name", { placeholder: "Tater" })}
+          <label class="field workspace-wide"><span>Personality</span><textarea data-tater-setting="personality" rows="4">${escapeHtml(settings.personality || "")}</textarea><small>Used for conversational style. Device permissions are always enforced separately.</small></label>
+        </div>
+      </section>
+
+      <section class="card provider-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Incoming speech</span><h2>Speech-to-text</h2><p class="muted">Tater sends satellite microphone audio directly to this provider.</p></div></div>
+        <div class="provider-choice" role="group" aria-label="Speech-to-text provider"><button type="button" data-tater-provider="stt:openai" ${sttProvider === "openai" ? 'aria-current="true"' : ""}>OpenAI compatible</button><button type="button" data-tater-provider="stt:wyoming" ${sttProvider === "wyoming" ? 'aria-current="true"' : ""}>Wyoming</button></div>
+        <div class="settings-grid">
+          ${sttProvider === "openai" ? `
+            ${this.taterField("stt_base_url", "STT API base URL", { placeholder: "https://api.openai.com/v1" })}
+            ${this.taterField("stt_model", "Transcription model", { placeholder: "gpt-4o-transcribe" })}
+            ${this.taterField("stt_api_key", "Separate STT key", { type: "password", autocomplete: "new-password", help: "Leave blank to use the LLM key." })}
+            ${this.taterField("stt_language", "Language hint", { placeholder: "Optional, such as en" })}
+          ` : `
+            ${this.taterField("stt_wyoming_host", "Wyoming host", { placeholder: "192.168.1.50" })}
+            ${this.taterField("stt_wyoming_port", "Wyoming port", { type: "number", min: 1, max: 65535 })}
+            ${this.taterField("stt_model", "Wyoming model name", { placeholder: "Optional" })}
+            ${this.taterField("stt_language", "Language hint", { placeholder: "Optional, such as en" })}
+          `}
+        </div>
+      </section>
+
+      <section class="card provider-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Spoken reply</span><h2>Text-to-speech</h2><p class="muted">Tater creates the final audio and returns it to the originating satellite.</p></div></div>
+        <div class="provider-choice" role="group" aria-label="Text-to-speech provider"><button type="button" data-tater-provider="tts:openai" ${ttsProvider === "openai" ? 'aria-current="true"' : ""}>OpenAI compatible</button><button type="button" data-tater-provider="tts:wyoming" ${ttsProvider === "wyoming" ? 'aria-current="true"' : ""}>Wyoming</button></div>
+        <div class="settings-grid">
+          ${ttsProvider === "openai" ? `
+            ${this.taterField("tts_base_url", "TTS API base URL", { placeholder: "https://api.openai.com/v1" })}
+            ${this.taterField("tts_model", "Speech model", { placeholder: "gpt-4o-tts" })}
+            ${this.taterField("tts_voice", "Voice", { placeholder: "alloy" })}
+            ${this.taterField("tts_api_key", "Separate TTS key", { type: "password", autocomplete: "new-password", help: "Leave blank to use the LLM key." })}
+          ` : `
+            ${this.taterField("tts_wyoming_host", "Wyoming host", { placeholder: "192.168.1.50" })}
+            ${this.taterField("tts_wyoming_port", "Wyoming port", { type: "number", min: 1, max: 65535 })}
+            ${this.taterField("tts_voice", "Wyoming voice name", { placeholder: "Optional" })}
+          `}
+        </div>
+      </section>
+      ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save models & speech</button>`)}
+    `;
+  }
+
+  renderHomeControl() {
+    const settings = this._taterDraft || {};
+    const summary = this._data.tater_assistant?.home_control || {};
+    const scope = settings.entity_scope || "exposed";
+    const examples = summary.examples || [];
+    return `
+      <section class="card home-tool-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">One built-in capability</span><h2>Home Assistant device control</h2><p class="muted">Hydra can read and control the home. Mini Tater includes no web, files, messaging, Cores, Portals, Shop, or downloadable Verbas.</p></div><span class="badge online">control_home</span></div>
+        <div class="home-scope-grid">
+          <button type="button" class="home-scope-card ${scope === "exposed" ? "active" : ""}" data-entity-scope="exposed"><span>${this.renderIcon("shield-home-outline")}</span><strong>Exposed to Assist</strong><small>Use the choices already managed in Home Assistant’s Voice Assistants settings.</small><b>${scope === "exposed" ? "Selected" : "Choose"}</b></button>
+          <button type="button" class="home-scope-card ${scope === "all" ? "active" : ""}" data-entity-scope="all"><span>${this.renderIcon("home-group")}</span><strong>All HA entities</strong><small>Let Tater read supported sensors and control supported device domains.</small><b>${scope === "all" ? "Selected" : "Choose"}</b></button>
+        </div>
+        <div class="home-scope-note">${this.renderIcon("shield-check-outline")}<span>The selected scope is checked when Tater builds context, resolves a target, and immediately before every action. Entity names and states in this scope may be sent to the configured language model.</span></div>
+      </section>
+      <section class="card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Available now</span><h2>${Number(summary.entity_count || 0)} entities across ${Number(summary.areas || 0)} areas</h2><p class="muted">${escapeHtml((summary.domains || []).join(" · ") || "No entities are currently available in this scope.")}</p></div></div>
+        <div class="entity-preview-list">${examples.length ? examples.map((row) => `<div><span>${this.renderIcon(row.domain === "light" ? "lightbulb-outline" : row.domain === "sensor" ? "gauge" : "devices")}</span><p><strong>${escapeHtml(row.name || row.entity_id)}</strong><small>${escapeHtml([row.area, row.entity_id].filter(Boolean).join(" · "))}</small></p><b>${escapeHtml(row.state || "unknown")}</b></div>`).join("") : '<p class="muted">Expose entities to Assist or select all entities to make device control available.</p>'}</div>
+      </section>
+      ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save home control</button>`)}
+    `;
+  }
+
+  renderHydra() {
+    const settings = this._taterDraft || {};
+    const runtime = this._data.tater_assistant || {};
+    const metrics = runtime.metrics || {};
+    const ledger = runtime.ledger || [];
+    const messages = runtime.messages || [];
+    return `
+      <nav class="workspace-section-nav" aria-label="Hydra sections">
+        ${[["ledger", "Ledger"], ["behavior", "Behavior"], ["conversations", "Conversation data"]].map(([id, label]) => `<button type="button" data-hydra-section="${id}" ${this._hydraSection === id ? 'aria-current="page"' : ""}>${label}</button>`).join("")}
+      </nav>
+      ${this._hydraSection === "behavior" ? `
+        <section class="card">
+          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Conversation windows</span><h2>Hydra behavior</h2><p class="muted">The same display, storage, model-context, and ledger limits used by Tater.</p></div></div>
+          <div class="settings-grid">
+            ${this.taterField("max_display", "Messages shown", { type: "number", min: 1, max: 100 })}
+            ${this.taterField("max_store", "Maximum stored messages", { type: "number", min: 0, max: 10000, help: "Use 0 for unlimited storage." })}
+            ${this.taterField("max_llm", "Messages sent to LLM", { type: "number", min: 1, max: 100 })}
+            ${this.taterField("hydra_max_ledger_items", "Maximum ledger items", { type: "number", min: 1, max: 10000 })}
+          </div>
+          <div class="hydra-toggle-list">
+            <label class="toggle-field"><span><strong>Astraeus second plan check</strong><small>Review a proposed device action before it runs. This adds one model call and some latency.</small></span><input data-tater-setting="hydra_astraeus_plan_review_enabled" type="checkbox" ${settings.hydra_astraeus_plan_review_enabled ? "checked" : ""}></label>
+            <label class="toggle-field"><span><strong>Auto-continue incomplete final response</strong><small>Ask the model once more when a tool turn does not produce a spoken answer.</small></span><input data-tater-setting="hydra_auto_continue_incomplete_final_enabled" type="checkbox" ${settings.hydra_auto_continue_incomplete_final_enabled ? "checked" : ""}></label>
+          </div>
+        </section>
+        ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save Hydra behavior</button>`)}
+      ` : this._hydraSection === "conversations" ? `
+        <section class="card">
+          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Stored messages</span><h2>Conversation data</h2><p class="muted">Recent user and assistant messages retained for follow-up context.</p></div><button type="button" class="danger" data-action="clear-hydra-conversations" ${messages.length ? "" : "disabled"}>Clear conversations</button></div>
+          <div class="conversation-data-list">${messages.length ? messages.slice().reverse().map((row) => `<div><span>${escapeHtml(row.role || "message")}</span><p>${escapeHtml(row.content || "")}</p><small>${escapeHtml(row.conversation_id || "")}</small></div>`).join("") : '<p class="muted">No Tater conversations are stored yet.</p>'}</div>
+        </section>
+      ` : `
+        <section class="hydra-metrics-grid">
+          ${[["Turns", metrics.turns], ["Completed", metrics.completed], ["Failed", metrics.failed], ["Device calls", metrics.tool_calls], ["Conversations", metrics.conversations]].map(([label, value]) => `<div><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}
+        </section>
+        <section class="card">
+          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Recent activity</span><h2>Hydra ledger</h2><p class="muted">Inspect the request, plan review, device result, final response, and timing.</p></div><button type="button" class="danger" data-action="clear-hydra-ledger" ${ledger.length ? "" : "disabled"}>Clear ledger</button></div>
+          <div class="hydra-ledger">${ledger.length ? ledger.map((row) => `<details><summary><span>${escapeHtml(row.outcome || "unknown")}</span><strong>${escapeHtml(row.request || "Voice turn")}</strong><b>${Number(row.total_ms || 0)} ms</b></summary><dl><dt>Response</dt><dd>${escapeHtml(row.response || row.error || "—")}</dd><dt>Device</dt><dd>${escapeHtml(row.device_id || "—")}</dd><dt>Conversation</dt><dd>${escapeHtml(row.conversation_id || "—")}</dd></dl>${(row.tools || []).map((tool) => `<section><strong>${escapeHtml(tool.name || "control_home")}</strong><span class="badge ${tool.approved ? "online" : "update"}">${tool.approved ? "Approved" : "Blocked"}</span><p>${escapeHtml(tool.review || "")}</p><pre>${escapeHtml(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></section>`).join("")}</details>`).join("") : '<p class="muted">The ledger will appear after the first Tater conversation.</p>'}</div>
+        </section>
+      `}
+    `;
   }
 
   renderSatellites() {
@@ -803,7 +1472,33 @@ class TaterSatellitePanel extends HTMLElement {
         </section>
       `;
     }
-    return `<div class="grid">${devices.map((device) => this.renderDeviceCard(device)).join("")}</div>`;
+    const rooms = [...new Set(devices.map((device) => String(device.room || "")).filter(Boolean))].sort();
+    if (this._roomFilter && !rooms.includes(this._roomFilter)) this._roomFilter = "";
+    const connected = devices.filter((device) => device.connected).length;
+    const updates = devices.filter((device) => device.firmware?.update_available).length;
+    const wake = this._data.shared_wake_settings || this._data.wake_family_settings?.echo || {};
+    const mode = { mww: "MWW", oww: "OWW", nww: "NWW", mww_oww: "MWW + OWW", mww_nww: "MWW + NWW" }[wake.wake_detector_mode] || "MWW";
+    return `
+      <div class="workspace-toolbar">
+        <div class="workspace-summary"><span class="connection-status online"><i></i>${connected} online</span><span>${devices.length - connected} offline</span><span>${updates} ${updates === 1 ? "update" : "updates"}</span></div>
+        <div class="workspace-filters"><input type="search" data-device-search aria-label="Find a satellite" placeholder="Find a satellite" value="${escapeHtml(this._deviceQuery)}">
+          ${rooms.length > 1 ? `<select data-room-filter aria-label="Filter satellites by room"><option value="">All rooms</option>${rooms.map((room) => `<option value="${escapeHtml(room)}" ${room === this._roomFilter ? "selected" : ""}>${escapeHtml(room)}</option>`).join("")}</select>` : ""}
+        </div>
+      </div>
+      <div class="workspace-device-list">${devices.map((device) => this.renderDeviceCard(device)).join("")}</div>
+      <p class="muted workspace-filter-empty" hidden>No satellites match your search.</p>
+      <div class="workspace-profile-strip"><div><strong>Shared wake profile</strong><span class="muted">${mode} · Shared voice defaults for your satellites</span></div><button type="button" data-tab="defaults">Voice defaults ${this.renderIcon("arrow-top-right")}</button></div>
+    `;
+  }
+
+  applyDeviceFilter() {
+    let visible = 0;
+    this.shadowRoot.querySelectorAll("[data-device-search-text]").forEach((row) => {
+      row.hidden = !row.dataset.deviceSearchText.includes(this._deviceQuery.trim().toLowerCase()) || Boolean(this._roomFilter && row.dataset.deviceRoom !== this._roomFilter);
+      if (!row.hidden) visible++;
+    });
+    const empty = this.shadowRoot.querySelector(".workspace-filter-empty");
+    if (empty) empty.hidden = visible > 0;
   }
 
   renderBluetooth() {
@@ -881,27 +1576,8 @@ class TaterSatellitePanel extends HTMLElement {
     const pairs = this._data.stereo_pairs || [];
     const intercom = this._data.intercom || {};
     const latestIntercom = intercom.recent?.[0] || null;
-    const options = (selected = "") => devices
-      .map((device) => `<option value="${escapeHtml(device.device_id)}" ${device.device_id === selected ? "selected" : ""}>${escapeHtml(device.name)}${device.connected ? "" : " (offline)"}</option>`)
-      .join("");
     return `
-      <section class="card section-card audio-hero">
-        <h2>Tater Audio</h2>
-        <p class="muted">Every compatible satellite now appears as a Home Assistant media player. Saved pairs decode the same URL, route its left and right channels separately, and continuously correct clock drift. Use Home Assistant’s Join action to synchronize pairs and individual satellites as a multi-room group.</p>
-      </section>
-      <section class="card section-card" style="margin-top:14px">
-        <div class="device-head">
-          <div><h3>Push-to-talk intercom</h3><div class="muted">Hold the satellite action button, speak, and release to broadcast to every other connected Tater satellite.</div></div>
-          <span class="badge ${intercom.ready ? "online" : ""}">${intercom.ready ? "Ready" : "Needs two satellites"}</span>
-        </div>
-        <div class="facts">
-          <div class="fact"><label>Connected</label><span>${Number(intercom.connected_count || 0)} satellites</span></div>
-          <div class="fact"><label>Recording</label><span>${Number(intercom.active_count || 0) ? `${Number(intercom.active_count)} active` : "Idle"}</span></div>
-          <div class="fact"><label>Latest</label><span>${latestIntercom ? `${escapeHtml(latestIntercom.phase)} · ${Number(latestIntercom.sent_count || 0)} delivered` : "No broadcasts yet"}</span></div>
-          <div class="fact"><label>Privacy</label><span>Temporary memory only</span></div>
-        </div>
-        <p class="muted" style="margin-bottom:0">Intercom audio bypasses the Assist pipeline. Music is ducked with a firmware overlay when supported, and recordings expire automatically.</p>
-      </section>
+      <div class="workspace-section-heading"><div><h2>Saved stereo pairs</h2><p class="muted">Pairs appear as Home Assistant media players and keep left/right routing.</p></div><button type="button" class="primary" data-action="new-stereo" ${devices.length < 2 ? "disabled" : ""}>${this.renderIcon("plus")} Create stereo pair</button></div>
       <div class="grid">
         ${pairs.map((pair) => `
           <article class="card device-card ${pair.ready ? "online" : ""}">
@@ -919,20 +1595,42 @@ class TaterSatellitePanel extends HTMLElement {
           </article>
         `).join("")}
       </div>
+      ${!pairs.length ? `<section class="card section-card empty"><h3>No stereo pairs yet</h3><p class="muted">${devices.length < 2 ? "Pair at least two satellites to create stereo." : "Choose two satellites to create a left/right pair."}</p></section>` : ""}
+      <section class="card section-card" style="margin-top:14px">
+        <div class="device-head">
+          <div><h3>Push-to-talk intercom</h3><div class="muted">Hold the satellite action button, speak, and release to broadcast to every other connected Tater satellite.</div></div>
+          <span class="badge ${intercom.ready ? "online" : ""}">${intercom.ready ? "Ready" : "Needs two satellites"}</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><label>Connected</label><span>${Number(intercom.connected_count || 0)} satellites</span></div>
+          <div class="fact"><label>Recording</label><span>${Number(intercom.active_count || 0) ? `${Number(intercom.active_count)} active` : "Idle"}</span></div>
+          <div class="fact"><label>Latest</label><span>${latestIntercom ? `${escapeHtml(latestIntercom.phase)} · ${Number(latestIntercom.sent_count || 0)} delivered` : "No broadcasts yet"}</span></div>
+          <div class="fact"><label>Privacy</label><span>Temporary memory only</span></div>
+        </div>
+        <p class="muted" style="margin-bottom:0">Intercom audio bypasses the Assist pipeline. Music is ducked with a firmware overlay when supported, and recordings expire automatically.</p>
+      </section>
+      <div class="workspace-profile-strip"><div><strong>Multi-room playback</strong><span class="muted">Group satellites and saved pairs with Home Assistant’s Join action.</span></div><button type="button" data-action="grouping-help">Grouping help ${this.renderIcon("arrow-top-right")}</button></div>
+    `;
+  }
+
+  renderStereoPairEditor() {
+    const devices = this._data.devices || [];
+    const options = (selected = "") => devices.map((device) => `<option value="${escapeHtml(device.device_id)}" ${device.device_id === selected ? "selected" : ""}>${escapeHtml(device.name)}${device.connected ? "" : " (offline)"}</option>`).join("");
+    return `
       ${devices.length >= 2 ? `
         <section class="card section-card" style="margin-top:14px">
           <h3>Create a stereo pair</h3>
           <div class="section-description">Choose the speaker that should reproduce each channel. Fine-tune delay only when the physical placement or hardware path needs compensation.</div>
           <div class="settings-grid">
-            <label class="field"><span>Pair name</span><input data-stereo-name maxlength="80" placeholder="Office Stereo"></label>
-            <label class="field"><span>Left satellite</span><select data-stereo-left><option value="">Choose left speaker</option>${options()}</select></label>
-            <label class="field"><span>Right satellite</span><select data-stereo-right><option value="">Choose right speaker</option>${options()}</select></label>
-            <label class="field"><span>Left channel trim (%)</span><input data-stereo-left-volume type="number" min="0" max="100" value="100"></label>
-            <label class="field"><span>Right channel trim (%)</span><input data-stereo-right-volume type="number" min="0" max="100" value="100"></label>
-            <label class="field"><span>Left delay (ms)</span><input data-stereo-left-delay type="number" min="0" max="250" value="0"></label>
-            <label class="field"><span>Right delay (ms)</span><input data-stereo-right-delay type="number" min="0" max="250" value="0"></label>
+            <label class="field"><span>Pair name</span><input data-stereo-name maxlength="80" placeholder="Office Stereo" value="${escapeHtml(this._stereoDraft.name || "")}"></label>
+            <label class="field"><span>Left satellite</span><select data-stereo-left><option value="">Choose left speaker</option>${options(this._stereoDraft.left || "")}</select></label>
+            <label class="field"><span>Right satellite</span><select data-stereo-right><option value="">Choose right speaker</option>${options(this._stereoDraft.right || "")}</select></label>
+            <label class="field"><span>Left channel trim (%)</span><input data-stereo-left-volume type="number" min="0" max="100" value="${escapeHtml(this._stereoDraft.leftVolume ?? 100)}"></label>
+            <label class="field"><span>Right channel trim (%)</span><input data-stereo-right-volume type="number" min="0" max="100" value="${escapeHtml(this._stereoDraft.rightVolume ?? 100)}"></label>
+            <label class="field"><span>Left delay (ms)</span><input data-stereo-left-delay type="number" min="0" max="250" value="${escapeHtml(this._stereoDraft.leftDelay ?? 0)}"></label>
+            <label class="field"><span>Right delay (ms)</span><input data-stereo-right-delay type="number" min="0" max="250" value="${escapeHtml(this._stereoDraft.rightDelay ?? 0)}"></label>
           </div>
-          <div class="row-actions" style="margin-top:15px"><button class="primary" data-action="save-stereo">Create stereo media player</button></div>
+          <div class="row-actions" style="margin-top:15px"><button type="button" data-action="discard-stereo">Discard pair draft</button><button type="button" class="primary" data-action="save-stereo" ${this._loading ? "disabled" : ""}>Create stereo media player</button></div>
         </section>
       ` : `<section class="card empty" style="margin-top:14px"><h3>Pair two satellites first</h3><p class="muted">At least two paired satellites are required for stereo.</p></section>`}
     `;
@@ -940,40 +1638,26 @@ class TaterSatellitePanel extends HTMLElement {
 
   renderDeviceCard(device) {
     const firmware = device.firmware || {};
+    const board = String(firmware.label || device.board || "Satellite");
+    const hasScreen = device.capabilities?.display || /show|spot|box|crown|athena|rook|checkers/i.test(board);
+    const searchText = [device.name, device.room, board, device.device_id].join(" ").toLowerCase();
     return `
-      <article class="card device-card ${device.connected ? "online" : ""}">
-        <div class="device-head">
-          <div>
-            <h2>${escapeHtml(device.name)}</h2>
-            <div class="muted">${escapeHtml(firmware.label || device.board)}</div>
-          </div>
-          <span class="badge ${device.connected ? "online" : ""}">${device.connected ? "Online" : "Offline"}</span>
+      <article class="workspace-device-row" data-device-search-text="${escapeHtml(searchText)}" data-device-room="${escapeHtml(device.room || "")}">
+        <span class="workspace-device-icon">${this.renderIcon(hasScreen ? "monitor" : "speaker")}</span>
+        <div class="workspace-device-copy">
+          <div class="workspace-device-name"><h2>${escapeHtml(device.name)}</h2>${firmware.update_available ? '<span class="badge update">Update available</span>' : ""}</div>
+          <div class="workspace-device-meta">${device.room ? `${escapeHtml(device.room)} · ` : ""}${escapeHtml(board)}</div>
+          <div class="workspace-device-meta">${escapeHtml(device.state || "offline")} · ${device.connected ? `${device.wifi_rssi ?? "—"} dBm` : `Last seen ${formatAge(device.last_seen)}`}</div>
+          ${this.renderDeviceVolume(device)}
         </div>
-        <div class="badges">
-          <span class="badge">${escapeHtml(device.state || "offline")}</span>
-          ${firmware.update_available ? `<span class="badge update">Update available</span>` : ""}
-          ${device.room ? `<span class="badge">${escapeHtml(device.room)}</span>` : ""}
-        </div>
-        <div class="facts">
-          <div class="fact"><label>Firmware</label><span>${escapeHtml(device.firmware_version || "Unknown")}</span></div>
-          <div class="fact"><label>Wi-Fi</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
-          <div class="fact"><label>Free memory</label><span>${formatBytes(device.free_heap)}</span></div>
-          <div class="fact"><label>Last seen</label><span>${formatAge(device.last_seen)}</span></div>
-        </div>
-        ${this.renderDeviceVolume(device)}
-        <div class="row-actions">
-          <button class="primary" data-configure="${escapeHtml(device.device_id)}">Configure</button>
-          <button data-identify="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>Identify</button>
-          ${
-            firmware.has_ota && device.connected
-              ? `<button data-ota="${escapeHtml(device.device_id)}">${firmware.update_available ? "Update" : "Reinstall"}</button>`
-              : ""
-          }
-          ${!device.connected ? `<button class="danger" data-forget="${escapeHtml(device.device_id)}">Forget</button>` : ""}
+        <div class="workspace-device-actions">
+          <span class="connection-status ${device.connected ? "online" : ""}"><i></i>${device.connected ? "Online" : "Offline"}</span>
+          <div class="row-actions"><button type="button" data-identify="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>Identify</button><button type="button" data-configure="${escapeHtml(device.device_id)}">Open ${this.renderIcon("arrow-right")}</button></div>
+          <div class="row-actions secondary-actions">${firmware.has_ota && device.connected ? `<button type="button" data-ota="${escapeHtml(device.device_id)}">${firmware.update_available ? "Update" : "Reinstall"}</button>` : ""}${!device.connected ? `<button type="button" class="danger" data-forget="${escapeHtml(device.device_id)}">Forget</button>` : ""}</div>
         </div>
         ${
           device.ota?.in_progress
-            ? `<div class="progress"><span style="width:${Number(device.ota.progress || 0)}%"></span></div><div class="muted" style="margin-top:6px">${escapeHtml(device.ota.message || "Updating…")}</div>`
+            ? `<div class="workspace-device-progress"><div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(device.ota.progress || 0)))}%"></span></div><div class="muted">${escapeHtml(device.ota.message || "Updating…")}</div></div>`
             : ""
         }
       </article>
@@ -1045,25 +1729,54 @@ class TaterSatellitePanel extends HTMLElement {
   prepareDeviceDraft(deviceId, markDirty = false) {
     const device = (this._data?.devices || []).find((row) => row.device_id === deviceId);
     if (!device) return;
+    if (deviceId !== this._selectedDeviceId) this.rememberDeviceDraft();
     this._selectedDeviceId = deviceId;
+    const saved = this._deviceDrafts.get(deviceId);
+    if (saved && this.isScopeDirty("device")) {
+      this._deviceDraft = clone(saved.draft);
+      this._deviceOriginal = clone(saved.original);
+      this._pipelineDraft = saved.pipeline;
+      this._vadDraft = saved.vad;
+      return;
+    }
     this._deviceDraft = this.prepareSettingsDraft(device.settings);
     this._deviceOriginal = this.prepareSettingsDraft(device.settings);
     this._pipelineDraft = device.pipeline_id || "";
     this._vadDraft = device.vad_sensitivity || "default";
-    this._dirty = markDirty;
+    if (markDirty) this.markDirty("device");
+  }
+
+  deviceSettingGroups(device) {
+    const sections = this.settingsSectionsFor(this._deviceDraft, "device", device);
+    const available = new Set(sections.map((section) => section.section));
+    const groups = DEVICE_SETTING_GROUPS.filter((group) => ["voice", "diagnostics"].includes(group.id) || (group.id === "audio" && device.capabilities?.speaker !== false) || group.sections.some((section) => available.has(section)));
+    const covered = new Set(DEVICE_SETTING_GROUPS.flatMap((group) => group.sections));
+    const other = [...available].filter((section) => !covered.has(section));
+    return [{ id: "overview", label: "Overview", sections: [] }, ...groups, ...(other.length ? [{ id: "other", label: "Other settings", sections: other }] : [])];
+  }
+
+  renderSectionNavigation(groups, active, attribute, label) {
+    return `<nav class="workspace-section-nav" aria-label="${label}">${groups.map((group) => `<button type="button" ${attribute}="${group.id}" ${active === group.id ? 'aria-current="page"' : ""}>${group.label}</button>`).join("")}</nav>`;
   }
 
   renderDeviceEditor(device) {
     const pipelines = this._data.pipelines || [];
+    const groups = this.deviceSettingGroups(device);
+    const active = groups.find((group) => group.id === this._deviceSection) || groups[0];
+    this._deviceSection = active.id;
     return `
-      <div class="editor-head">
+      <button type="button" class="workspace-back" data-action="back">${this.renderIcon("arrow-left")} All satellites</button>
+      <div class="editor-head workspace-editor-head">
         <div>
-          <button data-action="back">← All satellites</button>
-          <h2 style="margin-top:15px">${escapeHtml(device.name)}</h2>
-          <div class="muted">Settings here override the shared Voice Defaults only for this satellite.</div>
+          <span class="workspace-eyebrow">${escapeHtml(device.room || "Satellite workspace")}</span>
+          <h2>${escapeHtml(device.name)}</h2>
+          <p class="muted">${escapeHtml(device.firmware?.label || device.board)} · Settings for this satellite</p>
         </div>
-        <span class="badge ${device.connected ? "online" : ""}">${device.connected ? "Online" : "Offline"}</span>
+        <span class="connection-status ${device.connected ? "online" : ""}"><i></i>${device.connected ? "Online" : "Offline"}</span>
       </div>
+      ${this.renderSectionNavigation(groups, active.id, "data-device-section", "Satellite settings")}
+      ${active.id === "overview" ? this.renderDeviceOverview(device) : ""}
+      ${active.id === "voice" ? `
       <section class="card section-card">
         <h3>Home Assistant Voice</h3>
         <div class="settings-grid">
@@ -1082,14 +1795,32 @@ class TaterSatellitePanel extends HTMLElement {
           </label>
         </div>
       </section>
-      ${this.renderSettingsSections(this._deviceDraft, "device", device)}
-      ${this.renderDeviceDiagnostics(device)}
-      <div class="sticky-actions">
+      ` : ""}
+      ${active.id !== "overview" ? this.renderSettingsSections(this._deviceDraft, "device", device, { include: active.sections }) : ""}
+      ${active.id === "audio" ? this.renderDeviceVolume(device) : ""}
+      ${active.id === "diagnostics" ? this.renderDeviceDiagnostics(device) : ""}
+      ${active.id !== "overview" ? this.renderDraftFooter("device", `
         <button data-sync-settings="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>Resend live settings</button>
         <button data-action="reset-device">Use all shared defaults</button>
         <button class="primary" data-action="save-device" ${this._loading ? "disabled" : ""}>Save satellite</button>
-      </div>
+      `) : ""}
     `;
+  }
+
+  renderDeviceOverview(device) {
+    const firmware = device.firmware || {};
+    return `<section class="card section-card"><h3>At a glance</h3><p class="muted">This satellite uses your shared voice defaults unless you override a setting.</p>
+      <div class="facts">
+        <div class="fact"><label>Hardware</label><span>${escapeHtml(firmware.label || device.board)}</span></div>
+        <div class="fact"><label>Firmware</label><span>${escapeHtml(device.firmware_version || "Unknown")}</span></div>
+        <div class="fact"><label>Wi-Fi</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
+        <div class="fact"><label>Free memory</label><span>${formatBytes(device.free_heap)}</span></div>
+        <div class="fact"><label>Last seen</label><span>${formatAge(device.last_seen)}</span></div>
+        <div class="fact"><label>Voice state</label><span>${escapeHtml(device.state || "offline")}</span></div>
+      </div>
+      ${this.renderDeviceVolume(device)}
+      <div class="row-actions"><button type="button" data-identify="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>${this.renderIcon("star-four-points-outline")} Identify satellite</button><button type="button" data-device-section="diagnostics">View diagnostics</button>${firmware.has_ota && device.connected ? `<button type="button" data-ota="${escapeHtml(device.device_id)}">${firmware.update_available ? "Install update" : "Reinstall latest"}</button>` : ""}${!device.connected ? `<button type="button" class="danger" data-forget="${escapeHtml(device.device_id)}">Forget satellite</button>` : ""}</div>
+    </section>`;
   }
 
   renderDeviceDiagnostics(device) {
@@ -1165,19 +1896,22 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   renderVoiceDefaults() {
+    const sections = this.settingsSectionsFor(this._globalDraft || {}, "global", null, { exclude: ["wake", "feedback", "verifier"] });
+    const available = new Set(sections.map((section) => section.section));
+    const covered = new Set(SHARED_SETTING_GROUPS.flatMap((group) => group.sections));
+    const other = [...available].filter((section) => !covered.has(section));
+    const groups = [{ id: "wake", label: "Wake profile", sections: [] }, ...SHARED_SETTING_GROUPS.filter((group) => group.sections.some((section) => available.has(section))), ...(other.length ? [{ id: "other", label: "Other settings", sections: other }] : [])];
+    const active = groups.find((group) => group.id === this._voiceSection) || groups[0];
+    this._voiceSection = active.id;
     return `
-      <div class="editor-head">
-        <div>
-          <h2>Shared Satellite Voice Settings</h2>
-          <div class="muted">One wake profile is shared by every satellite. Choose MWW, OWW, NWW, MWW + OWW, or MWW + NWW. ESP32 and other MWW-only satellites always use the bundle's matching MWW model.</div>
-        </div>
-      </div>
-      ${this.renderSharedWakeEditor(this._wakeDraft || {})}
-      ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { exclude: ["wake", "feedback", "verifier"] })}
-      <div class="sticky-actions">
+      ${this.renderSectionNavigation(groups, active.id, "data-voice-section", "Shared voice sections")}
+      ${active.id === "wake" ? this.renderSharedWakeEditor(this._wakeDraft || {}) : `
+      ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: active.sections })}
+      ${this.renderDraftFooter("global", `
         <button data-action="reset-draft">Discard shared changes</button>
         <button class="primary" data-action="save-global" ${this._loading ? "disabled" : ""}>Save shared settings</button>
-      </div>
+      `)}
+      `}
     `;
   }
 
@@ -1187,7 +1921,7 @@ class TaterSatellitePanel extends HTMLElement {
       <section class="card section-card">
         <div class="device-head">
           <div>
-            <div class="muted" style="text-transform:uppercase;font-size:12px;font-weight:700;letter-spacing:.08em">Step 1 · All satellites</div>
+            <div class="workspace-eyebrow">Shared wake profile</div>
             <h3 style="margin-top:6px">How should satellites wake?</h3>
           </div>
           <span class="badge ${connected ? "online" : ""}">${connected} connected</span>
@@ -1195,10 +1929,10 @@ class TaterSatellitePanel extends HTMLElement {
         ${this.renderWakeModePicker(values)}
         ${this.renderSettingsSections(values, "wake", null, { include: ["wake"], wakeFamily: "echo", bare: true })}
         ${this.renderWakeTuningOverrides(values)}
-        <div class="row-actions" style="margin-top:15px">
+        ${this.renderDraftFooter("wake", `
           <button data-reset-shared-wake>Discard wake changes</button>
           <button class="primary" data-save-shared-wake ${this._loading ? "disabled" : ""}>Save and update all satellites</button>
-        </div>
+        `)}
       </section>
     `;
   }
@@ -1230,7 +1964,7 @@ class TaterSatellitePanel extends HTMLElement {
           <div class="wake-mode-label">${row.label}</div>
           <div class="wake-mode-grid ${row.className}">
             ${row.options.map(([value, label, description]) => `
-              <button type="button" class="wake-mode-option ${selected === value ? "active" : ""}" data-wake-mode="${value}">
+              <button type="button" class="wake-mode-option ${selected === value ? "active" : ""}" data-wake-mode="${value}" aria-pressed="${selected === value}">
                 <i>${value === "mww_oww" ? "M+O" : value === "mww_nww" ? "M+N" : label}</i>
                 <span><strong>${label}</strong><small>${description}</small></span><b>✓</b>
               </button>
@@ -1350,7 +2084,7 @@ class TaterSatellitePanel extends HTMLElement {
     return Number.isFinite(current) && current >= minimum;
   }
 
-  renderSettingsSections(values, scope, device = null, sectionFilter = {}) {
+  settingsSectionsFor(values, scope, device = null, sectionFilter = {}) {
     const boardKey = String(device?.board_key || device?.board || "")
       .trim()
       .toLowerCase()
@@ -1379,17 +2113,24 @@ class TaterSatellitePanel extends HTMLElement {
             .filter((field) => !(field.wake_families || []).length || field.wake_families.includes(wakeFamily))
             .filter((field) => !(field.detector_modes || []).length || field.detector_modes.includes(String(values?.wake_detector_mode || "mww")))
             .filter((field) => this.fieldVisible(field, values));
-          if (!fields.length) return "";
+          return { ...section, fields };
+        },
+      )
+      .filter((section) => section.fields.length);
+  }
+
+  renderSettingsSections(values, scope, device = null, sectionFilter = {}) {
+    return this.settingsSectionsFor(values, scope, device, sectionFilter)
+      .map((section) => {
           const contents = `
             ${sectionFilter.bare ? "" : `<h3>${escapeHtml(section.title)}</h3>`}
             ${sectionFilter.bare ? "" : `<div class="section-description">${escapeHtml(section.description || "")}</div>`}
             <div class="settings-grid">
-              ${fields.map((field) => this.renderField(field, values, scope)).join("")}
+              ${section.fields.map((field) => this.renderField(field, values, scope)).join("")}
             </div>
           `;
           return sectionFilter.bare ? contents : `<section class="card section-card">${contents}</section>`;
-        },
-      )
+        })
       .join("");
   }
 
@@ -1449,10 +2190,10 @@ class TaterSatellitePanel extends HTMLElement {
           : ""
       }
       ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["feedback"] })}
-      <div class="sticky-actions">
+      ${this.renderDraftFooter("trainer", `
         <button data-action="reset-draft">Discard changes</button>
         <button class="primary" data-action="save-trainer" ${this._loading ? "disabled" : ""}>Save trainer settings</button>
-      </div>
+      `)}
     `;
   }
 
@@ -1505,10 +2246,10 @@ class TaterSatellitePanel extends HTMLElement {
           ? `<div class="grid">${devices.map((device) => this.renderVerifierDevice(device)).join("")}</div>`
           : `<section class="card empty"><h3>No satellites paired yet</h3><p class="muted">Pair a satellite to begin observing wake checks.</p></section>`
       }
-      <div class="sticky-actions">
+      ${this.renderDraftFooter("verifier", `
         <button data-action="reset-draft">Discard changes</button>
         <button class="primary" data-action="save-verifier" ${this._loading ? "disabled" : ""}>Apply to all satellites</button>
-      </div>
+      `)}
     `;
   }
 
@@ -1609,7 +2350,7 @@ class TaterSatellitePanel extends HTMLElement {
     return [summary, catalog.warning].filter(Boolean).join(" ");
   }
 
-  renderField(field, values, scope) {
+  renderField(field, values, scope, inPicker = false) {
     const value = values?.[field.key] ?? "";
     const common = `data-setting="${escapeHtml(field.key)}" data-scope="${scope}"`;
     if (field.type === "percentage_range") {
@@ -1698,6 +2439,15 @@ class TaterSatellitePanel extends HTMLElement {
           : field.key === "oww_wake_word_catalog_url"
             ? this.wakeWordCatalogDescription(field, catalogType)
           : field.description || "";
+      if (PICKER_SETTING_KEYS.has(field.key)) {
+        if (inPicker && !options.length) return '<p class="muted">No options are available. Refresh the bridge to try again.</p>';
+        if (inPicker) return `<div class="workspace-picker-options">${options.map((option) => `
+          <label class="workspace-picker-option" data-picker-text="${escapeHtml(String(option.label).toLowerCase())}" ${!String(option.label).toLowerCase().includes(this._pickerQuery.toLowerCase()) ? "hidden" : ""}>
+            <input type="radio" name="workspace-picker" ${common} value="${escapeHtml(option.value)}" ${String(option.value) === String(value) ? "checked" : ""} ${option.disabled ? "disabled" : ""}><span>${escapeHtml(option.label)}${option.disabled ? " — not in bundle" : ""}</span>
+          </label>`).join("")}</div>`;
+        const selected = options.find((option) => String(option.value) === String(value));
+        return `<div class="field workspace-selection"><span>${escapeHtml(field.label)}</span><div class="workspace-selection-row"><strong>${escapeHtml(selected?.label || value || "Choose an option")}</strong><button type="button" data-pick-setting="${escapeHtml(field.key)}" data-pick-scope="${scope}" aria-label="Choose ${escapeHtml(field.label.toLowerCase())}">Choose ${this.renderIcon("arrow-top-right")}</button></div>${description ? `<small>${escapeHtml(description)}</small>` : ""}</div>`;
+      }
       return `
         <label class="field">
           <span>${escapeHtml(field.label)}</span>
@@ -1767,6 +2517,8 @@ class TaterSatellitePanel extends HTMLElement {
     }
     const keepsSettings = this._recoveryFlashKind === "ota";
     return `
+      ${this.renderSectionNavigation([{ id: "updates", label: "Updates" }, { id: "usb", label: "USB recovery" }], this._firmwareSection, "data-firmware-section", "Firmware sections")}
+      ${this._firmwareSection === "updates" ? `
       <section class="card section-card">
         <div class="firmware-board">
           <div>
@@ -1780,6 +2532,7 @@ class TaterSatellitePanel extends HTMLElement {
       <div class="grid">
         ${devices.map((device) => this.renderFirmwareDevice(device)).join("")}
       </div>
+      ` : `
       <section class="card section-card" style="margin-top:14px">
         <h2>Browser USB Flasher</h2>
         <p class="muted">Connect the satellite directly to this computer and use Chrome or Edge to open its USB device picker.</p>
@@ -1848,6 +2601,7 @@ class TaterSatellitePanel extends HTMLElement {
             : ""
         }
       </section>
+      `}
     `;
   }
 
@@ -1925,23 +2679,142 @@ class TaterSatellitePanel extends HTMLElement {
   bindEvents() {
     const root = this.shadowRoot;
     root.querySelectorAll("[data-tab]").forEach((button) => {
-      button.addEventListener("click", () => {
-        this._tab = button.dataset.tab;
-        this._selectedDeviceId = "";
-        this._dirty = false;
-        this.render();
-      });
+      button.addEventListener("click", () => this.navigate(button.dataset.tab));
     });
+    root.querySelector("[data-device-search]")?.addEventListener("input", (event) => {
+      this._deviceQuery = event.target.value;
+      this.applyDeviceFilter();
+    });
+    root.querySelector("[data-room-filter]")?.addEventListener("change", (event) => {
+      this._roomFilter = event.target.value;
+      this.applyDeviceFilter();
+    });
+    for (const [attribute, property] of [["device-section", "_deviceSection"], ["voice-section", "_voiceSection"], ["firmware-section", "_firmwareSection"]]) {
+      root.querySelectorAll(`[data-${attribute}]`).forEach((button) => button.addEventListener("click", () => {
+        this[property] = button.getAttribute(`data-${attribute}`);
+        this.render();
+      }));
+    }
+    root.querySelectorAll("[data-hydra-section]").forEach((button) => button.addEventListener("click", () => {
+      this._hydraSection = button.dataset.hydraSection;
+      this.render();
+    }));
+    root.querySelectorAll("[data-assistant-mode]").forEach((button) => button.addEventListener("click", () => {
+      this._taterDraft.assistant_mode = button.dataset.assistantMode;
+      this.markDirty("tater");
+      this.render();
+    }));
+    root.querySelectorAll("[data-tater-provider]").forEach((button) => button.addEventListener("click", () => {
+      const [kind, provider] = String(button.dataset.taterProvider || "").split(":");
+      if (!["stt", "tts"].includes(kind) || !["openai", "wyoming"].includes(provider)) return;
+      this._taterDraft[`${kind}_provider`] = provider;
+      this.markDirty("tater");
+      this.render();
+    }));
+    root.querySelectorAll("[data-entity-scope]").forEach((button) => button.addEventListener("click", () => {
+      this._taterDraft.entity_scope = button.dataset.entityScope;
+      this.markDirty("tater");
+      this.render();
+    }));
+    root.querySelectorAll("[data-tater-setting]").forEach((input) => {
+      const update = () => {
+        let value = input.type === "checkbox" ? input.checked : input.value;
+        if (input.type === "number") value = Number(value);
+        this._taterDraft[input.dataset.taterSetting] = value;
+        this.markDirty("tater");
+      };
+      input.addEventListener(input.tagName === "TEXTAREA" ? "input" : "change", update);
+    });
+    root.querySelector("[data-tater-test-message]")?.addEventListener("input", (event) => {
+      this._testMessage = event.target.value;
+    });
+    root.querySelector('[data-action="save-tater"]')?.addEventListener("click", () => {
+      const settings = clone(this._taterDraft);
+      Object.keys(settings).filter((key) => key.endsWith("_set")).forEach((key) => delete settings[key]);
+      this.run(async () => {
+        const result = await this.api("POST", "tater/settings", { settings });
+        this._data.tater_assistant.settings = result.settings;
+        this._taterDraft = clone(result.settings);
+      }, "Tater assistant settings saved.", ["tater"]);
+    });
+    root.querySelector('[data-action="reset-tater-draft"]')?.addEventListener("click", () => {
+      this.clearDirty("tater");
+      this._taterDraft = clone(this._data.tater_assistant?.settings || {});
+      this.render();
+    });
+    root.querySelector('[data-action="test-tater"]')?.addEventListener("click", () => {
+      const text = String(root.querySelector("[data-tater-test-message]")?.value || "").trim();
+      if (!text) return;
+      this.run(async () => {
+        const result = await this.api("POST", "tater/test", { text, conversation_id: this._testConversationId });
+        this._testConversationId = result.conversation_id || this._testConversationId;
+        this._testMessage = "";
+      }, "Tater completed the test turn.");
+    });
+    root.querySelector('[data-action="clear-hydra-ledger"]')?.addEventListener("click", () => {
+      this.confirmAction("Clear Hydra ledger?", "Remove all stored mini-Tater execution records?", "Clear ledger", () => this.run(
+        () => this.api("POST", "tater/hydra/clear", { ledger: true, conversations: false }),
+        "Hydra ledger cleared.",
+      ));
+    });
+    root.querySelector('[data-action="clear-hydra-conversations"]')?.addEventListener("click", () => {
+      this.confirmAction("Clear Tater conversations?", "Remove all stored follow-up context and test messages?", "Clear conversations", () => this.run(
+        () => this.api("POST", "tater/hydra/clear", { ledger: false, conversations: true }),
+        "Tater conversation data cleared.",
+      ));
+    });
+    for (const [action, dialog] of [["server", "server"], ["new-stereo", "stereo"], ["grouping-help", "groups"]]) {
+      root.querySelectorAll(`[data-action="${action}"]`).forEach((button) => button.addEventListener("click", () => {
+        this._dialogFocus = button;
+        this._dialog = dialog;
+        this.render();
+      }));
+    }
+    root.querySelectorAll('[data-action="close-dialog"]').forEach((button) => button.addEventListener("click", () => this.closeDialog()));
+    root.querySelector('[data-action="confirm-dialog"]')?.addEventListener("click", () => {
+      const action = this._confirmation?.action;
+      this._confirmation = null;
+      action?.();
+    });
+    root.querySelector('[data-action="discard-stereo"]')?.addEventListener("click", () => {
+      this._stereoDraft = {};
+      this.clearDirty("stereo");
+      this.render();
+    });
+    root.querySelector("[data-dialog-backdrop]")?.addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) this.closeDialog();
+    });
+    root.querySelectorAll("[data-pick-setting]").forEach((button) => button.addEventListener("click", () => {
+      this._dialogFocus = button;
+      this._picker = { key: button.dataset.pickSetting, scope: button.dataset.pickScope };
+      this._pickerQuery = "";
+      this._dialog = "picker";
+      this.render();
+    }));
+    root.querySelector("[data-picker-search]")?.addEventListener("input", (event) => {
+      this._pickerQuery = event.target.value;
+      root.querySelectorAll("[data-picker-text]").forEach((option) => { option.hidden = !option.dataset.pickerText.includes(this._pickerQuery.toLowerCase()); });
+      const empty = root.querySelector("[data-picker-empty]");
+      if (empty) empty.hidden = [...root.querySelectorAll("[data-picker-text]")].some((option) => !option.hidden);
+    });
+    for (const [attribute, key] of [["name", "name"], ["left", "left"], ["right", "right"], ["left-volume", "leftVolume"], ["right-volume", "rightVolume"], ["left-delay", "leftDelay"], ["right-delay", "rightDelay"]]) {
+      root.querySelector(`[data-stereo-${attribute}]`)?.addEventListener("input", (event) => {
+        this._stereoDraft[key] = event.target.value;
+        this.markDirty("stereo");
+      });
+    }
     root.querySelectorAll('[data-action="refresh"]').forEach((button) =>
       button.addEventListener("click", () => this.load()),
     );
     root.querySelectorAll('[data-action="pair"]').forEach((button) =>
-      button.addEventListener("click", () =>
+      button.addEventListener("click", () => {
+        this._dialogFocus = button;
+        this._dialog = "pairing";
         this.run(async () => {
           const pairing = await this.api("POST", "pairing", {});
           this._data.pairing = pairing;
-        }, "Pairing mode started. Enter the code during satellite setup."),
-      ),
+        }, "Pairing mode started. Enter the code during satellite setup.");
+      }),
     );
     root.querySelectorAll('[data-action="bluetooth-pair"]').forEach((button) =>
       button.addEventListener("click", () => {
@@ -1965,14 +2838,13 @@ class TaterSatellitePanel extends HTMLElement {
     );
     root.querySelectorAll('[data-action="bluetooth-unpair"]').forEach((button) =>
       button.addEventListener("click", () => {
-        if (!window.confirm(`Unpair ${button.dataset.address} from this Echo satellite?`)) return;
-        this.run(
+        this.confirmAction("Unpair Bluetooth device?", `Remove ${button.dataset.address} from this Echo satellite?`, "Unpair device", () => this.run(
           () => this.api("POST", "bluetooth/unpair", {
             address: button.dataset.address,
             satellite_id: button.dataset.satelliteId,
           }),
           "Bluetooth device unpaired.",
-        );
+        ));
       }),
     );
     root.querySelector('[data-action="save-stereo"]')?.addEventListener("click", () => {
@@ -1991,7 +2863,7 @@ class TaterSatellitePanel extends HTMLElement {
         return;
       }
       this.run(
-        () => this.api("POST", "stereo-pairs", {
+        async () => { await this.api("POST", "stereo-pairs", {
           pair: {
             name,
             left_device_id: left,
@@ -2001,17 +2873,17 @@ class TaterSatellitePanel extends HTMLElement {
             left_delay_ms: Number(value("[data-stereo-left-delay]") || 0),
             right_delay_ms: Number(value("[data-stereo-right-delay]") || 0),
           },
-        }),
+        }); this._dialog = ""; this._stereoDraft = {}; },
         "Stereo pair created. Its media player is ready in Home Assistant.",
+        ["stereo"],
       );
     });
     root.querySelectorAll("[data-remove-stereo]").forEach((button) =>
       button.addEventListener("click", () => {
-        if (!confirm("Delete this stereo pair? The physical satellite media players remain available.")) return;
-        this.run(
+        this.confirmAction("Delete stereo pair?", "The physical satellite media players remain available.", "Delete pair", () => this.run(
           () => this.api("DELETE", `stereo-pairs/${encodeURIComponent(button.dataset.removeStereo)}`),
           "Stereo pair deleted.",
-        );
+        ));
       }),
     );
     root.querySelectorAll("[data-device-volume]").forEach((input) => {
@@ -2039,11 +2911,10 @@ class TaterSatellitePanel extends HTMLElement {
     );
     root.querySelectorAll('[data-action="trainer-unlink"]').forEach((button) =>
       button.addEventListener("click", () => {
-        if (!confirm("Unlink this Wake Word Trainer? Publishing will stop until it is linked again.")) return;
-        this.run(
+        this.confirmAction("Unlink Wake Word Trainer?", "Publishing stops until the trainer is linked again.", "Unlink trainer", () => this.run(
           () => this.api("POST", "trainer/manage/unlink", {}),
           "Wake Word Trainer unlinked.",
-        );
+        ));
       }),
     );
     root.querySelectorAll("[data-copy-trainer-code]").forEach((button) =>
@@ -2068,9 +2939,15 @@ class TaterSatellitePanel extends HTMLElement {
         this.render();
       }),
     );
+    root.querySelectorAll("[data-copy-pairing-code]").forEach((button) => button.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(button.dataset.copyPairingCode || ""); this._notice = "Pairing code copied."; }
+      catch { this._error = "Could not copy the pairing code. Select and copy it manually."; }
+      this.render();
+    }));
     root.querySelectorAll("[data-configure]").forEach((button) =>
       button.addEventListener("click", () => {
         this.prepareDeviceDraft(button.dataset.configure);
+        this._deviceSection = "overview";
         this.render();
       }),
     );
@@ -2084,20 +2961,19 @@ class TaterSatellitePanel extends HTMLElement {
     );
     root.querySelectorAll("[data-forget]").forEach((button) =>
       button.addEventListener("click", () => {
-        if (!confirm("Forget this offline satellite and revoke its saved credential?")) return;
-        this.run(
+        this.confirmAction("Forget satellite?", "This revokes the saved credential. The satellite must pair again before it can reconnect.", "Forget satellite", () => this.run(
           () => this.api("DELETE", `device/${button.dataset.forget}`),
           "Satellite forgotten. Use a new pairing code to add it again.",
-        );
+          [`device:${button.dataset.forget}`],
+        ));
       }),
     );
     root.querySelectorAll("[data-ota]").forEach((button) =>
       button.addEventListener("click", () => {
-        if (!confirm("Install the board-matched Tater firmware OTA image now?")) return;
-        this.run(
+        this.confirmAction("Install satellite firmware?", "The board-matched firmware will be installed wirelessly. The satellite restarts after flashing; Wi-Fi and pairing are kept.", "Install firmware", () => this.run(
           () => this.api("POST", `firmware/install/${button.dataset.ota}`, {}),
           "OTA update started. The satellite will reconnect after flashing.",
-        );
+        ));
       }),
     );
     root.querySelectorAll("[data-sync-settings]").forEach((button) =>
@@ -2121,7 +2997,7 @@ class TaterSatellitePanel extends HTMLElement {
           target.oww_wake_word_url = selected?.value || "";
           target.nww_available_architectures = (selected?.architectures || []).join(",");
         }
-        this._dirty = true;
+        this.markDirty("wake");
         this.render();
       }),
     );
@@ -2136,7 +3012,7 @@ class TaterSatellitePanel extends HTMLElement {
           .filter((item) => item.dataset.settingList === key && item.checked)
           .map((item) => item.value)
           .join(",");
-        this._dirty = true;
+        this.markDirty(input.dataset.scope, key);
         this.render();
       }),
     );
@@ -2147,7 +3023,7 @@ class TaterSatellitePanel extends HTMLElement {
           wake: this._wakeDraft,
         }[button.dataset.resetScope] || this._deviceDraft;
         target[button.dataset.resetSetting] = Number(button.dataset.resetValue);
-        this._dirty = true;
+        this.markDirty(button.dataset.resetScope, button.dataset.resetSetting);
         this.render();
       }),
     );
@@ -2217,7 +3093,8 @@ class TaterSatellitePanel extends HTMLElement {
             target.nww_available_architectures = (selected?.architectures || []).join(",");
           }
         }
-        this._dirty = true;
+        this.markDirty(input.dataset.scope, input.dataset.setting);
+        if (input.type === "radio" && this._dialog === "picker") { this.closeDialog(); return; }
         const controlsConditionalFields = (this._data.settings_schema || []).some(
           (section) =>
             (section.fields || []).some(
@@ -2236,11 +3113,11 @@ class TaterSatellitePanel extends HTMLElement {
     });
     root.querySelector('[data-special="pipeline"]')?.addEventListener("change", (event) => {
       this._pipelineDraft = event.target.value;
-      this._dirty = true;
+      this.markDirty("device");
     });
     root.querySelector('[data-special="vad"]')?.addEventListener("change", (event) => {
       this._vadDraft = event.target.value;
-      this._dirty = true;
+      this.markDirty("device");
     });
     root.querySelectorAll("[data-upload-kind]").forEach((button) =>
       button.addEventListener("click", () => this.uploadAsset(button)),
@@ -2251,6 +3128,7 @@ class TaterSatellitePanel extends HTMLElement {
           settings: pickSettings(this._globalDraft, VOICE_DEFAULT_SETTING_KEYS),
         }),
         "Shared satellite settings saved and pushed live.",
+        ["global"],
       ),
     );
     root.querySelector('[data-action="save-trainer"]')?.addEventListener("click", () =>
@@ -2259,6 +3137,7 @@ class TaterSatellitePanel extends HTMLElement {
           settings: pickSettings(this._globalDraft, TRAINER_SETTING_KEYS),
         }),
         "Trainer settings saved and pushed live.",
+        ["trainer"],
       ),
     );
     root.querySelector('[data-action="save-verifier"]')?.addEventListener("click", () =>
@@ -2267,12 +3146,14 @@ class TaterSatellitePanel extends HTMLElement {
           settings: pickSettings(this._globalDraft, WAKE_VERIFIER_SETTING_KEYS),
         }),
         "STT wake verification updated for all satellites.",
+        ["verifier"],
       ),
     );
     root.querySelector("[data-save-shared-wake]")?.addEventListener("click", () =>
       this.run(
         () => this.api("POST", "settings/wake", { settings: this._wakeDraft }),
         "Wake settings saved and pushed to all satellites.",
+        ["wake"],
       ),
     );
     root.querySelector("[data-reset-shared-wake]")?.addEventListener("click", () => {
@@ -2282,18 +3163,13 @@ class TaterSatellitePanel extends HTMLElement {
         this._data.wake_family_settings?.mww ||
         {};
       this._wakeDraft = this.prepareSettingsDraft(values);
-      this._dirty = false;
+      this.clearDirty("wake");
       this.render();
     });
     root.querySelector('[data-action="reset-draft"]')?.addEventListener("click", () => {
-      this._globalDraft = this.prepareSettingsDraft(this._data.global_settings);
-      this._wakeDraft = this.prepareSettingsDraft(
-        this._data.shared_wake_settings ||
-          this._data.wake_family_settings?.echo ||
-          this._data.wake_family_settings?.mww ||
-          {},
-      );
-      this._dirty = false;
+      const scope = { trainer: "trainer", verifier: "verifier" }[this._tab] || "global";
+      this.clearDirty(scope);
+      this.syncDrafts(this._data);
       this.render();
     });
     root.querySelector('[data-action="save-device"]')?.addEventListener("click", () => {
@@ -2309,20 +3185,18 @@ class TaterSatellitePanel extends HTMLElement {
             vad_sensitivity: this._vadDraft,
           }),
         "Satellite overrides saved and pushed live.",
+        ["device"],
       );
     });
     root.querySelector('[data-action="reset-device"]')?.addEventListener("click", () => {
-      if (!confirm("Remove all firmware setting overrides from this satellite?")) return;
-      this.run(
+      this.confirmAction("Use all shared defaults?", "Remove all firmware setting overrides from this satellite?", "Use shared defaults", () => this.run(
         () => this.api("POST", `settings/device/${this._selectedDeviceId}/reset`, {}),
         "Satellite now follows all shared defaults.",
-      );
+        ["device"],
+      ));
     });
     root.querySelector('[data-action="back"]')?.addEventListener("click", () => {
-      this._selectedDeviceId = "";
-      this._deviceDraft = null;
-      this._dirty = false;
-      this.render();
+      this.navigate("satellites");
     });
     root.querySelector('[data-action="refresh-firmware"]')?.addEventListener("click", () =>
       this.run(
@@ -2369,6 +3243,9 @@ class TaterSatellitePanel extends HTMLElement {
       if (!file) return;
       const label = prompt("Name this wake asset", file.name.replace(/\.[^.]+$/, "")) || "";
       if (!label) return;
+      const scopeKey = this.settingScope(scope, settingKey);
+      const deviceId = this._selectedDeviceId;
+      this.markDirty(scope, settingKey);
       this._error = "";
       this._notice = "";
       this._loading = true;
@@ -2381,17 +3258,16 @@ class TaterSatellitePanel extends HTMLElement {
           data_b64: await fileToBase64(file),
         });
         this._loading = false;
-        this._dirty = false;
         await this.load(true);
-        const target =
-          scope === "wake"
-            ? this._wakeDraft
-            : scope === "global"
-              ? this._globalDraft
-              : this._deviceDraft;
-        target[settingKey] = result.asset.id;
-        if (kind === "wake_model") target.wake_word = "custom_url";
-        if (kind === "wake_sound") target.wake_sound = "custom";
+        const targets = scope === "device"
+          ? [deviceId === this._selectedDeviceId ? this._deviceDraft : null, this._deviceDrafts.get(deviceId)?.draft]
+          : [{ wake: this._wakeDraft, global: this._globalDraft }[scope]];
+        targets.filter(Boolean).forEach((target) => {
+          target[settingKey] = result.asset.id;
+          if (kind === "wake_model") target.wake_word = "custom_url";
+          if (kind === "wake_sound") target.wake_sound = "custom";
+        });
+        this._dirtyScopes.add(scopeKey);
         this._dirty = true;
         this._notice = `${label} uploaded. Save settings to publish it to satellites.`;
         this.render();

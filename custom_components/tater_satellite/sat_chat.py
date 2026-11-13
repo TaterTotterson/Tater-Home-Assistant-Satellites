@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import struct
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -15,8 +16,11 @@ SAMPLE_RATE_HZ = 16_000
 CHANNELS = 1
 SAMPLE_FORMAT = "s16le"
 VIDEO_FRAME_PREFIX = b"TSCV1"
+H264_FRAME_PREFIX = b"TSCV2"
+H264_HEADER_BYTES = 41
 MAX_VIDEO_FRAME_BYTES = 2 * 1024 * 1024
 MAX_SAT_CHAT_FRAME_BYTES = len(VIDEO_FRAME_PREFIX) + MAX_VIDEO_FRAME_BYTES
+MAX_H264_RELAY_FRAMES = 32
 
 
 def _text(value: Any) -> str:
@@ -27,6 +31,76 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
     return bool(value)
+
+
+def _valid_h264_frame(data: bytes, *, balanced: bool = False) -> bool:
+    if not data.startswith(H264_FRAME_PREFIX) or not (
+        H264_HEADER_BYTES + 5 <= len(data) <= H264_HEADER_BYTES + 1024 * 1024
+    ):
+        return False
+    width, height, fps, _sequence, flags, pts, stream_id = struct.unpack_from("<IIIIIQQ", data, 5)
+    payload = data[H264_HEADER_BYTES:]
+    return (
+        (width, height, fps) in ({(768, 432, 30), (640, 480, 30)} if balanced else {(1280, 720, 30), (1280, 960, 30)})
+        and flags in (0, 1)
+        and pts < 2**63
+        and stream_id != 0
+        and (payload.startswith(b"\0\0\1") or payload.startswith(b"\0\0\0\1"))
+    )
+
+
+def _h264_capable(runtime: SatelliteRuntime | None) -> bool:
+    return (
+        runtime is not None
+        and _text(runtime.board).lower() in {"checkers", "cronos"}
+        and _truthy(runtime.capabilities.get("sat_chat_h264"))
+        and runtime.capabilities.get("sat_chat_h264_version") == 1
+    )
+
+
+def _enqueue_video_packet(relay: dict[str, Any], data: bytes) -> None:
+    queue = relay["queue"]
+    h264 = data.startswith(H264_FRAME_PREFIX)
+    if relay.get("h264") != h264:
+        relay["h264"] = h264
+        relay["waiting_keyframe"] = h264
+        while not queue.empty():
+            queue.get_nowait()
+    if not h264:
+        while not queue.empty():
+            queue.get_nowait()
+        queue.put_nowait(data)
+        return
+    keyframe = len(data) >= H264_HEADER_BYTES and struct.unpack_from("<I", data, 21)[0] == 1
+    if relay.get("waiting_keyframe") and not keyframe:
+        return
+    if queue.full():
+        # H.264 prediction requires the complete pending GOP. Arbitrarily
+        # replacing one frame, as for JPEG, forces needless decoder resets.
+        while not queue.empty():
+            queue.get_nowait()
+        relay["waiting_keyframe"] = True
+        if not keyframe:
+            return
+    queue.put_nowait(data)
+    relay["waiting_keyframe"] = False
+
+
+def _h264_receive_max_height(runtime: SatelliteRuntime) -> int:
+    # Cronos v1 was qualified for 960-line capture and 720p from the start.
+    # An older Checkers v1 app needs an explicit receiver upgrade first.
+    default = 960 if _text(runtime.board).lower() == "cronos" else 720
+    maximum = runtime.capabilities.get("sat_chat_h264_receive_max_height")
+    return maximum if type(maximum) is int and maximum in (720, 960) else default
+
+
+def _h264_pair_compatible(caller: SatelliteRuntime, target: SatelliteRuntime) -> bool:
+    if not _h264_capable(caller) or not _h264_capable(target):
+        return False
+    caller_height = 960 if _text(caller.board).lower() == "cronos" else 720
+    target_height = 960 if _text(target.board).lower() == "cronos" else 720
+    return (_h264_receive_max_height(caller) >= target_height
+            and _h264_receive_max_height(target) >= caller_height)
 
 
 def _video_receive_profile(runtime: SatelliteRuntime | None) -> str:
@@ -202,6 +276,12 @@ class TaterSatChatCoordinator:
                 target_id: _video_receive_profile(target_runtime),
             },
         }
+        if (_h264_capable(caller) and _h264_capable(target_runtime)
+                and _truthy(caller.capabilities.get("sat_chat_h264_balanced"))
+                and _truthy(target_runtime.capabilities.get("sat_chat_h264_balanced"))):
+            call["_video_profiles"] = {caller_id: "echo-h264-balanced", target_id: "echo-h264-balanced"}
+        elif _h264_pair_compatible(caller, target_runtime):
+            call["_video_profiles"] = {caller_id: "echo-h264", target_id: "echo-h264"}
         async with self._lock:
             if caller_id in self._endpoint_calls or target_id in self._endpoint_calls:
                 raise RuntimeError(
@@ -308,7 +388,7 @@ class TaterSatChatCoordinator:
     async def async_route_binary(
         self, source: SatelliteRuntime, data: bytes
     ) -> bool:
-        """Route active-call PCM or tagged JPEG without entering Assist."""
+        """Route call PCM or tagged JPEG/H.264 without entering Assist."""
         if not data:
             return False
         source_id = source.device_id
@@ -316,12 +396,22 @@ class TaterSatChatCoordinator:
             call_id = self._endpoint_calls.get(source_id, "")
             call = self._calls.get(call_id)
             if not isinstance(call, dict) or call.get("state") != "active":
-                return False
+                # Late/reserved video is never Assist microphone PCM.
+                return data.startswith(b"TSCV")
             caller = _text(call.get("caller"))
             target = _text(call.get("target"))
             peer_id = target if source_id == caller else caller
             mode = _text(call.get("mode")).lower() or "audio"
+            profiles = call.get("_video_profiles", {})
+            video_profile = profiles.get(peer_id) if isinstance(profiles, dict) else ""
+            h264_negotiated = video_profile in {"echo-h264", "echo-h264-balanced"}
 
+        if data.startswith(H264_FRAME_PREFIX):
+            if mode == "video" and h264_negotiated and _valid_h264_frame(data, balanced=video_profile == "echo-h264-balanced"):
+                await self._async_queue_video_frame(call_id, source_id, peer_id, bytes(data))
+            return True
+        if data.startswith(b"TSCV") and not data.startswith(VIDEO_FRAME_PREFIX):
+            return True
         if data.startswith(VIDEO_FRAME_PREFIX):
             jpeg = data[len(VIDEO_FRAME_PREFIX) :]
             if (
@@ -360,21 +450,14 @@ class TaterSatChatCoordinator:
                 or not isinstance(task, asyncio.Task)
                 or task.done()
             ):
-                queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
+                queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_H264_RELAY_FRAMES)
                 task = asyncio.create_task(
                     self._async_video_relay_worker(key, source, peer, queue),
                     name=f"tater_sat_chat_video_{peer}",
                 )
                 relay = {"queue": queue, "task": task}
                 self._video_relays[key] = relay
-            queue = relay["queue"]
-            try:
-                queue.put_nowait(data)
-            except asyncio.QueueFull:
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    queue.get_nowait()
-                with contextlib.suppress(asyncio.QueueFull):
-                    queue.put_nowait(data)
+            _enqueue_video_packet(relay, data)
 
     async def _async_video_relay_worker(
         self,

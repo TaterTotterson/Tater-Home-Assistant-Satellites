@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -33,6 +34,11 @@ def _panel_element_name(version: str) -> str:
     return f"{PANEL_ELEMENT}-{version_slug or 'dev'}"
 
 
+def _panel_asset_revision(path: Path) -> str:
+    """Give an updated panel a fresh module and custom-element identity."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register shared HTTP routes and frontend assets."""
     hass.data.setdefault(DOMAIN, {})
@@ -62,7 +68,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: TaterConfigEntry) -> boo
 
     if not hass.data[DOMAIN].get(DATA_PANEL_REGISTERED):
         integration = await async_get_integration(hass, DOMAIN)
-        panel_version = str(integration.version or "dev")
+        panel_revision = await hass.async_add_executor_job(
+            _panel_asset_revision,
+            Path(__file__).parent / "frontend" / "tater-satellite-panel.js",
+        )
+        panel_version = f"{integration.version or 'dev'}-{panel_revision}"
         await panel_custom.async_register_panel(
             hass,
             frontend_url_path=PANEL_URL_PATH,

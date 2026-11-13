@@ -116,7 +116,7 @@ class TaterAudioTests(unittest.TestCase):
             ROOT / "custom_components" / "tater_satellite" / "http.py"
         ).read_text()
 
-        self.assertIn('this.tabButton("audio", "Tater Audio")', panel)
+        self.assertIn('id: "audio", label: "Tater Audio"', panel)
         self.assertIn('this.api("POST", "stereo-pairs"', panel)
         self.assertIn("class StereoPairView(", http)
         self.assertIn("class StereoPairDeleteView(", http)

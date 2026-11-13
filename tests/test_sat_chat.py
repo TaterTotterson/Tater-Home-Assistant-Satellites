@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import struct
 from pathlib import Path
 import unittest
 
@@ -19,6 +20,16 @@ SPEC.loader.exec_module(sat_chat)
 class FakeManager:
     def __init__(self) -> None:
         self.runtimes: dict[str, FakeRuntime] = {}
+
+
+class BalancedGeometryTests(unittest.TestCase):
+    def test_balanced_frames_require_explicit_profile(self):
+        for width, height in [(768, 432), (640, 480)]:
+            wire = b"TSCV2" + struct.pack("<IIIIIQQ", width, height, 30, 0, 1, 0, 123) + b"\0\0\0\1\x65\x88"
+            self.assertTrue(sat_chat._valid_h264_frame(wire, balanced=True))
+            self.assertFalse(sat_chat._valid_h264_frame(wire))
+        invalid = b"TSCV2" + struct.pack("<IIIIIQQ", 640, 432, 30, 0, 1, 0, 123) + b"\0\0\0\1\x65\x88"
+        self.assertFalse(sat_chat._valid_h264_frame(invalid, balanced=True))
 
 
 class FakeRuntime:
@@ -75,6 +86,124 @@ def _messages(runtime: FakeRuntime, kind: str) -> list[dict]:
 
 
 class SatChatCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_balanced_h264_requires_both_peers_and_relays_exactly(self) -> None:
+        for runtime in (self.kitchen, self.office):
+            runtime.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1, sat_chat_h264_balanced=True)
+        self.office.board = "cronos"
+        await self.coordinator.async_start(self.kitchen, "office", mode="video")
+        self.assertEqual(_messages(self.kitchen, "sat_chat.started")[0]["video_send_profile"], "echo-h264-balanced")
+        wire = b"TSCV2" + struct.pack("<IIIIIQQ", 768, 432, 30, 0, 1, 1234, 123) + b"\0\0\0\1\x65\x88"
+        self.assertTrue(await self.coordinator.async_route_binary(self.kitchen, wire))
+        await asyncio.sleep(0)
+        self.assertEqual(self.office.binary, [wire])
+        await self.coordinator.async_end(actor=self.kitchen.device_id)
+        self.office.capabilities["sat_chat_h264_balanced"] = False
+        self.kitchen.sent.clear()
+        await self.coordinator.async_start(self.kitchen, "office", mode="video")
+        self.assertNotEqual(_messages(self.kitchen, "sat_chat.started")[0].get("video_send_profile"), "echo-h264-balanced")
+
+    async def test_h264_relay_preserves_burst_and_resets_whole_overflowed_gop(self) -> None:
+        def wire(sequence, key=False):
+            return b"TSCV2"+struct.pack("<IIIIIQQ",1280,960,30,sequence,int(key),sequence*33333,123)+b"\0\0\0\1\x65\x88"
+        for overflow in (False, True):
+            manager = FakeManager()
+            source = FakeRuntime(manager,"a")
+            peer = FakeRuntime(manager,"b")
+            peer.block_next_binary = True
+            coordinator = sat_chat.TaterSatChatCoordinator(manager)
+            try:
+                await coordinator._async_queue_video_frame("call",source.device_id,peer.device_id,wire(0,True))
+                await peer.binary_started.wait()
+                for n in range(1,41 if overflow else 3):
+                    await coordinator._async_queue_video_frame("call",source.device_id,peer.device_id,wire(n))
+                expected=[wire(0,True),wire(1),wire(2)]
+                if overflow:
+                    for n in (60,61):
+                        await coordinator._async_queue_video_frame("call",source.device_id,peer.device_id,wire(n,n==60))
+                    expected=[wire(0,True),wire(60,True),wire(61)]
+                peer.binary_release.set()
+                for _ in range(30):
+                    if len(peer.binary)>=len(expected): break
+                    await asyncio.sleep(0)
+                self.assertEqual(peer.binary,expected)
+            finally:
+                await coordinator.async_shutdown()
+
+    async def test_mixed_hardware_call_requires_tall_checkers_receiver(self) -> None:
+        for maximum in (None, 720, 960, True, "960", 1088):
+            for reverse in (False, True):
+                manager = FakeManager()
+                checkers = FakeRuntime(manager, "checkers", board="checkers")
+                cronos = FakeRuntime(manager, "cronos", board="cronos")
+                checkers.capabilities["sat_chat_h264_receive_max_height"] = maximum
+                for runtime in (checkers, cronos):
+                    runtime.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1)
+                coordinator = sat_chat.TaterSatChatCoordinator(manager)
+                try:
+                    caller, target = (cronos, checkers) if reverse else (checkers, cronos)
+                    await coordinator.async_start(caller, target.device_id, mode="video")
+                    expected = "echo-h264" if type(maximum) is int and maximum == 960 else "echo-low"
+                    # The legacy Cronos JPEG receiver has no named profile;
+                    # either endpoint must nevertheless avoid H.264.
+                    for runtime in (caller, target):
+                        profile = _messages(runtime, "sat_chat.started")[0].get("video_send_profile", "")
+                        if expected == "echo-h264":
+                            self.assertEqual(profile, expected)
+                        else:
+                            self.assertNotEqual(profile, "echo-h264")
+                finally:
+                    await coordinator.async_shutdown()
+
+    async def test_cronos_h264_four_by_three(self) -> None:
+        for runtime in (self.kitchen,self.office):
+            runtime.board='cronos'
+            runtime.capabilities['sat_chat_h264']=True
+            runtime.capabilities['sat_chat_h264_version']=1
+        await self.coordinator.async_start(self.kitchen,'office',mode='video')
+        self.assertEqual(_messages(self.kitchen,'sat_chat.started')[0]['video_send_profile'],'echo-h264')
+        wire=b'TSCV2'+struct.pack('<IIIIIQQ',1280,960,30,0,1,0,123)+b'\0\0\0\1\x65\x88'
+        self.assertTrue(await self.coordinator.async_route_binary(self.kitchen,wire))
+        await asyncio.sleep(0)
+        self.assertEqual(self.office.binary,[wire])
+
+    async def test_mixed_hardware_targets_keep_jpeg(self) -> None:
+        self.kitchen.board='cronos'
+        for runtime in (self.kitchen,self.office):
+            runtime.capabilities['sat_chat_h264']=True
+            runtime.capabilities['sat_chat_h264_version']=1
+        await self.coordinator.async_start(self.kitchen,'office',mode='video')
+        self.assertNotEqual(_messages(self.kitchen,'sat_chat.started')[0]['video_send_profile'],'echo-h264')
+
+    async def test_late_or_reserved_video_never_enters_assist_audio(self) -> None:
+        for data in (b"TSCV1bad", b"TSCV2bad", b"TSCV9unknown", b"TSCV"):
+            self.assertTrue(await self.coordinator.async_route_binary(self.kitchen, data))
+        self.assertFalse(await self.coordinator.async_route_binary(self.kitchen, b"\x00\x00"))
+
+    async def test_qualified_h264_is_negotiated_and_relayed_unchanged(self) -> None:
+        for runtime in (self.kitchen,self.office):
+            runtime.capabilities["sat_chat_h264"] = True
+            runtime.capabilities["sat_chat_h264_version"] = 1
+        await self.coordinator.async_start(self.kitchen,"office",mode="video")
+        self.assertEqual(_messages(self.kitchen,"sat_chat.started")[0]["video_send_profile"],"echo-h264")
+        wire = b"TSCV2" + struct.pack("<IIIIIQQ",1280,720,30,0,1,0,123) + b"\0\0\0\1\x65\x88"
+        self.assertTrue(sat_chat._valid_h264_frame(wire))
+        self.assertTrue(await self.coordinator.async_route_binary(self.kitchen,wire))
+        await asyncio.sleep(0)
+        self.assertEqual(self.office.binary,[wire])
+        self.assertTrue(await self.coordinator.async_route_binary(self.kitchen,b"TSCV2bad"))
+        await asyncio.sleep(0)
+        self.assertEqual(self.office.binary,[wire])
+
+    async def test_unqualified_peer_does_not_get_h264(self) -> None:
+        self.kitchen.capabilities["sat_chat_h264"] = True
+        self.kitchen.capabilities["sat_chat_h264_version"] = 1
+        await self.coordinator.async_start(self.kitchen,"office",mode="video")
+        self.assertEqual(_messages(self.kitchen,"sat_chat.started")[0]["video_send_profile"],"echo-low")
+        wire = b"TSCV2" + struct.pack("<IIIIIQQ",1280,720,30,0,1,0,123) + b"\0\0\0\1\x65\x88"
+        self.assertTrue(await self.coordinator.async_route_binary(self.kitchen,wire))
+        await asyncio.sleep(0)
+        self.assertEqual(self.office.binary,[])
+
     async def asyncSetUp(self) -> None:
         self.manager = FakeManager()
         self.kitchen = FakeRuntime(self.manager, "kitchen")

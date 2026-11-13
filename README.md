@@ -82,6 +82,47 @@ integration from **Devices & services**.
   Satellite1 Beta.1/rev4.1, ReSpeaker XVF3800, ESP32-S3-BOX-3, and all Tater
   Echo targets
 
+## Bridge workspace
+
+The **Tater Satellites** panel groups its navigation into **Tater assistant**,
+**Your home** (Satellites, Tater Audio, and Bluetooth), **Voice & wake** (Voice
+defaults, STT wake check, and Wake Word Trainer), and **Maintenance** (Firmware &
+recovery).
+
+Search satellites by name, room, or hardware, then select **Open** for focused
+device sections. Settings appear only where the satellite supports them. Shared
+voice defaults have separate Wake profile, Conversation, Wake sound, and
+Diagnostics sections; additional schema sections remain available under Other
+settings. Unsaved drafts stay available while moving between these workspaces.
+Save each section to apply it to the bridge.
+
+Use **Server & pairing** to view the Home Assistant address and active pairing
+code. **Add satellite** generates a new temporary pairing code.
+
+### Tater assistant mode
+
+The **Assistant** workspace selects who owns the complete voice turn. **Home
+Assistant** keeps the existing Assist pipeline unchanged. **Tater** sends the
+satellite microphone stream through its configured speech-to-text provider,
+Hydra, Home Assistant device control, and its configured text-to-speech provider
+before returning audio to the originating satellite.
+
+Configure an OpenAI-compatible language model and either OpenAI-compatible or
+Wyoming STT and TTS under **Models & speech**. Official OpenAI endpoints require
+an API key; local compatible endpoints may run without one. Provider keys stay
+in Home Assistant storage and are never returned by the management API.
+
+Mini Tater has one built-in tool, `control_home`. It does not load Cores,
+Portals, Shop items, downloaded Verbas, web tools, file tools, or messaging
+tools. Under **Home control**, choose entities exposed to Assist or all supported
+Home Assistant entities. The selected scope is checked while context is built,
+when a target is resolved, and immediately before a device action.
+
+The **Hydra** workspace shows conversation counts, tool decisions, the second
+plan review, results, timing, and bounded conversation history. Use its text test
+on the Assistant page to verify the model and device tool without recording
+audio.
+
 ## Pair a satellite
 
 1. Open **Tater Satellites** in the Home Assistant sidebar.

@@ -287,20 +287,37 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 break
             yield data
 
-    async def _run_pipeline(self, wake_word: str, conversation_id: str) -> None:
+    async def _run_pipeline(
+        self,
+        wake_word: str,
+        conversation_id: str,
+        audio_format: dict[str, Any],
+    ) -> None:
         if conversation_id:
             self._conversation_id = conversation_id
+        using_tater = (
+            self.manager.tater_assistant.settings().get("assistant_mode") == "tater"
+        )
         try:
-            await self.async_accept_pipeline_from_satellite(
-                audio_stream=self._audio_stream(),
-                start_stage=PipelineStage.STT,
-                end_stage=PipelineStage.TTS,
-                wake_word_phrase=wake_word or None,
-            )
+            if using_tater:
+                await self.manager.tater_assistant.async_run_voice(
+                    self.runtime,
+                    self._audio_stream(),
+                    audio_format,
+                    conversation_id,
+                    self._async_forward_pipeline_event,
+                )
+            else:
+                await self.async_accept_pipeline_from_satellite(
+                    audio_stream=self._audio_stream(),
+                    start_stage=PipelineStage.STT,
+                    end_stage=PipelineStage.TTS,
+                    wake_word_phrase=wake_word or None,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            _LOGGER.exception("Assist pipeline failed for %s", self.runtime.device_id)
+            _LOGGER.exception("Voice pipeline failed for %s", self.runtime.device_id)
             await self.runtime.async_send(
                 "voice.event",
                 {
@@ -312,6 +329,8 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 },
             )
             await self.runtime.async_send("state", {"state": "error"})
+            if using_tater:
+                await self._async_forward_pipeline_event("RUN_END", {})
         finally:
             self._bridge_task = None
 
@@ -338,7 +357,7 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         )
         self._bridge_task = self.config_entry.async_create_background_task(
             self.hass,
-            self._run_pipeline(wake_word, conversation_id),
+            self._run_pipeline(wake_word, conversation_id, audio_format),
             f"tater_satellite_pipeline_{self.runtime.device_id}",
         )
         return True

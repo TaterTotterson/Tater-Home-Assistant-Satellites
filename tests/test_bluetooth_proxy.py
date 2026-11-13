@@ -73,7 +73,7 @@ class BluetoothProxyTests(unittest.TestCase):
         self.assertIn("self.bluetooth.handle_message(runtime, kind, payload)", manager)
         self.assertIn("class BluetoothPairView", http)
         self.assertIn("class BluetoothUnpairView", http)
-        self.assertIn('this.tabButton("bluetooth", "Bluetooth")', panel)
+        self.assertIn('id: "bluetooth", label: "Bluetooth"', panel)
         self.assertIn('data-action="bluetooth-pair"', panel)
         self.assertIn('data-action="bluetooth-unpair"', panel)
 

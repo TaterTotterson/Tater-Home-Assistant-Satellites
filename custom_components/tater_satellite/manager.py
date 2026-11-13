@@ -63,6 +63,7 @@ from .protocol import (
     text,
 )
 from .sat_chat import MAX_SAT_CHAT_FRAME_BYTES, TaterSatChatCoordinator
+from .tater_assistant import MiniTaterRuntime
 from .settings import (
     DEFAULT_SETTINGS,
     ECHO_SCREEN_DEFAULTS,
@@ -801,6 +802,7 @@ class TaterSatelliteManager:
         self.sat_chat = TaterSatChatCoordinator(self)
         self.display_panels = TaterDisplayPanelCoordinator(self)
         self.bluetooth = TaterBluetoothProxyManager(self)
+        self.tater_assistant = MiniTaterRuntime(self)
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
         self._pairing_expires = 0.0
@@ -965,6 +967,7 @@ class TaterSatelliteManager:
                 migrated_wake_families = True
         self.data.setdefault("assets", {})
         self.data.setdefault("bluetooth_devices", {})
+        self.tater_assistant.setup()
         self.media.setup()
         self.trainer.setup()
         if (
@@ -2507,6 +2510,7 @@ class TaterSatelliteManager:
             "stereo_pairs": self.media.list_pairs(),
             "intercom": self.intercom.snapshot(),
             "sat_chat": self.sat_chat.snapshot(),
+            "tater_assistant": self.tater_assistant.snapshot(),
             "bluetooth": self.bluetooth.snapshot(),
             "pipelines": self.pipelines_snapshot(),
             "firmware": self.firmware.snapshot(),

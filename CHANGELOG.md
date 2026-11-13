@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 1.4.0
+
+- Reworked the satellite panel into a Tater Bridge workspace, with grouped
+  navigation, a searchable satellite list, focused device settings, and matching
+  pairing, wake-word, sound, and confirmation panels in light and dark themes.
+- Retained all schema-driven settings, hardware capability checks, device
+  commands, and save endpoints. Unsaved device and shared-setting drafts now
+  survive navigation, polling, unrelated commands, and saves in other sections.
+- Refreshed the panel's module and custom-element identity when its source changes
+  so updated installations do not reuse an older UI in an open browser.
+- Added a complete mini-Tater voice mode alongside the unchanged Home Assistant
+  Assist mode. Tater mode owns STT, Hydra, Home Assistant device control, TTS,
+  conversation history, and satellite playback.
+- Added matching Assistant, Models & speech, Home control, and Hydra workspaces.
+  Providers support OpenAI-compatible APIs or Wyoming speech services, while the
+  Hydra ledger records plan review, tool results, final responses, and timing.
+- Limited mini Tater to one allowlisted `control_home` tool, with an exposed-to-
+  Assist or all-entities scope that is rechecked before device actions. Provider
+  secrets are omitted from every management snapshot.
+
+- Added negotiated H.264 Sat Chat profiles for qualified Checkers and Cronos
+  peers, including 720p/960p and balanced 768×432/640×480 modes. Encoded packets
+  are relayed without JPEG transcoding, with bounded GOP-aware queues.
+- Kept mixed and older devices on their existing video profiles, validated
+  negotiated frame geometry, and prevented late, reserved, or malformed video
+  packets from entering Assist audio.
+
 ## 1.3.4
 
 - Added an adjustable STT wake-verification match threshold to the STT Wake

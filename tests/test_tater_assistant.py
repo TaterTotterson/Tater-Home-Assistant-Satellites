@@ -26,6 +26,44 @@ SPEC.loader.exec_module(tater)
 
 
 class TaterSettingsTests(unittest.TestCase):
+    def test_home_assistant_mode_is_the_default(self) -> None:
+        self.assertEqual(
+            tater.normalize_tater_settings({})["assistant_mode"],
+            "home_assistant",
+        )
+        self.assertEqual(
+            tater.normalize_tater_settings({"assistant_mode": "unknown"})[
+                "assistant_mode"
+            ],
+            "home_assistant",
+        )
+
+    def test_wyoming_optional_names_default_to_blank(self) -> None:
+        settings = tater.normalize_tater_settings(
+            {
+                "stt_provider": "wyoming",
+                "stt_model": "gpt-4o-transcribe",
+                "tts_provider": "wyoming",
+                "tts_voice": "alloy",
+            }
+        )
+
+        self.assertEqual(settings["stt_wyoming_model"], "")
+        self.assertEqual(settings["tts_wyoming_voice"], "")
+
+    def test_custom_legacy_wyoming_names_are_migrated(self) -> None:
+        settings = tater.normalize_tater_settings(
+            {
+                "stt_provider": "wyoming",
+                "stt_model": "custom-asr",
+                "tts_provider": "wyoming",
+                "tts_voice": "custom-voice",
+            }
+        )
+
+        self.assertEqual(settings["stt_wyoming_model"], "custom-asr")
+        self.assertEqual(settings["tts_wyoming_voice"], "custom-voice")
+
     def test_settings_normalize_and_never_publish_api_keys(self) -> None:
         settings = tater.normalize_tater_settings(
             {

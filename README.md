@@ -102,7 +102,10 @@ code. **Add satellite** generates a new temporary pairing code.
 ### Tater assistant mode
 
 The **Assistant** workspace selects who owns the complete voice turn. **Home
-Assistant** keeps the existing Assist pipeline unchanged. **Tater** sends the
+Assistant** is the default and keeps the existing Assist pipeline unchanged.
+Selecting **Tater** immediately reveals its Models & speech, Home control, and
+Hydra workspaces; selecting Home Assistant hides them again. Save the Assistant
+workspace to apply the selected pipeline to voice turns. **Tater** sends the
 satellite microphone stream through its configured speech-to-text provider,
 Hydra, Home Assistant device control, and its configured text-to-speech provider
 before returning audio to the originating satellite.
@@ -111,6 +114,8 @@ Configure an OpenAI-compatible language model and either OpenAI-compatible or
 Wyoming STT and TTS under **Models & speech**. Official OpenAI endpoints require
 an API key; local compatible endpoints may run without one. Provider keys stay
 in Home Assistant storage and are never returned by the management API.
+Wyoming model and voice names are optional and remain blank unless the Wyoming
+service requires a specific name.
 
 Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses

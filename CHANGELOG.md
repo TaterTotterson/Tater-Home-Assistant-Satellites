@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.4.5
+
+- Kept Home Assistant as the default conversation pipeline and hid the
+  Tater-only Models & speech, Home control, and Hydra pages until Tater mode is
+  explicitly selected.
+- Split Wyoming's optional STT model and TTS voice names from the OpenAI fields
+  so they remain blank by default and no provider-specific name is sent unless
+  the user enters one. Existing custom Wyoming names are migrated.
+
 ## 1.4.4
 
 - Restored Tater-mode turns on Home Assistant versions whose exposed-entity

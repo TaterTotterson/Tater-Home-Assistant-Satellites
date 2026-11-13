@@ -15,7 +15,7 @@ const copy = value => structuredClone(value);
 function fixture() {
   const panel = new Panel();
   const device = (id, board) => ({ device_id: id, name: id, board, board_key: board, connected: true, settings: copy(settings.defaults), capabilities: { speaker: true, output_chain: 1, do_not_disturb: 1, screen_power_management: 1, screen_clock_format: 1, screen_climate: 1 }, wake_family: 'echo', firmware: {} });
-  panel._data = { global_settings: copy(settings.defaults), shared_wake_settings: copy(settings.defaults), settings_schema: copy(settings.schema), devices: [device('one', 'crown'), device('two', 'satellite1')], pipelines: [], tater_assistant: { settings: { assistant_mode: 'home_assistant', llm_base_url: 'https://api.openai.com/v1', llm_model: '', llm_api_key_set: false, stt_provider: 'openai', stt_base_url: 'https://api.openai.com/v1', stt_model: 'gpt-4o-transcribe', stt_api_key_set: false, tts_provider: 'openai', tts_base_url: 'https://api.openai.com/v1', tts_model: 'gpt-4o-tts', tts_voice: 'alloy', tts_api_key_set: false, entity_scope: 'exposed', assistant_name: 'Tater', personality: 'Warm', max_display: 8, max_store: 20, max_llm: 8, hydra_max_ledger_items: 1500, hydra_astraeus_plan_review_enabled: true, hydra_auto_continue_incomplete_final_enabled: false }, ready: { ok: true, missing: [] }, home_control: { entity_count: 2, areas: 1, domains: ['light'], examples: [{ entity_id: 'light.kitchen', name: 'Kitchen', area: 'Kitchen', state: 'off', domain: 'light' }] }, metrics: {}, ledger: [], messages: [] } };
+  panel._data = { global_settings: copy(settings.defaults), shared_wake_settings: copy(settings.defaults), settings_schema: copy(settings.schema), devices: [device('one', 'crown'), device('two', 'satellite1')], pipelines: [], tater_assistant: { settings: { assistant_mode: 'home_assistant', llm_base_url: 'https://api.openai.com/v1', llm_model: '', llm_api_key_set: false, stt_provider: 'openai', stt_base_url: 'https://api.openai.com/v1', stt_model: 'gpt-4o-transcribe', stt_wyoming_model: '', stt_api_key_set: false, tts_provider: 'openai', tts_base_url: 'https://api.openai.com/v1', tts_model: 'gpt-4o-tts', tts_voice: 'alloy', tts_wyoming_voice: '', tts_api_key_set: false, entity_scope: 'exposed', assistant_name: 'Tater', personality: 'Warm', max_display: 8, max_store: 20, max_llm: 8, hydra_max_ledger_items: 1500, hydra_astraeus_plan_review_enabled: true, hydra_auto_continue_incomplete_final_enabled: false }, ready: { ok: true, missing: [] }, home_control: { entity_count: 2, areas: 1, domains: ['light'], examples: [{ entity_id: 'light.kitchen', name: 'Kitchen', area: 'Kitchen', state: 'off', domain: 'light' }] }, metrics: {}, ledger: [], messages: [] } };
   panel.syncDrafts(panel._data);
   panel.render = () => {};
   return panel;
@@ -31,6 +31,7 @@ function controls(panel, selectors) {
 
 test('all bridge and Tater workspaces plus fallback settings remain reachable', () => {
   const panel = fixture();
+  panel._taterDraft.assistant_mode = 'tater';
   const nav = panel.renderNavigation();
   for (const id of ['assistant', 'models', 'home-control', 'hydra', 'satellites', 'audio', 'bluetooth', 'defaults', 'verifier', 'trainer', 'firmware']) assert.match(nav, new RegExp(`data-tab="${id}"`));
   panel._data.settings_schema.push({ section: 'future-section', title: 'Future settings', fields: [{ key: 'future-option', label: 'Future option', type: 'boolean' }] });
@@ -53,6 +54,24 @@ test('all bridge and Tater workspaces plus fallback settings remain reachable', 
   }
 });
 
+test('Home Assistant is default and hides Tater-only navigation until selected', () => {
+  const panel = fixture();
+  let nav = panel.renderNavigation();
+  assert.match(nav, /data-tab="assistant"/);
+  for (const id of ['models', 'home-control', 'hydra']) assert.doesNotMatch(nav, new RegExp(`data-tab="${id}"`));
+  panel.navigate('models');
+  assert.equal(panel._tab, 'satellites');
+
+  panel._taterDraft.assistant_mode = 'tater';
+  nav = panel.renderNavigation();
+  for (const id of ['models', 'home-control', 'hydra']) assert.match(nav, new RegExp(`data-tab="${id}"`));
+
+  panel._tab = 'hydra';
+  panel._taterDraft.assistant_mode = 'home_assistant';
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._tab, 'assistant');
+});
+
 test('mini Tater pages retain the complete pipeline, one tool, and Hydra controls', () => {
   const panel = fixture();
   const assistant = panel.renderAssistantChoice();
@@ -69,9 +88,20 @@ test('mini Tater pages retain the complete pipeline, one tool, and Hydra control
   assert.match(panel.renderHydra(), /Maximum ledger items[\s\S]*Astraeus second plan check/);
 });
 
+test('Wyoming model and voice names are blank provider-specific fields', () => {
+  const panel = fixture();
+  Object.assign(panel._taterDraft, { stt_provider: 'wyoming', tts_provider: 'wyoming' });
+  const models = panel.renderModelsAndSpeech();
+  assert.match(models, /data-tater-setting="stt_wyoming_model"[^>]*value=""/);
+  assert.match(models, /data-tater-setting="tts_wyoming_voice"[^>]*value=""/);
+  assert.doesNotMatch(models, /Wyoming model name[^]*gpt-4o-transcribe/);
+  assert.doesNotMatch(models, /Wyoming voice name[^]*value="alloy"/);
+});
+
 test('Tater setup guidance appears before changing the active HA pipeline', () => {
   const panel = fixture();
   panel._data.tater_assistant.ready = { ok: false, missing: ['LLM model', 'LLM API key'] };
+  panel._taterDraft.assistant_mode = 'tater';
   const assistant = panel.renderAssistantChoice();
   assert.match(assistant, /Setup needed[\s\S]*Finish Tater setup[\s\S]*LLM model · LLM API key/);
   assert.match(assistant, /data-tater-test-message[^>]*disabled/);

@@ -43,6 +43,7 @@ const WORKSPACE_PAGES = [
   { id: "trainer", label: "Wake Word Trainer", icon: "school-outline", group: "Voice & wake", description: "Link your trainer and publish wake words to your satellites." },
   { id: "firmware", label: "Firmware & recovery", icon: "package-variant-closed-check", group: "Maintenance", description: "Update wirelessly or prepare a board-specific USB installer." },
 ];
+const TATER_ONLY_PAGE_IDS = new Set(["models", "home-control", "hydra"]);
 const DEVICE_SETTING_GROUPS = [
   { id: "voice", label: "Voice", sections: ["audio"] },
   { id: "wake", label: "Wake", sections: ["wake", "wake_sound", "feedback", "verifier"] },
@@ -301,11 +302,20 @@ class TaterSatellitePanel extends HTMLElement {
     if (!this._taterDraft || !this.isScopeDirty("tater")) {
       this._taterDraft = clone(data.tater_assistant?.settings || {});
     }
+    if (!this.isTaterModeSelected() && TATER_ONLY_PAGE_IDS.has(this._tab)) this._tab = "assistant";
     if (this._selectedDeviceId && !this.isScopeDirty("device")) this.prepareDeviceDraft(this._selectedDeviceId, false);
   }
 
+  isTaterModeSelected() {
+    return String(this._taterDraft?.assistant_mode || "home_assistant") === "tater";
+  }
+
+  visibleWorkspacePages() {
+    return WORKSPACE_PAGES.filter((page) => this.isTaterModeSelected() || !TATER_ONLY_PAGE_IDS.has(page.id));
+  }
+
   navigate(tab) {
-    if (!WORKSPACE_PAGES.some((page) => page.id === tab)) return;
+    if (!this.visibleWorkspacePages().some((page) => page.id === tab)) return;
     this.rememberDeviceDraft();
     this._tab = tab;
     this._selectedDeviceId = "";
@@ -498,10 +508,11 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   renderNavigation() {
+    const pages = this.visibleWorkspacePages();
     return `<aside class="workspace-sidebar" ${this._dialog || this._confirmation ? "inert" : ""}>
       <nav aria-label="Bridge sections">${["Tater assistant", "Your home", "Voice & wake", "Maintenance"].map((group) => `
         <div class="workspace-nav-group"><span class="workspace-eyebrow">${group}</span>
-          ${WORKSPACE_PAGES.filter((page) => page.group === group).map((page) => `
+          ${pages.filter((page) => page.group === group).map((page) => `
             <button type="button" class="workspace-nav-item" data-tab="${page.id}" ${this._tab === page.id ? 'aria-current="page"' : ""}>
               ${this.renderIcon(page.icon)}<span>${page.label}</span>${this.pageHasDraft(page.id) ? '<span class="draft-dot" aria-label="Unsaved changes"></span>' : ""}
             </button>`).join("")}
@@ -1373,7 +1384,7 @@ class TaterSatellitePanel extends HTMLElement {
             : [["microphone", "HA STT"], ["message-processing-outline", "HA agent"], ["home-assistant", "HA tools"], ["account-voice", "HA TTS"]])
             .map(([icon, label], index) => `<span>${this.renderIcon(icon)}<b>${label}</b></span>${index < 3 ? '<i aria-hidden="true">→</i>' : ""}`).join("")}
         </div>
-        ${!ready.ok ? `<div class="verifier-note"><strong>Finish Tater setup</strong><p>${escapeHtml((ready.missing || []).join(" · "))}</p><button type="button" data-tab="models">Open models & speech</button></div>` : ""}
+        ${mode === "tater" && !ready.ok ? `<div class="verifier-note"><strong>Finish Tater setup</strong><p>${escapeHtml((ready.missing || []).join(" · "))}</p><button type="button" data-tab="models">Open models & speech</button></div>` : ""}
       </section>
 
       <section class="card assistant-test-card">
@@ -1430,7 +1441,7 @@ class TaterSatellitePanel extends HTMLElement {
           ` : `
             ${this.taterField("stt_wyoming_host", "Wyoming host", { placeholder: "192.168.1.50" })}
             ${this.taterField("stt_wyoming_port", "Wyoming port", { type: "number", min: 1, max: 65535 })}
-            ${this.taterField("stt_model", "Wyoming model name", { placeholder: "Optional" })}
+            ${this.taterField("stt_wyoming_model", "Wyoming model name", { help: "Leave blank to use the Wyoming service default." })}
             ${this.taterField("stt_language", "Language hint", { placeholder: "Optional, such as en" })}
           `}
         </div>
@@ -1448,7 +1459,7 @@ class TaterSatellitePanel extends HTMLElement {
           ` : `
             ${this.taterField("tts_wyoming_host", "Wyoming host", { placeholder: "192.168.1.50" })}
             ${this.taterField("tts_wyoming_port", "Wyoming port", { type: "number", min: 1, max: 65535 })}
-            ${this.taterField("tts_voice", "Wyoming voice name", { placeholder: "Optional" })}
+            ${this.taterField("tts_wyoming_voice", "Wyoming voice name", { help: "Leave blank to use the Wyoming service default." })}
           `}
         </div>
       </section>

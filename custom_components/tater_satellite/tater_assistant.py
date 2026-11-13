@@ -64,6 +64,7 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "stt_language": "",
     "stt_wyoming_host": "",
     "stt_wyoming_port": 10300,
+    "stt_wyoming_model": "",
     "tts_provider": "openai",
     "tts_base_url": "https://api.openai.com/v1",
     "tts_api_key": "",
@@ -71,6 +72,7 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "tts_voice": "alloy",
     "tts_wyoming_host": "",
     "tts_wyoming_port": 10200,
+    "tts_wyoming_voice": "",
     "entity_scope": ENTITY_SCOPE_EXPOSED,
     "assistant_name": "Tater",
     "personality": (
@@ -91,10 +93,12 @@ _STRING_LIMITS = {
     "stt_model": 160,
     "stt_language": 32,
     "stt_wyoming_host": 255,
+    "stt_wyoming_model": 160,
     "tts_base_url": 500,
     "tts_model": 160,
     "tts_voice": 160,
     "tts_wyoming_host": 255,
+    "tts_wyoming_voice": 160,
     "assistant_name": 80,
     "personality": 4000,
 }
@@ -264,6 +268,11 @@ def normalize_tater_settings(
     value: Any, *, base: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Normalize persisted mini-Tater settings without dropping secrets."""
+    provided: dict[str, Any] = {}
+    if isinstance(base, dict):
+        provided.update(base)
+    if isinstance(value, dict):
+        provided.update(value)
     source = dict(DEFAULT_TATER_SETTINGS)
     if isinstance(base, dict):
         source.update(base)
@@ -288,6 +297,14 @@ def normalize_tater_settings(
     )
     for key, maximum in _STRING_LIMITS.items():
         out[key] = _text(source.get(key), maximum)
+    if out["stt_provider"] == "wyoming" and "stt_wyoming_model" not in provided:
+        legacy_model = _text(provided.get("stt_model"), 160)
+        if legacy_model != DEFAULT_TATER_SETTINGS["stt_model"]:
+            out["stt_wyoming_model"] = legacy_model
+    if out["tts_provider"] == "wyoming" and "tts_wyoming_voice" not in provided:
+        legacy_voice = _text(provided.get("tts_voice"), 160)
+        if legacy_voice != DEFAULT_TATER_SETTINGS["tts_voice"]:
+            out["tts_wyoming_voice"] = legacy_voice
     for key in API_KEY_FIELDS:
         out[key] = _text(source.get(key), 1000)
     out["llm_base_url"] = _normal_base_url(
@@ -1201,7 +1218,7 @@ class MiniTaterRuntime:
         async with AsyncTcpClient(settings["stt_wyoming_host"], settings["stt_wyoming_port"]) as client:
             await client.write_event(
                 Transcribe(
-                    name=settings["stt_model"] or None,
+                    name=settings["stt_wyoming_model"] or None,
                     language=settings["stt_language"] or None,
                 ).event()
             )
@@ -1255,8 +1272,8 @@ class MiniTaterRuntime:
 
         settings = self.settings()
         voice = (
-            SynthesizeVoice(name=settings["tts_voice"])
-            if settings["tts_voice"]
+            SynthesizeVoice(name=settings["tts_wyoming_voice"])
+            if settings["tts_wyoming_voice"]
             else None
         )
         audio_format = {"rate": 16000, "width": 2, "channels": 1}

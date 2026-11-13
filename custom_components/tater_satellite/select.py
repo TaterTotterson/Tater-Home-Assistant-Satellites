@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homeassistant.components.select import SelectEntity
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .const import DOMAIN
 from .display_payloads import supports_display_climate
 from .entity import TaterSatelliteEntity
 from .manager import SatelliteRuntime, TaterSatelliteManager
@@ -127,11 +129,15 @@ async def async_setup_entry(
 ) -> None:
     """Set up Tater satellite select entities."""
     manager: TaterSatelliteManager = entry.runtime_data
+    entity_registry = er.async_get(hass)
 
     def factory(runtime: SatelliteRuntime):
+        if entity_id := entity_registry.async_get_entity_id(
+            "select", DOMAIN, f"{runtime.device_id}_vad_sensitivity"
+        ):
+            entity_registry.async_remove(entity_id)
         return [
             TaterPipelineSelect(runtime),
-            TaterVadSelect(runtime),
             *(
                 [TaterThermostatSelect(runtime)]
                 if supports_display_climate(runtime.capabilities)
@@ -297,34 +303,3 @@ class TaterThermostatSelect(TaterSatelliteEntity, SelectEntity):
             if not entity_id:
                 raise ValueError(f"Unknown thermostat: {option}")
         await panels.async_set_climate_entity(self.runtime, entity_id)
-
-
-class TaterVadSelect(TaterSatelliteEntity, SelectEntity):
-    """Select Home Assistant end-of-speech sensitivity."""
-
-    _attr_name = "VAD sensitivity"
-    _attr_icon = "mdi:account-voice"
-    _attr_entity_category = EntityCategory.CONFIG
-
-    def __init__(self, runtime: SatelliteRuntime) -> None:
-        super().__init__(runtime, "vad_sensitivity")
-        self._attr_options = ["default", "relaxed", "aggressive"]
-
-    @property
-    def current_option(self) -> str:
-        """Return the current VAD sensitivity."""
-        value = str(self.runtime.record.get("vad_sensitivity") or "default")
-        return value if value in self.options else "default"
-
-    async def async_added_to_hass(self) -> None:
-        """Expose this entity id to AssistSatelliteEntity."""
-        await super().async_added_to_hass()
-        self.runtime.vad_entity_id = self.entity_id
-
-    async def async_select_option(self, option: str) -> None:
-        """Set VAD sensitivity."""
-        if option not in self.options:
-            raise ValueError(f"Unsupported VAD sensitivity: {option}")
-        await self.runtime.manager.async_set_device_settings(
-            self.runtime.device_id, {}, vad_sensitivity=option
-        )

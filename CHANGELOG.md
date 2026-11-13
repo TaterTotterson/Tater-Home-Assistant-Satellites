@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.4.3
+
+- Removed the external WebRTC dependency that prevented the integration from
+  loading on Home Assistant hosts without a compatible wheel.
+- Standardized mini-Tater endpointing on Home Assistant's built-in Neural Micro
+  VAD with default endpoint timing and removed Tater-mode VAD controls from the
+  panel.
+
 ## 1.4.2
 
 - Added server-side voice activity detection to mini-Tater mode so native

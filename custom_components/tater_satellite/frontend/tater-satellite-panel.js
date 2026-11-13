@@ -181,7 +181,6 @@ class TaterSatellitePanel extends HTMLElement {
     this._deviceDraft = null;
     this._deviceOriginal = null;
     this._pipelineDraft = "";
-    this._vadDraft = "default";
     this._dirty = false;
     this._loading = false;
     this._recovery = null;
@@ -286,7 +285,7 @@ class TaterSatellitePanel extends HTMLElement {
     if (!this._selectedDeviceId || !this.isScopeDirty("device")) return;
     this._deviceDrafts.set(this._selectedDeviceId, {
       draft: clone(this._deviceDraft), original: clone(this._deviceOriginal),
-      pipeline: this._pipelineDraft, vad: this._vadDraft,
+      pipeline: this._pipelineDraft,
     });
   }
 
@@ -723,7 +722,6 @@ class TaterSatellitePanel extends HTMLElement {
       .provider-choice { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-field); }
       .provider-choice button { min-height: 30px; border-color: transparent; background: transparent; color: var(--workspace-muted); }
       .provider-choice button[aria-current] { background: var(--workspace-panel); border-color: var(--workspace-line); color: var(--tater-accent); }
-      .provider-choice button small { display: block; margin-top: 2px; color: var(--workspace-muted); font-size: 9px; font-weight: 500; }
       .home-scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .home-scope-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 17px; text-align: left; background: var(--workspace-field); }
       .home-scope-card > span { grid-row: 1 / span 2; color: var(--tater-accent); }
@@ -1407,7 +1405,6 @@ class TaterSatellitePanel extends HTMLElement {
     const settings = this._taterDraft || {};
     const sttProvider = settings.stt_provider || "openai";
     const ttsProvider = settings.tts_provider || "openai";
-    const vadBackend = settings.vad_backend || "micro";
     return `
       <section class="card provider-card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Hydra model</span><h2>Language model</h2><p class="muted">OpenAI or any compatible Chat Completions endpoint with function tools.</p></div><span class="provider-status">${settings.llm_api_key_set ? this.renderIcon("check-circle-outline") + " Key saved" : this.renderIcon("key-outline") + " Key not set"}</span></div>
@@ -1437,12 +1434,6 @@ class TaterSatellitePanel extends HTMLElement {
             ${this.taterField("stt_language", "Language hint", { placeholder: "Optional, such as en" })}
           `}
         </div>
-      </section>
-
-      <section class="card provider-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Speech endpointing</span><h2>Voice activity detection</h2><p class="muted">Detect when a command starts and ends so the satellite can move from Listening to transcription.</p></div><span class="provider-status">${this.renderIcon("waveform")} Local processing</span></div>
-        <div class="provider-choice" role="group" aria-label="Voice activity detection model"><button type="button" data-tater-vad="micro" ${vadBackend === "micro" ? 'aria-current="true"' : ""}>Neural VAD <small>Recommended</small></button><button type="button" data-tater-vad="webrtc" ${vadBackend === "webrtc" ? 'aria-current="true"' : ""}>WebRTC <small>Lightweight</small></button></div>
-        <div class="home-scope-note">${this.renderIcon("tune-variant")}<span>Neural VAD uses Home Assistant’s built-in Micro VAD model. WebRTC uses less processing on small hosts. Each satellite’s Default, Relaxed, or Aggressive VAD sensitivity still controls how quickly silence ends the turn.</span></div>
       </section>
 
       <section class="card provider-card">
@@ -1808,13 +1799,11 @@ class TaterSatellitePanel extends HTMLElement {
       this._deviceDraft = clone(saved.draft);
       this._deviceOriginal = clone(saved.original);
       this._pipelineDraft = saved.pipeline;
-      this._vadDraft = saved.vad;
       return;
     }
     this._deviceDraft = this.prepareSettingsDraft(device.settings);
     this._deviceOriginal = this.prepareSettingsDraft(device.settings);
     this._pipelineDraft = device.pipeline_id || "";
-    this._vadDraft = device.vad_sensitivity || "default";
     if (markDirty) this.markDirty("device");
   }
 
@@ -1857,12 +1846,6 @@ class TaterSatellitePanel extends HTMLElement {
             <select data-special="pipeline">
               <option value="" ${!this._pipelineDraft ? "selected" : ""}>Preferred pipeline</option>
               ${pipelines.map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === this._pipelineDraft ? "selected" : ""}>${escapeHtml(row.name)}</option>`).join("")}
-            </select>
-          </label>
-          <label class="field">
-            <span>End-of-speech sensitivity</span>
-            <select data-special="vad">
-              ${["default", "relaxed", "aggressive"].map((value) => `<option value="${value}" ${value === this._vadDraft ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
             </select>
           </label>
         </div>
@@ -2783,13 +2766,6 @@ class TaterSatellitePanel extends HTMLElement {
       this.markDirty("tater");
       this.render();
     }));
-    root.querySelectorAll("[data-tater-vad]").forEach((button) => button.addEventListener("click", () => {
-      const backend = button.dataset.taterVad;
-      if (!["micro", "webrtc"].includes(backend)) return;
-      this._taterDraft.vad_backend = backend;
-      this.markDirty("tater");
-      this.render();
-    }));
     root.querySelectorAll("[data-entity-scope]").forEach((button) => button.addEventListener("click", () => {
       this._taterDraft.entity_scope = button.dataset.entityScope;
       this.markDirty("tater");
@@ -3194,10 +3170,6 @@ class TaterSatellitePanel extends HTMLElement {
       this._pipelineDraft = event.target.value;
       this.markDirty("device");
     });
-    root.querySelector('[data-special="vad"]')?.addEventListener("change", (event) => {
-      this._vadDraft = event.target.value;
-      this.markDirty("device");
-    });
     root.querySelectorAll("[data-upload-kind]").forEach((button) =>
       button.addEventListener("click", () => this.uploadAsset(button)),
     );
@@ -3261,7 +3233,6 @@ class TaterSatellitePanel extends HTMLElement {
           this.api("POST", `settings/device/${this._selectedDeviceId}`, {
             settings: changes,
             pipeline_id: this._pipelineDraft,
-            vad_sensitivity: this._vadDraft,
           }),
         "Satellite overrides saved and pushed live.",
         ["device"],

@@ -112,11 +112,9 @@ Wyoming STT and TTS under **Models & speech**. Official OpenAI endpoints require
 an API key; local compatible endpoints may run without one. Provider keys stay
 in Home Assistant storage and are never returned by the management API.
 
-Tater mode also owns voice activity detection so a native satellite knows when
-to stop streaming and begin transcription. Choose the recommended Neural VAD,
-which uses Home Assistant's built-in Micro VAD model, or the lighter WebRTC
-model under **Models & speech**. The VAD sensitivity selected for each satellite
-controls how quickly trailing silence ends its command in either model.
+Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
+native satellite knows when to stop streaming and begin transcription. It uses
+the default endpoint timing automatically and exposes no Tater-mode VAD options.
 
 Mini Tater has one built-in tool, `control_home`. It does not load Cores,
 Portals, Shop items, downloaded Verbas, web tools, file tools, or messaging

@@ -50,8 +50,6 @@ VAD_END_SILENCE_SECONDS = {
     "default": 0.78,
     "relaxed": 1.25,
 }
-VAD_BACKEND_MICRO = "micro"
-VAD_BACKEND_WEBRTC = "webrtc"
 
 DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "assistant_mode": ASSISTANT_MODE_HOME_ASSISTANT,
@@ -66,7 +64,6 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "stt_language": "",
     "stt_wyoming_host": "",
     "stt_wyoming_port": 10300,
-    "vad_backend": VAD_BACKEND_MICRO,
     "tts_provider": "openai",
     "tts_base_url": "https://api.openai.com/v1",
     "tts_api_key": "",
@@ -289,11 +286,6 @@ def normalize_tater_settings(
     out["tts_provider"] = (
         "wyoming" if _text(source.get("tts_provider")).lower() == "wyoming" else "openai"
     )
-    out["vad_backend"] = (
-        VAD_BACKEND_WEBRTC
-        if _text(source.get("vad_backend")).lower() == VAD_BACKEND_WEBRTC
-        else VAD_BACKEND_MICRO
-    )
     for key, maximum in _STRING_LIMITS.items():
         out[key] = _text(source.get(key), maximum)
     for key in API_KEY_FIELDS:
@@ -379,7 +371,7 @@ class _VadBackend:
 class _MicroVadBackend(_VadBackend):
     """Use Home Assistant's bundled neural microVAD model."""
 
-    name = VAD_BACKEND_MICRO
+    name = "micro"
     _frame_bytes = 160 * 2
 
     def __init__(self) -> None:
@@ -407,34 +399,6 @@ class _MicroVadBackend(_VadBackend):
         return max(scores) if scores else None
 
 
-class _WebRtcVadBackend(_VadBackend):
-    """Use Tater's lightweight WebRTC speech detector."""
-
-    name = VAD_BACKEND_WEBRTC
-    _frame_bytes = 480 * 2
-
-    def __init__(self) -> None:
-        module = importlib.import_module("webrtcvad")
-        self._vad = module.Vad(2)
-        self._buffer = b""
-
-    def process(self, data: bytes) -> float | None:
-        payload = self._buffer + data
-        offset = 0
-        frames = 0
-        speech_frames = 0
-        while (offset + self._frame_bytes) <= len(payload):
-            frame = payload[offset : offset + self._frame_bytes]
-            offset += self._frame_bytes
-            frames += 1
-            if self._vad.is_speech(frame, 16000):
-                speech_frames += 1
-        self._buffer = payload[offset:]
-        if not frames:
-            return None
-        return 1.0 if (speech_frames / frames) >= 0.5 else 0.0
-
-
 class _EnergyVadBackend(_VadBackend):
     """Keep voice turns bounded if a packaged VAD engine cannot load."""
 
@@ -456,10 +420,8 @@ class _EnergyVadBackend(_VadBackend):
         return 0.0
 
 
-def _create_vad_backend(
-    requested: str, audio_format: dict[str, Any] | None
-) -> _VadBackend:
-    """Create the requested detector with a bounded fail-safe fallback."""
+def _create_vad_backend(audio_format: dict[str, Any] | None) -> _VadBackend:
+    """Create Home Assistant's neural detector with a bounded fail-safe."""
     values = audio_format if isinstance(audio_format, dict) else {}
     native_format = (
         _bounded_int(values.get("rate"), 16000, 8000, 48000) == 16000
@@ -472,17 +434,11 @@ def _create_vad_backend(
         )
         return _EnergyVadBackend()
 
-    backend_type = (
-        _WebRtcVadBackend
-        if _text(requested).lower() == VAD_BACKEND_WEBRTC
-        else _MicroVadBackend
-    )
     try:
-        return backend_type()
+        return _MicroVadBackend()
     except Exception as err:
         _LOGGER.warning(
-            "Unable to load Tater VAD backend %s (%s); using the bounded energy detector",
-            _text(requested) or VAD_BACKEND_MICRO,
+            "Unable to load Home Assistant's neural VAD (%s); using the bounded energy detector",
             err,
         )
         return _EnergyVadBackend()
@@ -1148,12 +1104,12 @@ class MiniTaterRuntime:
         sensitivity: str,
         event_callback,
     ) -> AsyncGenerator[bytes]:
-        """Yield one utterance and close capture using the selected VAD model."""
+        """Yield one utterance and close capture using Home Assistant's neural VAD."""
         values = audio_format if isinstance(audio_format, dict) else {}
         rate = _bounded_int(values.get("rate"), 16000, 8000, 48000)
         width = _bounded_int(values.get("width"), 2, 1, 4)
         channels = _bounded_int(values.get("channels"), 1, 1, 8)
-        backend = _create_vad_backend(self.settings()["vad_backend"], audio_format)
+        backend = _create_vad_backend(audio_format)
         end_silence = VAD_END_SILENCE_SECONDS.get(
             _text(sensitivity).lower(),
             VAD_END_SILENCE_SECONDS["default"],
@@ -1350,7 +1306,7 @@ class MiniTaterRuntime:
         vad_stream = self._voice_activity_stream(
             audio_stream,
             audio_format,
-            _text(satellite.record.get("vad_sensitivity")) or "default",
+            "default",
             event_callback,
         )
         transcript = await self.async_transcribe(vad_stream, audio_format)

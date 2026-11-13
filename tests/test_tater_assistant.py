@@ -42,7 +42,7 @@ class TaterSettingsTests(unittest.TestCase):
         self.assertEqual(settings["entity_scope"], "all")
         self.assertEqual(settings["max_llm"], 100)
         self.assertEqual(settings["stt_wyoming_port"], 1)
-        self.assertEqual(settings["vad_backend"], "webrtc")
+        self.assertNotIn("vad_backend", settings)
         public = tater.public_tater_settings(settings)
         self.assertNotIn("llm_api_key", public)
         self.assertTrue(public["llm_api_key_set"])
@@ -84,15 +84,7 @@ class TaterSettingsTests(unittest.TestCase):
             (ROOT / "custom_components" / "tater_satellite" / "manifest.json").read_text()
         )
         self.assertIn("wyoming", manifest["dependencies"])
-        self.assertEqual(
-            manifest["requirements"],
-            ["webrtcvad-wheels==2.0.14"],
-        )
-
-    def test_unknown_vad_model_normalizes_to_neural_micro_vad(self) -> None:
-        settings = tater.normalize_tater_settings({"vad_backend": "unknown"})
-
-        self.assertEqual(settings["vad_backend"], "micro")
+        self.assertEqual(manifest["requirements"], [])
 
     def test_micro_vad_scores_fixed_ten_millisecond_frames(self) -> None:
         class FakeMicroVad:
@@ -112,28 +104,6 @@ class TaterSettingsTests(unittest.TestCase):
 
         self.assertEqual(backend.process(b"\0" * 640), 0.72)
         self.assertEqual(len(backend._vad.calls), 2)
-
-    def test_webrtc_vad_uses_tater_lightweight_mode(self) -> None:
-        class FakeVad:
-            def __init__(self, mode):
-                self.mode = mode
-                self.calls = []
-
-            def is_speech(self, frame, rate):
-                self.calls.append((frame, rate))
-                return True
-
-        with patch.object(
-            tater.importlib,
-            "import_module",
-            return_value=SimpleNamespace(Vad=FakeVad),
-        ):
-            backend = tater._WebRtcVadBackend()
-
-        self.assertEqual(backend.process(b"\0" * 960), 1.0)
-        self.assertEqual(backend._vad.mode, 2)
-        self.assertEqual(backend._vad.calls[0][1], 16000)
-
 
 class _Services:
     def __init__(self) -> None:
@@ -357,6 +327,12 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('== "tater"', source)
         self.assertIn("async_run_voice(", source)
         self.assertIn("async_accept_pipeline_from_satellite(", source)
+
+    def test_vad_sensitivity_entity_is_removed_from_the_ui(self) -> None:
+        source = (ROOT / "custom_components/tater_satellite/select.py").read_text()
+
+        self.assertNotIn("class TaterVadSelect", source)
+        self.assertIn('f"{runtime.device_id}_vad_sensitivity"', source)
 
     async def test_tater_vad_closes_capture_after_trailing_silence(self) -> None:
         runtime = tater.MiniTaterRuntime(_Manager())

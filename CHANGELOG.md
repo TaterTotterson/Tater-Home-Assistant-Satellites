@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.4.1
+
+- Kept the bridge panel's five-second live refresh from returning the page to
+  the top or collapsing expanded diagnostics. Scroll position and local view
+  state now survive automatic status updates.
+
 ## 1.4.0
 
 - Reworked the satellite panel into a Tater Bridge workspace, with grouped

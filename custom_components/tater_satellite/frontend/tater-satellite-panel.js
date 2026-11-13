@@ -191,6 +191,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._wakeWordCatalogLastAttempt = 0;
     this._pollTimer = null;
     this._backgroundRenderPending = false;
+    this._renderRevision = 0;
     this._deviceSection = "overview";
     this._voiceSection = "wake";
     this._firmwareSection = "updates";
@@ -310,9 +311,66 @@ class TaterSatellitePanel extends HTMLElement {
     this._tab = tab;
     this._selectedDeviceId = "";
     this._dialog = "";
-    this.render();
+    this.render({ preserveView: false });
     this.scrollIntoView?.({ block: "start" });
     this.shadowRoot.querySelector(".workspace-main")?.scrollTo?.({ top: 0, left: 0 });
+  }
+
+  captureViewState() {
+    const root = this.shadowRoot;
+    if (!root?.querySelectorAll) return null;
+    const scrollSelector = ".workspace-main, .assistant-test-thread, .entity-list, .workspace-dialog, .workspace-dialog-backdrop, pre";
+    const internalScroll = [...root.querySelectorAll(scrollSelector)].map((node, index) => ({
+      index,
+      top: Number(node.scrollTop || 0),
+      left: Number(node.scrollLeft || 0),
+    })).filter((row) => row.top || row.left);
+    const openDetails = [...root.querySelectorAll("details")]
+      .map((node, index) => node.open ? index : -1)
+      .filter((index) => index >= 0);
+    const externalScroll = [];
+    const seen = new Set();
+    const remember = (node) => {
+      if (!node || seen.has(node) || typeof node.scrollTop !== "number") return;
+      seen.add(node);
+      const top = Number(node.scrollTop || 0);
+      const left = Number(node.scrollLeft || 0);
+      if (top || left) externalScroll.push({ node, top, left });
+    };
+    let current = this;
+    while (current && !seen.has(current)) {
+      remember(current);
+      if (current.parentNode) {
+        current = current.parentNode;
+      } else if (current.host) {
+        current = current.host;
+      } else {
+        const currentRoot = current.getRootNode?.();
+        current = currentRoot?.host || null;
+      }
+    }
+    remember(this.ownerDocument?.scrollingElement || globalThis.document?.scrollingElement);
+    return { scrollSelector, internalScroll, openDetails, externalScroll };
+  }
+
+  restoreViewState(state) {
+    if (!state || !this.shadowRoot?.querySelectorAll) return;
+    const internalNodes = [...this.shadowRoot.querySelectorAll(state.scrollSelector)];
+    state.internalScroll.forEach(({ index, top, left }) => {
+      const node = internalNodes[index];
+      if (!node) return;
+      node.scrollTop = top;
+      node.scrollLeft = left;
+    });
+    const details = [...this.shadowRoot.querySelectorAll("details")];
+    state.openDetails.forEach((index) => {
+      if (details[index]) details[index].open = true;
+    });
+    state.externalScroll.forEach(({ node, top, left }) => {
+      if (!node?.isConnected && node !== this.ownerDocument?.scrollingElement) return;
+      node.scrollTop = top;
+      node.scrollLeft = left;
+    });
   }
 
   confirmAction(title, message, label, action) {
@@ -401,8 +459,10 @@ class TaterSatellitePanel extends HTMLElement {
     }
   }
 
-  render() {
+  render({ preserveView = true } = {}) {
     if (!this.shadowRoot) return;
+    const viewState = preserveView ? this.captureViewState() : null;
+    const renderRevision = ++this._renderRevision;
     if (this._dialog === "picker" && !(this._data?.settings_schema || []).some((section) => section.fields?.some((field) => field.key === this._picker?.key))) {
       this._dialog = "";
       this._picker = null;
@@ -428,6 +488,10 @@ class TaterSatellitePanel extends HTMLElement {
     this.bindEvents();
     this.applyDeviceFilter();
     this.shadowRoot.querySelector("[data-dialog-initial]")?.focus();
+    this.restoreViewState(viewState);
+    window.requestAnimationFrame?.(() => {
+      if (this._renderRevision === renderRevision) this.restoreViewState(viewState);
+    });
   }
 
   renderIcon(name) {

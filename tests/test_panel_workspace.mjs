@@ -108,6 +108,37 @@ test('device drafts and pipeline choices survive navigation and polling', () => 
   assert.equal(panel._deviceDraft.logging_level, 'debug');
 });
 
+test('automatic redraws preserve page position, nested scrolling, and expanded details', () => {
+  const panel = fixture();
+  const documentScroller = { scrollTop: 720, scrollLeft: 0, isConnected: true };
+  const ancestorScroller = { scrollTop: 410, scrollLeft: 6, isConnected: true, parentNode: null };
+  const parentShadowRoot = { host: ancestorScroller, parentNode: null };
+  const internalBefore = { scrollTop: 180, scrollLeft: 2 };
+  panel.parentNode = parentShadowRoot;
+  panel.ownerDocument = { scrollingElement: documentScroller };
+  panel.shadowRoot = {
+    querySelectorAll: selector => selector === 'details'
+      ? [{ open: true }, { open: false }]
+      : [internalBefore],
+  };
+  const state = panel.captureViewState();
+
+  const internalAfter = { scrollTop: 0, scrollLeft: 0 };
+  const detailsAfter = [{ open: false }, { open: false }];
+  ancestorScroller.scrollTop = 0;
+  ancestorScroller.scrollLeft = 0;
+  documentScroller.scrollTop = 0;
+  panel.shadowRoot = {
+    querySelectorAll: selector => selector === 'details' ? detailsAfter : [internalAfter],
+  };
+  panel.restoreViewState(state);
+
+  assert.deepEqual([internalAfter.scrollTop, internalAfter.scrollLeft], [180, 2]);
+  assert.equal(detailsAfter[0].open, true);
+  assert.deepEqual([ancestorScroller.scrollTop, ancestorScroller.scrollLeft], [410, 6]);
+  assert.equal(documentScroller.scrollTop, 720);
+});
+
 test('saving one domain and read-only commands preserve other pending settings', async () => {
   const panel = fixture();
   panel._globalDraft.continued_chat = false; panel.markDirty('global', 'continued_chat');

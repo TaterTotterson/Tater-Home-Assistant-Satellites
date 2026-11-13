@@ -114,6 +114,55 @@ class _Services:
 
 
 class HomeControlTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _homeassistant_modules(data_key="exposed_entities"):
+        homeassistant = SimpleNamespace(__path__=[])
+        components = SimpleNamespace(__path__=[])
+        homeassistant_component = SimpleNamespace(__path__=[])
+        const = SimpleNamespace(DATA_EXPOSED_ENTITIES=data_key)
+        return {
+            "homeassistant": homeassistant,
+            "homeassistant.components": components,
+            "homeassistant.components.homeassistant": homeassistant_component,
+            "homeassistant.components.homeassistant.const": const,
+        }
+
+    def test_exposed_scope_uses_current_home_assistant_api(self) -> None:
+        exposed = SimpleNamespace(
+            async_should_expose=lambda assistant, entity_id: (
+                assistant == "conversation" and entity_id == "light.kitchen"
+            )
+        )
+        tool = tater.HomeControlTool(
+            SimpleNamespace(data={"exposed_entities": exposed}),
+            lambda: {"entity_scope": "exposed"},
+        )
+
+        with patch.dict(sys.modules, self._homeassistant_modules()):
+            self.assertTrue(tool._allowed("light.kitchen"))
+            self.assertFalse(tool._allowed("light.office"))
+
+    def test_exposed_scope_keeps_legacy_non_mutating_api_compatibility(self) -> None:
+        calls = []
+        exposed = SimpleNamespace(
+            async_get_should_expose=lambda assistant, entity_id: calls.append(
+                (assistant, entity_id)
+            )
+            or True,
+            async_should_expose=lambda *_args: self.fail(
+                "legacy exposure lookup should be preferred when available"
+            ),
+        )
+        tool = tater.HomeControlTool(
+            SimpleNamespace(data={"exposed_entities": exposed}),
+            lambda: {"entity_scope": "exposed"},
+        )
+
+        with patch.dict(sys.modules, self._homeassistant_modules()):
+            self.assertTrue(tool._allowed("switch.desk"))
+
+        self.assertEqual(calls, [("conversation", "switch.desk")])
+
     async def test_single_tool_dispatches_only_allowlisted_device_services(self) -> None:
         services = _Services()
         tool = tater.HomeControlTool(

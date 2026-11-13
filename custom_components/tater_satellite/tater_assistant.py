@@ -515,9 +515,13 @@ class HomeControlTool:
             from homeassistant.components.homeassistant.const import DATA_EXPOSED_ENTITIES
 
             exposed = self.hass.data.get(DATA_EXPOSED_ENTITIES)
+            if not exposed:
+                return False
+            should_expose = getattr(exposed, "async_get_should_expose", None)
+            if should_expose is None:
+                should_expose = getattr(exposed, "async_should_expose", None)
             return bool(
-                exposed
-                and exposed.async_get_should_expose("conversation", entity_id)
+                should_expose and should_expose("conversation", entity_id)
             )
         except (ImportError, KeyError, RuntimeError):
             _LOGGER.debug("Unable to read Assist exposure for %s", entity_id, exc_info=True)

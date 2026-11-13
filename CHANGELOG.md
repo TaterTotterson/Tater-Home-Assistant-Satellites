@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.4.4
+
+- Restored Tater-mode turns on Home Assistant versions whose exposed-entity
+  registry provides `async_should_expose` instead of
+  `async_get_should_expose`, while retaining compatibility with both APIs.
+
 ## 1.4.3
 
 - Removed the external WebRTC dependency that prevented the integration from

@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import wave
 
 
@@ -33,6 +34,7 @@ class TaterSettingsTests(unittest.TestCase):
                 "llm_api_key": "secret",
                 "max_llm": 500,
                 "stt_wyoming_port": 0,
+                "vad_backend": "webrtc",
             }
         )
 
@@ -40,6 +42,7 @@ class TaterSettingsTests(unittest.TestCase):
         self.assertEqual(settings["entity_scope"], "all")
         self.assertEqual(settings["max_llm"], 100)
         self.assertEqual(settings["stt_wyoming_port"], 1)
+        self.assertEqual(settings["vad_backend"], "webrtc")
         public = tater.public_tater_settings(settings)
         self.assertNotIn("llm_api_key", public)
         self.assertTrue(public["llm_api_key_set"])
@@ -81,7 +84,55 @@ class TaterSettingsTests(unittest.TestCase):
             (ROOT / "custom_components" / "tater_satellite" / "manifest.json").read_text()
         )
         self.assertIn("wyoming", manifest["dependencies"])
-        self.assertEqual(manifest["requirements"], [])
+        self.assertEqual(
+            manifest["requirements"],
+            ["webrtcvad-wheels==2.0.14"],
+        )
+
+    def test_unknown_vad_model_normalizes_to_neural_micro_vad(self) -> None:
+        settings = tater.normalize_tater_settings({"vad_backend": "unknown"})
+
+        self.assertEqual(settings["vad_backend"], "micro")
+
+    def test_micro_vad_scores_fixed_ten_millisecond_frames(self) -> None:
+        class FakeMicroVad:
+            def __init__(self):
+                self.calls = []
+
+            def Process10ms(self, frame):
+                self.calls.append(frame)
+                return (-1.0, 0.72)[len(self.calls) - 1]
+
+        with patch.object(
+            tater.importlib,
+            "import_module",
+            return_value=SimpleNamespace(MicroVad=FakeMicroVad),
+        ):
+            backend = tater._MicroVadBackend()
+
+        self.assertEqual(backend.process(b"\0" * 640), 0.72)
+        self.assertEqual(len(backend._vad.calls), 2)
+
+    def test_webrtc_vad_uses_tater_lightweight_mode(self) -> None:
+        class FakeVad:
+            def __init__(self, mode):
+                self.mode = mode
+                self.calls = []
+
+            def is_speech(self, frame, rate):
+                self.calls.append((frame, rate))
+                return True
+
+        with patch.object(
+            tater.importlib,
+            "import_module",
+            return_value=SimpleNamespace(Vad=FakeVad),
+        ):
+            backend = tater._WebRtcVadBackend()
+
+        self.assertEqual(backend.process(b"\0" * 960), 1.0)
+        self.assertEqual(backend._vad.mode, 2)
+        self.assertEqual(backend._vad.calls[0][1], 16000)
 
 
 class _Services:
@@ -218,6 +269,21 @@ class _Home:
 
 
 class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
+    class _TestVad:
+        @staticmethod
+        def process(chunk):
+            sample = int.from_bytes(chunk[:2], "little", signed=True)
+            return 1.0 if abs(sample) >= 450 else 0.0
+
+    @staticmethod
+    async def _audio_stream(chunks):
+        for chunk in chunks:
+            yield chunk
+
+    @staticmethod
+    def _pcm_chunk(amplitude: int, samples: int = 320) -> bytes:
+        return int(amplitude).to_bytes(2, "little", signed=True) * samples
+
     def test_generated_speech_cache_is_bounded(self) -> None:
         runtime = tater.MiniTaterRuntime(_Manager())
         for index in range(tater.MAX_STORED_SPEECH_CLIPS + 5):
@@ -291,6 +357,149 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('== "tater"', source)
         self.assertIn("async_run_voice(", source)
         self.assertIn("async_accept_pipeline_from_satellite(", source)
+
+    async def test_tater_vad_closes_capture_after_trailing_silence(self) -> None:
+        runtime = tater.MiniTaterRuntime(_Manager())
+        events = []
+        chunks = (
+            [self._pcm_chunk(80)] * 10
+            + [self._pcm_chunk(3200)] * 15
+            + [self._pcm_chunk(70)] * 80
+        )
+
+        async def event_callback(name, data):
+            events.append((name, data))
+
+        with patch.object(
+            tater, "_create_vad_backend", return_value=self._TestVad()
+        ):
+            captured = [
+                chunk
+                async for chunk in runtime._voice_activity_stream(
+                    self._audio_stream(chunks),
+                    {"rate": 16000, "width": 2, "channels": 1},
+                    "default",
+                    event_callback,
+                )
+            ]
+
+        self.assertEqual(
+            [name for name, _data in events],
+            ["STT_VAD_START", "STT_VAD_END"],
+        )
+        self.assertIn(self._pcm_chunk(3200), captured)
+        self.assertLess(len(captured), len(chunks))
+
+    async def test_tater_vad_ends_a_no_speech_capture(self) -> None:
+        runtime = tater.MiniTaterRuntime(_Manager())
+        events = []
+        chunks = [self._pcm_chunk(40)] * 500
+
+        async def event_callback(name, data):
+            events.append((name, data))
+
+        with patch.object(
+            tater, "_create_vad_backend", return_value=self._TestVad()
+        ):
+            with self.assertRaisesRegex(RuntimeError, "No speech"):
+                async for _chunk in runtime._voice_activity_stream(
+                    self._audio_stream(chunks),
+                    {"rate": 16000, "width": 2, "channels": 1},
+                    "default",
+                    event_callback,
+                ):
+                    pass
+
+        self.assertEqual([name for name, _data in events], ["STT_VAD_END"])
+
+    async def test_tater_voice_turn_runs_after_server_vad(self) -> None:
+        runtime = tater.MiniTaterRuntime(_Manager())
+        events = []
+        chunks = (
+            [self._pcm_chunk(60)] * 5
+            + [self._pcm_chunk(2800)] * 15
+            + [self._pcm_chunk(50)] * 80
+        )
+
+        async def fake_transcribe(audio_stream, _audio_format):
+            self.assertGreater(len([chunk async for chunk in audio_stream]), 0)
+            return "Turn on the kitchen light"
+
+        async def fake_process(_text, **_kwargs):
+            return {
+                "response": "The kitchen light is on.",
+                "conversation_id": "conversation-1",
+                "continue_conversation": False,
+            }
+
+        async def fake_synthesize(_text):
+            return "audio/wav", b"wave"
+
+        async def event_callback(name, data):
+            events.append((name, data))
+
+        runtime.async_transcribe = fake_transcribe
+        runtime.async_process_text = fake_process
+        runtime.async_synthesize = fake_synthesize
+        satellite = SimpleNamespace(
+            record={"vad_sensitivity": "default"},
+            device_id="satellite-1",
+            server_base_url="http://ha.test:8123",
+        )
+
+        with patch.object(
+            tater, "_create_vad_backend", return_value=self._TestVad()
+        ):
+            await runtime.async_run_voice(
+                satellite,
+                self._audio_stream(chunks),
+                {"rate": 16000, "width": 2, "channels": 1},
+                "conversation-1",
+                event_callback,
+            )
+
+        self.assertEqual(
+            [name for name, _data in events],
+            [
+                "RUN_START",
+                "STT_START",
+                "STT_VAD_START",
+                "STT_VAD_END",
+                "STT_END",
+                "INTENT_START",
+                "INTENT_END",
+                "TTS_START",
+                "TTS_END",
+                "RUN_END",
+            ],
+        )
+
+    async def test_tater_vad_caps_a_continuous_voice_stream(self) -> None:
+        runtime = tater.MiniTaterRuntime(_Manager())
+        events = []
+        chunks = [self._pcm_chunk(2600)] * 600
+
+        async def event_callback(name, data):
+            events.append((name, data))
+
+        with patch.object(
+            tater, "_create_vad_backend", return_value=self._TestVad()
+        ):
+            captured = [
+                chunk
+                async for chunk in runtime._voice_activity_stream(
+                    self._audio_stream(chunks),
+                    {"rate": 16000, "width": 2, "channels": 1},
+                    "relaxed",
+                    event_callback,
+                )
+            ]
+
+        self.assertEqual(
+            [name for name, _data in events],
+            ["STT_VAD_START", "STT_VAD_END"],
+        )
+        self.assertLess(len(captured), len(chunks))
 
 
 if __name__ == "__main__":

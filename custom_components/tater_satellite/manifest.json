@@ -1,7 +1,7 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "codeowners": [
     "@TaterTotterson"
   ],
@@ -20,6 +20,8 @@
   "integration_type": "hub",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/issues",
-  "requirements": [],
+  "requirements": [
+    "webrtcvad-wheels==2.0.14"
+  ],
   "single_config_entry": true
 }

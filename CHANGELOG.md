@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.4.2
+
+- Added server-side voice activity detection to mini-Tater mode so native
+  satellites receive the end-of-speech event, close their microphone stream,
+  and continue from Listening to transcription.
+- Added selectable Neural Micro VAD and lightweight WebRTC models under Models
+  & speech. Both use Tater-style speech start, no-speech, and maximum-listen
+  limits, while the existing per-satellite VAD sensitivity controls how quickly
+  trailing silence ends a Tater turn.
+
 ## 1.4.1
 
 - Kept the bridge panel's five-second live refresh from returning the page to

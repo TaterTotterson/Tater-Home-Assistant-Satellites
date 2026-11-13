@@ -8,9 +8,12 @@ tool loop, Home Assistant device control, TTS, and a bounded execution ledger.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+import importlib
 import io
 import json
 import logging
+import math
 import re
 import secrets
 import time
@@ -38,6 +41,17 @@ ENTITY_SCOPE_ALL = "all"
 API_KEY_FIELDS = ("llm_api_key", "stt_api_key", "tts_api_key")
 MAX_PROVIDER_AUDIO_BYTES = 32 * 1024 * 1024
 MAX_STORED_SPEECH_CLIPS = 20
+VAD_PRE_ROLL_SECONDS = 0.4
+VAD_SPEECH_START_SECONDS = 0.06
+VAD_NO_SPEECH_SECONDS = 3.5
+VAD_MAX_UTTERANCE_SECONDS = 8.5
+VAD_END_SILENCE_SECONDS = {
+    "aggressive": 0.5,
+    "default": 0.78,
+    "relaxed": 1.25,
+}
+VAD_BACKEND_MICRO = "micro"
+VAD_BACKEND_WEBRTC = "webrtc"
 
 DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "assistant_mode": ASSISTANT_MODE_HOME_ASSISTANT,
@@ -52,6 +66,7 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "stt_language": "",
     "stt_wyoming_host": "",
     "stt_wyoming_port": 10300,
+    "vad_backend": VAD_BACKEND_MICRO,
     "tts_provider": "openai",
     "tts_base_url": "https://api.openai.com/v1",
     "tts_api_key": "",
@@ -274,6 +289,11 @@ def normalize_tater_settings(
     out["tts_provider"] = (
         "wyoming" if _text(source.get("tts_provider")).lower() == "wyoming" else "openai"
     )
+    out["vad_backend"] = (
+        VAD_BACKEND_WEBRTC
+        if _text(source.get("vad_backend")).lower() == VAD_BACKEND_WEBRTC
+        else VAD_BACKEND_MICRO
+    )
     for key, maximum in _STRING_LIMITS.items():
         out[key] = _text(source.get(key), maximum)
     for key in API_KEY_FIELDS:
@@ -335,6 +355,137 @@ def pcm_to_wav(pcm: bytes, audio_format: dict[str, Any] | None = None) -> bytes:
         output.setframerate(rate)
         output.writeframes(payload)
     return target.getvalue()
+
+
+def _pcm16_rms(data: bytes, channels: int) -> float:
+    """Return the RMS level for little-endian signed 16-bit PCM."""
+    frame_bytes = max(1, channels) * 2
+    usable = len(data) - (len(data) % frame_bytes)
+    if usable <= 0:
+        return 0.0
+    samples = memoryview(data)[:usable].cast("h")
+    return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+
+class _VadBackend:
+    """Score native 16 kHz, mono, signed 16-bit PCM for speech."""
+
+    name = "unknown"
+
+    def process(self, data: bytes) -> float | None:
+        raise NotImplementedError
+
+
+class _MicroVadBackend(_VadBackend):
+    """Use Home Assistant's bundled neural microVAD model."""
+
+    name = VAD_BACKEND_MICRO
+    _frame_bytes = 160 * 2
+
+    def __init__(self) -> None:
+        module = importlib.import_module("pymicro_vad")
+        self._vad = module.MicroVad()
+        self._process_10ms = getattr(self._vad, "Process10ms", None) or getattr(
+            self._vad, "process_10ms", None
+        )
+        if not callable(self._process_10ms):
+            raise RuntimeError("pymicro_vad does not expose a 10 ms processor")
+        self._buffer = b""
+
+    def process(self, data: bytes) -> float | None:
+        payload = self._buffer + data
+        offset = 0
+        scores: list[float] = []
+        while (offset + self._frame_bytes) <= len(payload):
+            score = float(
+                self._process_10ms(payload[offset : offset + self._frame_bytes])
+            )
+            offset += self._frame_bytes
+            if score >= 0:
+                scores.append(score)
+        self._buffer = payload[offset:]
+        return max(scores) if scores else None
+
+
+class _WebRtcVadBackend(_VadBackend):
+    """Use Tater's lightweight WebRTC speech detector."""
+
+    name = VAD_BACKEND_WEBRTC
+    _frame_bytes = 480 * 2
+
+    def __init__(self) -> None:
+        module = importlib.import_module("webrtcvad")
+        self._vad = module.Vad(2)
+        self._buffer = b""
+
+    def process(self, data: bytes) -> float | None:
+        payload = self._buffer + data
+        offset = 0
+        frames = 0
+        speech_frames = 0
+        while (offset + self._frame_bytes) <= len(payload):
+            frame = payload[offset : offset + self._frame_bytes]
+            offset += self._frame_bytes
+            frames += 1
+            if self._vad.is_speech(frame, 16000):
+                speech_frames += 1
+        self._buffer = payload[offset:]
+        if not frames:
+            return None
+        return 1.0 if (speech_frames / frames) >= 0.5 else 0.0
+
+
+class _EnergyVadBackend(_VadBackend):
+    """Keep voice turns bounded if a packaged VAD engine cannot load."""
+
+    name = "energy-fallback"
+
+    def __init__(self) -> None:
+        self._noise_floor: float | None = None
+
+    def process(self, data: bytes) -> float | None:
+        rms = _pcm16_rms(data, 1)
+        threshold = max(450.0, (self._noise_floor or 0.0) * 2.8)
+        if rms >= threshold:
+            return 1.0
+        self._noise_floor = (
+            rms
+            if self._noise_floor is None
+            else (self._noise_floor * 0.92) + (rms * 0.08)
+        )
+        return 0.0
+
+
+def _create_vad_backend(
+    requested: str, audio_format: dict[str, Any] | None
+) -> _VadBackend:
+    """Create the requested detector with a bounded fail-safe fallback."""
+    values = audio_format if isinstance(audio_format, dict) else {}
+    native_format = (
+        _bounded_int(values.get("rate"), 16000, 8000, 48000) == 16000
+        and _bounded_int(values.get("width"), 2, 1, 4) == 2
+        and _bounded_int(values.get("channels"), 1, 1, 8) == 1
+    )
+    if not native_format:
+        _LOGGER.warning(
+            "Tater VAD received non-native audio; using the bounded energy detector"
+        )
+        return _EnergyVadBackend()
+
+    backend_type = (
+        _WebRtcVadBackend
+        if _text(requested).lower() == VAD_BACKEND_WEBRTC
+        else _MicroVadBackend
+    )
+    try:
+        return backend_type()
+    except Exception as err:
+        _LOGGER.warning(
+            "Unable to load Tater VAD backend %s (%s); using the bounded energy detector",
+            _text(requested) or VAD_BACKEND_MICRO,
+            err,
+        )
+        return _EnergyVadBackend()
 
 
 def _endpoint(base_url: str, suffix: str) -> str:
@@ -990,6 +1141,88 @@ class MiniTaterRuntime:
             payload = await response.json()
         return _text(payload.get("text") if isinstance(payload, dict) else "", 12000)
 
+    async def _voice_activity_stream(
+        self,
+        audio_stream: AsyncGenerator[bytes],
+        audio_format: dict[str, Any] | None,
+        sensitivity: str,
+        event_callback,
+    ) -> AsyncGenerator[bytes]:
+        """Yield one utterance and close capture using the selected VAD model."""
+        values = audio_format if isinstance(audio_format, dict) else {}
+        rate = _bounded_int(values.get("rate"), 16000, 8000, 48000)
+        width = _bounded_int(values.get("width"), 2, 1, 4)
+        channels = _bounded_int(values.get("channels"), 1, 1, 8)
+        backend = _create_vad_backend(self.settings()["vad_backend"], audio_format)
+        end_silence = VAD_END_SILENCE_SECONDS.get(
+            _text(sensitivity).lower(),
+            VAD_END_SILENCE_SECONDS["default"],
+        )
+        frame_bytes = width * channels
+        pending: deque[tuple[bytes, float]] = deque()
+        pending_seconds = 0.0
+        total_seconds = 0.0
+        speech_candidate_seconds = 0.0
+        trailing_silence_seconds = 0.0
+        speech_started = False
+        vad_ended = False
+
+        async def end_vad() -> None:
+            nonlocal vad_ended
+            if vad_ended:
+                return
+            vad_ended = True
+            await event_callback("STT_VAD_END", {})
+
+        try:
+            async for chunk in audio_stream:
+                if not chunk:
+                    continue
+                chunk_seconds = len(chunk) / max(1, rate * frame_bytes)
+                total_seconds += chunk_seconds
+                speech_probability = backend.process(chunk)
+
+                if not speech_started:
+                    pending.append((chunk, chunk_seconds))
+                    pending_seconds += chunk_seconds
+                    while pending and pending_seconds > VAD_PRE_ROLL_SECONDS:
+                        _old_chunk, old_seconds = pending.popleft()
+                        pending_seconds -= old_seconds
+
+                    if speech_probability is not None:
+                        if speech_probability >= 0.2:
+                            speech_candidate_seconds += chunk_seconds
+                        else:
+                            speech_candidate_seconds = 0.0
+
+                    if speech_candidate_seconds >= VAD_SPEECH_START_SECONDS:
+                        speech_started = True
+                        await event_callback("STT_VAD_START", {})
+                        while pending:
+                            buffered, _duration = pending.popleft()
+                            yield buffered
+                        pending_seconds = 0.0
+                    elif total_seconds >= VAD_NO_SPEECH_SECONDS:
+                        break
+                    continue
+
+                yield chunk
+                if speech_probability is not None:
+                    if speech_probability >= 0.5:
+                        trailing_silence_seconds = 0.0
+                    else:
+                        trailing_silence_seconds += chunk_seconds
+                if (
+                    trailing_silence_seconds >= end_silence
+                    or total_seconds >= VAD_MAX_UTTERANCE_SECONDS
+                ):
+                    break
+        finally:
+            await end_vad()
+
+        if not speech_started:
+            raise RuntimeError("No speech was detected")
+
     async def _transcribe_wyoming(
         self,
         audio_stream: AsyncGenerator[bytes],
@@ -1114,7 +1347,15 @@ class MiniTaterRuntime:
     ) -> None:
         await event_callback("RUN_START", {})
         await event_callback("STT_START", {})
-        transcript = await self.async_transcribe(audio_stream, audio_format)
+        vad_stream = self._voice_activity_stream(
+            audio_stream,
+            audio_format,
+            _text(satellite.record.get("vad_sensitivity")) or "default",
+            event_callback,
+        )
+        transcript = await self.async_transcribe(vad_stream, audio_format)
+        if not transcript:
+            raise RuntimeError("STT returned no speech")
         await event_callback("STT_END", {"text": transcript})
         await event_callback("INTENT_START", {})
         result = await self.async_process_text(

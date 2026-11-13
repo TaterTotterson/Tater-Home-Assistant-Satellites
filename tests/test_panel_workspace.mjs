@@ -15,7 +15,7 @@ const copy = value => structuredClone(value);
 function fixture() {
   const panel = new Panel();
   const device = (id, board) => ({ device_id: id, name: id, board, board_key: board, connected: true, settings: copy(settings.defaults), capabilities: { speaker: true, output_chain: 1, do_not_disturb: 1, screen_power_management: 1, screen_clock_format: 1, screen_climate: 1 }, wake_family: 'echo', firmware: {} });
-  panel._data = { global_settings: copy(settings.defaults), shared_wake_settings: copy(settings.defaults), settings_schema: copy(settings.schema), devices: [device('one', 'crown'), device('two', 'satellite1')], pipelines: [], tater_assistant: { settings: { assistant_mode: 'home_assistant', llm_base_url: 'https://api.openai.com/v1', llm_model: '', llm_api_key_set: false, stt_provider: 'openai', stt_base_url: 'https://api.openai.com/v1', stt_model: 'gpt-4o-transcribe', stt_api_key_set: false, tts_provider: 'openai', tts_base_url: 'https://api.openai.com/v1', tts_model: 'gpt-4o-tts', tts_voice: 'alloy', tts_api_key_set: false, entity_scope: 'exposed', assistant_name: 'Tater', personality: 'Warm', max_display: 8, max_store: 20, max_llm: 8, hydra_max_ledger_items: 1500, hydra_astraeus_plan_review_enabled: true, hydra_auto_continue_incomplete_final_enabled: false }, ready: { ok: true, missing: [] }, home_control: { entity_count: 2, areas: 1, domains: ['light'], examples: [{ entity_id: 'light.kitchen', name: 'Kitchen', area: 'Kitchen', state: 'off', domain: 'light' }] }, metrics: {}, ledger: [], messages: [] } };
+  panel._data = { global_settings: copy(settings.defaults), shared_wake_settings: copy(settings.defaults), settings_schema: copy(settings.schema), devices: [device('one', 'crown'), device('two', 'satellite1')], pipelines: [], tater_assistant: { settings: { assistant_mode: 'home_assistant', llm_base_url: 'https://api.openai.com/v1', llm_model: '', llm_api_key_set: false, stt_provider: 'openai', stt_base_url: 'https://api.openai.com/v1', stt_model: 'gpt-4o-transcribe', stt_api_key_set: false, vad_backend: 'micro', tts_provider: 'openai', tts_base_url: 'https://api.openai.com/v1', tts_model: 'gpt-4o-tts', tts_voice: 'alloy', tts_api_key_set: false, entity_scope: 'exposed', assistant_name: 'Tater', personality: 'Warm', max_display: 8, max_store: 20, max_llm: 8, hydra_max_ledger_items: 1500, hydra_astraeus_plan_review_enabled: true, hydra_auto_continue_incomplete_final_enabled: false }, ready: { ok: true, missing: [] }, home_control: { entity_count: 2, areas: 1, domains: ['light'], examples: [{ entity_id: 'light.kitchen', name: 'Kitchen', area: 'Kitchen', state: 'off', domain: 'light' }] }, metrics: {}, ledger: [], messages: [] } };
   panel.syncDrafts(panel._data);
   panel.render = () => {};
   return panel;
@@ -58,10 +58,23 @@ test('mini Tater pages retain the complete pipeline, one tool, and Hydra control
   const assistant = panel.renderAssistantChoice();
   assert.match(assistant, /Home Assistant[\s\S]*Complete Tater pipeline[\s\S]*Tater/i);
   assert.doesNotMatch(assistant, /data-tater-test-message[^>]*disabled/);
-  assert.match(panel.renderModelsAndSpeech(), /Language model[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
+  assert.match(panel.renderModelsAndSpeech(), /Language model[\s\S]*Speech-to-text[\s\S]*Voice activity detection[\s\S]*Neural VAD[\s\S]*WebRTC[\s\S]*Text-to-speech/);
   assert.match(panel.renderHomeControl(), /One built-in capability[\s\S]*control_home[\s\S]*Exposed to Assist[\s\S]*All HA entities/);
   panel._hydraSection = 'behavior';
   assert.match(panel.renderHydra(), /Maximum ledger items[\s\S]*Astraeus second plan check/);
+});
+
+test('mini Tater VAD model choice updates the saved assistant draft', () => {
+  const panel = fixture();
+  const option = { dataset: { taterVad: 'webrtc' }, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; } };
+  panel.shadowRoot = {
+    querySelectorAll: selector => selector === '[data-tater-vad]' ? [option] : [],
+    querySelector: () => null,
+  };
+  panel.bindEvents();
+  option.listeners.click();
+  assert.equal(panel._taterDraft.vad_backend, 'webrtc');
+  assert.equal(panel.isScopeDirty('tater'), true);
 });
 
 test('Tater setup guidance appears before changing the active HA pipeline', () => {

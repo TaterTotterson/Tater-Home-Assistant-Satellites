@@ -126,6 +126,10 @@ Portals, Shop items, downloaded Verbas, web tools, file tools, or messaging
 tools. Under **Home control**, choose entities exposed to Assist or all supported
 Home Assistant entities. The selected scope is checked while context is built,
 when a target is resolved, and immediately before a device action.
+Device category, room, alias, and supported-action matching follows Tater's Shop
+`device_control` Verba behavior. For example, “office lights” is resolved only
+against light entities in the Office area, even if a satellite media player also
+contains “office” in its name.
 
 The **Hydra** workspace shows conversation counts, tool decisions, the second
 plan review, results, timing, and bounded conversation history. Use its text test

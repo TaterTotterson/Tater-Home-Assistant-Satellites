@@ -196,6 +196,92 @@ _GENERIC_COMMAND_DOMAINS: dict[str, set[str]] = {
     "activate": {"button", "scene", "script"},
 }
 
+_DEVICE_CATEGORY_QUERY_TERMS: dict[str, tuple[str, ...]] = {
+    "light": ("light", "lights", "lamp", "lamps", "bulb", "bulbs", "dimmer", "dimmers"),
+    "switch": ("switch", "switches", "relay", "relays"),
+    "plug": ("plug", "plugs", "outlet", "outlets"),
+    "fan": ("fan", "fans"),
+    "garage_door": ("garage", "garage door", "garage doors", "garage opener"),
+    "cover": ("cover", "covers", "shade", "shades", "blind", "blinds", "curtain", "curtains"),
+    "lock": ("lock", "locks"),
+    "camera": ("camera", "cameras", "doorbell", "doorbells"),
+    "climate": ("climate", "thermostat", "thermostats", "hvac"),
+    "media_player": ("media player", "media players", "speaker", "speakers", "television", "tv"),
+    "remote": ("remote", "remotes"),
+    "scene": ("scene", "scenes"),
+    "script": ("script", "scripts"),
+    "vacuum": ("vacuum", "vacuums", "robot vacuum", "robot vacuums"),
+    "humidifier": ("humidifier", "humidifiers"),
+    "siren": ("siren", "sirens", "alarm", "alarms"),
+    "valve": ("valve", "valves"),
+    "water_heater": ("water heater", "water heaters"),
+    "button": ("button", "buttons"),
+}
+
+_DEVICE_CATEGORY_DOMAINS: dict[str, set[str]] = {
+    "light": {"light"},
+    "switch": {"switch"},
+    "plug": {"switch"},
+    "fan": {"fan"},
+    "garage_door": {"cover"},
+    "cover": {"cover"},
+    "lock": {"lock"},
+    "camera": {"camera"},
+    "climate": {"climate"},
+    "media_player": {"media_player"},
+    "remote": {"remote"},
+    "scene": {"scene"},
+    "script": {"script"},
+    "vacuum": {"vacuum"},
+    "humidifier": {"humidifier"},
+    "siren": {"siren"},
+    "valve": {"valve"},
+    "water_heater": {"water_heater"},
+    "button": {"button"},
+}
+
+_MEDIA_PLAYER_COMMAND_FEATURES = {
+    "turn_on": 128,
+    "turn_off": 256,
+    "set_volume": 4,
+    "media_play": 16384,
+    "media_pause": 1,
+    "media_stop": 4096,
+    "media_next": 32,
+    "media_previous": 16,
+}
+
+_CONTROL_TARGET_IGNORED_WORDS = {
+    "a",
+    "all",
+    "at",
+    "can",
+    "could",
+    "deactivate",
+    "disable",
+    "enable",
+    "everything",
+    "for",
+    "in",
+    "inside",
+    "my",
+    "of",
+    "off",
+    "on",
+    "please",
+    "power",
+    "set",
+    "shut",
+    "switch",
+    "the",
+    "to",
+    "toggle",
+    "turn",
+    "with",
+    "would",
+    "you",
+}
+
 _SAFE_STATE_ATTRIBUTES = {
     "battery_level",
     "brightness",
@@ -488,6 +574,30 @@ def _normalize_name(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", _text(value).lower()).strip()
 
 
+def _requested_device_domains(value: Any) -> set[str]:
+    """Infer Home Assistant domains using Tater Shop device-control terms."""
+    raw = _normalize_name(value)
+    domains: set[str] = set()
+    for category_id, terms in _DEVICE_CATEGORY_QUERY_TERMS.items():
+        if any(re.search(rf"\b{re.escape(term)}\b", raw) for term in terms):
+            domains.update(_DEVICE_CATEGORY_DOMAINS.get(category_id, set()))
+    return domains
+
+
+def _clean_control_target(value: Any) -> str:
+    """Remove device categories and action words like the Shop device Verba."""
+    text = _normalize_name(value)
+    category_terms = {
+        term
+        for terms in _DEVICE_CATEGORY_QUERY_TERMS.values()
+        for term in terms
+    }
+    ignored = sorted(category_terms | _CONTROL_TARGET_IGNORED_WORDS, key=len, reverse=True)
+    if ignored:
+        text = re.sub(r"\b(?:" + "|".join(re.escape(item) for item in ignored) + r")\b", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 @dataclass
 class HomeEntity:
     entity_id: str
@@ -593,14 +703,18 @@ class HomeControlTool:
         return "\n".join(lines) or "- No entities are available in the selected scope."
 
     def _matches(self, row: HomeEntity, query: str) -> bool:
-        wanted = _normalize_name(query)
+        wanted = _clean_control_target(query) or _normalize_name(query)
         if not wanted:
             return True
         candidates = [row.entity_id, row.name, row.area, *row.aliases]
-        normalized = [_normalize_name(item) for item in candidates if item]
+        normalized = [
+            _clean_control_target(item) or _normalize_name(item)
+            for item in candidates
+            if item
+        ]
         return any(wanted == item or wanted in item or item in wanted for item in normalized)
 
-    def resolve(self, arguments: dict[str, Any]) -> list[HomeEntity]:
+    def resolve(self, arguments: dict[str, Any], *, request: str = "") -> list[HomeEntity]:
         rows = self.entities()
         explicit = arguments.get("entity_ids")
         entity_ids = {
@@ -611,19 +725,49 @@ class HomeControlTool:
         query = _text(arguments.get("query"))
         area = _normalize_name(arguments.get("area"))
         domain = _text(arguments.get("domain")).lower()
-        if entity_ids:
-            rows = [row for row in rows if row.entity_id.lower() in entity_ids]
-        if domain:
+        request_domains = _requested_device_domains(request)
+        requested_domains = request_domains or _requested_device_domains(query)
+        if requested_domains:
+            rows = [row for row in rows if row.domain in requested_domains]
+        elif domain:
             rows = [row for row in rows if row.domain == domain]
+        if entity_ids:
+            explicit_rows = [row for row in rows if row.entity_id.lower() in entity_ids]
+            if explicit_rows:
+                rows = explicit_rows
+            elif not requested_domains and not domain:
+                rows = []
         if area:
             rows = [row for row in rows if _normalize_name(row.area) == area]
-        if query and query.lower() not in {"all", "everything"}:
-            rows = [row for row in rows if self._matches(row, query)]
+        request_target = _clean_control_target(request)
+        query_target = _clean_control_target(query)
+        target = request_target if request_domains and request_target else query_target
+        if target and query.lower() not in {"all", "everything"}:
+            rows = [row for row in rows if self._matches(row, target)]
         return rows
 
-    async def async_call(self, arguments: dict[str, Any], context: Context | None) -> dict[str, Any]:
+    @staticmethod
+    def _supports_command(row: HomeEntity, command: str) -> bool:
+        if row.domain != "media_player":
+            return True
+        required_feature = _MEDIA_PLAYER_COMMAND_FEATURES.get(command)
+        if required_feature is None:
+            return True
+        try:
+            supported = int(row.attributes.get("supported_features") or 0)
+        except (TypeError, ValueError):
+            supported = 0
+        return bool(supported & required_feature)
+
+    async def async_call(
+        self,
+        arguments: dict[str, Any],
+        context: Context | None,
+        *,
+        request: str = "",
+    ) -> dict[str, Any]:
         operation = _text(arguments.get("operation")).lower() or "get_state"
-        rows = self.resolve(arguments)
+        rows = self.resolve(arguments, request=request)
         if operation == "search":
             return {"ok": True, "matches": [row.public() for row in rows[:40]], "count": len(rows)}
         if not rows:
@@ -644,6 +788,7 @@ class HomeControlTool:
             rows = [row for row in rows if row.domain in _GENERIC_COMMAND_DOMAINS[command]]
         else:
             rows = [row for row in rows if row.domain in _CONTROLLABLE_DOMAINS]
+        rows = [row for row in rows if self._supports_command(row, command)]
         if not rows:
             return {"ok": False, "error": "The matched entities do not support that command."}
 
@@ -658,6 +803,7 @@ class HomeControlTool:
             return {"ok": False, "error": "The target is no longer available in the selected entity scope."}
 
         performed: list[dict[str, Any]] = []
+        failures: list[dict[str, str]] = []
         for domain, entity_ids in grouped.items():
             actual_service = service
             if command == "activate":
@@ -668,21 +814,42 @@ class HomeControlTool:
                     "ok": False,
                     "error": f"{domain}.{actual_service} is unavailable for that target.",
                 }
-            data: dict[str, Any] = {"entity_id": entity_ids}
-            for source, destination in parameter_map.items():
-                if source in parameters:
-                    data[destination] = _json_safe(parameters[source])
-            await self.hass.services.async_call(
-                domain,
-                actual_service,
-                data,
-                blocking=True,
-                context=context,
-            )
-            performed.append(
-                {"domain": domain, "service": actual_service, "entity_ids": entity_ids}
-            )
-        return {"ok": True, "performed": performed}
+            for entity_id in entity_ids:
+                data: dict[str, Any] = {"entity_id": [entity_id]}
+                for source, destination in parameter_map.items():
+                    if source in parameters:
+                        data[destination] = _json_safe(parameters[source])
+                try:
+                    await self.hass.services.async_call(
+                        domain,
+                        actual_service,
+                        data,
+                        blocking=True,
+                        context=context,
+                    )
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Home control action %s.%s failed for %s: %s",
+                        domain,
+                        actual_service,
+                        entity_id,
+                        err,
+                    )
+                    failures.append({"entity_id": entity_id, "error": _text(err, 500)})
+                    continue
+                performed.append(
+                    {"domain": domain, "service": actual_service, "entity_ids": [entity_id]}
+                )
+        if not performed:
+            return {
+                "ok": False,
+                "error": "Home Assistant rejected the action for every matched entity.",
+                "failures": failures,
+            }
+        result: dict[str, Any] = {"ok": True, "performed": performed}
+        if failures:
+            result["failures"] = failures
+        return result
 
     @staticmethod
     def definition() -> dict[str, Any]:
@@ -698,7 +865,13 @@ class HomeControlTool:
                     "type": "object",
                     "properties": {
                         "operation": {"type": "string", "enum": ["search", "get_state", "control"]},
-                        "query": {"type": "string", "description": "Friendly name, alias, entity ID, or 'all'."},
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "Requested room or device phrase, including category words such as lights, "
+                                "fans, switches, or speakers; use 'all' only for an explicit global request."
+                            ),
+                        },
                         "entity_ids": {"type": "array", "items": {"type": "string"}},
                         "area": {"type": "string"},
                         "domain": {"type": "string"},
@@ -1018,7 +1191,11 @@ class MiniTaterRuntime:
                         else:
                             approved, review_reason = await self._review_action(user_text, arguments)
                             result = (
-                                await self.home.async_call(arguments, context)
+                                await self.home.async_call(
+                                    arguments,
+                                    context,
+                                    request=user_text,
+                                )
                                 if approved
                                 else {"ok": False, "error": review_reason}
                             )

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.4.6
+
+- Aligned mini-Tater Home Assistant device targeting with the Tater Shop
+  `device_control` Verba: category words now constrain candidates before room
+  or device-name matching, and the original request remains authoritative when
+  a model proposes an entity from the wrong domain.
+- Added Home Assistant supported-feature checks for media-player commands and
+  isolated service failures per entity so an unsupported action becomes a tool
+  result instead of terminating the voice pipeline.
+
 ## 1.4.5
 
 - Kept Home Assistant as the default conversation pipeline and hid the

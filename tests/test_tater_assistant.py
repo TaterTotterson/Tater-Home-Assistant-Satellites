@@ -216,7 +216,7 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
             aliases=(),
             attributes={},
         )
-        tool.resolve = lambda _arguments: [light]
+        tool.resolve = lambda _arguments, **_kwargs: [light]
         tool._allowed = lambda _entity_id: True
 
         result = await tool.async_call(
@@ -246,7 +246,7 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_disallowed_command_cannot_become_an_arbitrary_service(self) -> None:
         services = _Services()
         tool = tater.HomeControlTool(SimpleNamespace(services=services), lambda: {"entity_scope": "all"})
-        tool.resolve = lambda _arguments: [
+        tool.resolve = lambda _arguments, **_kwargs: [
             tater.HomeEntity(
                 entity_id="switch.home_assistant",
                 name="Home Assistant",
@@ -269,7 +269,7 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_generic_turn_on_cannot_unlock_or_mutate_a_lock(self) -> None:
         services = _Services()
         tool = tater.HomeControlTool(SimpleNamespace(services=services), lambda: {"entity_scope": "all"})
-        tool.resolve = lambda _arguments: [
+        tool.resolve = lambda _arguments, **_kwargs: [
             tater.HomeEntity(
                 entity_id="lock.front_door",
                 name="Front door",
@@ -288,6 +288,98 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(services.calls, [])
+
+    def test_shop_verba_targeting_keeps_office_lights_in_the_light_domain(self) -> None:
+        tool = tater.HomeControlTool(SimpleNamespace(), lambda: {"entity_scope": "all"})
+        office_light = tater.HomeEntity(
+            entity_id="light.office_ceiling",
+            name="Office ceiling lights",
+            domain="light",
+            state="on",
+            area="Office",
+            aliases=("Office lights",),
+            attributes={},
+        )
+        office_satellite = tater.HomeEntity(
+            entity_id="media_player.office_tater_sat1_media_player",
+            name="Office Tater Sat1 media player",
+            domain="media_player",
+            state="idle",
+            area="Office",
+            aliases=(),
+            attributes={"supported_features": 4 | 4096},
+        )
+        office_switch = tater.HomeEntity(
+            entity_id="switch.office_printer",
+            name="Office printer",
+            domain="switch",
+            state="on",
+            area="Office",
+            aliases=(),
+            attributes={},
+        )
+        tool.entities = lambda: [office_satellite, office_switch, office_light]
+
+        matches = tool.resolve(
+            {
+                "entity_ids": [office_satellite.entity_id],
+                "query": "Office Tater Sat1 media player",
+                "domain": "media_player",
+            },
+            request="Turn the office lights off",
+        )
+
+        self.assertEqual([row.entity_id for row in matches], [office_light.entity_id])
+
+    def test_unsupported_media_player_power_is_filtered_by_features(self) -> None:
+        player = tater.HomeEntity(
+            entity_id="media_player.office_tater_sat1_media_player",
+            name="Office Tater Sat1 media player",
+            domain="media_player",
+            state="idle",
+            area="Office",
+            aliases=(),
+            attributes={"supported_features": 4 | 4096},
+        )
+
+        self.assertFalse(tater.HomeControlTool._supports_command(player, "turn_off"))
+        self.assertTrue(tater.HomeControlTool._supports_command(player, "set_volume"))
+        self.assertTrue(tater.HomeControlTool._supports_command(player, "media_stop"))
+
+    async def test_home_assistant_service_rejection_becomes_a_tool_failure(self) -> None:
+        class RejectingServices:
+            @staticmethod
+            def has_service(_domain, _service):
+                return True
+
+            @staticmethod
+            async def async_call(_domain, _service, _data, *, blocking, context):
+                raise RuntimeError("entity does not support this action")
+
+        light = tater.HomeEntity(
+            entity_id="light.office",
+            name="Office light",
+            domain="light",
+            state="on",
+            area="Office",
+            aliases=(),
+            attributes={},
+        )
+        tool = tater.HomeControlTool(
+            SimpleNamespace(services=RejectingServices()),
+            lambda: {"entity_scope": "all"},
+        )
+        tool.resolve = lambda _arguments, **_kwargs: [light]
+        tool._allowed = lambda _entity_id: True
+
+        result = await tool.async_call(
+            {"operation": "control", "command": "turn_off", "query": "office lights"},
+            None,
+            request="Turn the office lights off",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failures"][0]["entity_id"], "light.office")
 
 
 class _Manager:
@@ -320,8 +412,8 @@ class _Home:
     def summary():
         return "- light.kitchen | Kitchen | Kitchen | off"
 
-    async def async_call(self, arguments, context):
-        self.calls.append((arguments, context))
+    async def async_call(self, arguments, context, *, request=""):
+        self.calls.append((arguments, context, request))
         return {"ok": True, "performed": [{"domain": "light", "service": "turn_on"}]}
 
 
@@ -404,6 +496,7 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["response"], "The kitchen light is on.")
         self.assertEqual(len(home.calls), 1)
+        self.assertEqual(home.calls[0][2], "Turn on the kitchen light")
         ledger = manager.data["tater_hydra_ledger"]
         self.assertEqual(ledger[-1]["outcome"], "done")
         self.assertEqual(ledger[-1]["tools"][0]["name"], "control_home")

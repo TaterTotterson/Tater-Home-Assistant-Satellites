@@ -156,23 +156,25 @@ class TaterAssistantSettingsView(HomeAssistantView):
 
 
 class TaterAssistantTestView(HomeAssistantView):
-    """Run one text-only mini-Tater conversation for setup testing."""
+    """Run one mini-Tater text or image conversation for setup testing."""
 
     url = f"{API_BASE_PATH}/tater/test"
     name = "api:tater_satellite:tater_test"
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
-        """Send a test message through Hydra without invoking STT or TTS."""
+        """Send a test message through Vision and Hydra without STT or TTS."""
         body = await _json_body(request)
         text = str(body.get("text") or "").strip()
-        if not text:
-            raise web.HTTPBadRequest(text="Enter a test message")
+        images = body.get("images")
+        if not text and not images:
+            raise web.HTTPBadRequest(text="Enter a test message or attach an image")
         try:
             result = await _manager(request).tater_assistant.async_process_text(
                 text,
                 conversation_id=str(body.get("conversation_id") or "tater-panel-test"),
                 device_id="management-panel",
+                images=images,
             )
         except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
             raise web.HTTPBadRequest(text=str(err)) from err

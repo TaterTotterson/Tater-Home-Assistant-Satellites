@@ -103,7 +103,7 @@ code. **Add satellite** generates a new temporary pairing code.
 
 The **Assistant** workspace selects who owns the complete voice turn. **Home
 Assistant** is the default and keeps the existing Assist pipeline unchanged.
-Selecting **Tater** immediately reveals its Models & speech, Home control, and
+Selecting **Tater** immediately reveals its Models & speech, Home tools, and
 Hydra workspaces; selecting Home Assistant hides them again. Save the Assistant
 workspace to apply the selected pipeline to voice turns. **Tater** sends the
 satellite microphone stream through its configured speech-to-text provider,
@@ -111,9 +111,11 @@ Hydra, Home Assistant device control, and its configured text-to-speech provider
 before returning audio to the originating satellite.
 
 Configure an OpenAI-compatible language model and either OpenAI-compatible or
-Wyoming STT and TTS under **Models & speech**. Official OpenAI endpoints require
-an API key; local compatible endpoints may run without one. Provider keys stay
-in Home Assistant storage and are never returned by the management API.
+Wyoming STT and TTS under **Models & speech**. Image understanding defaults to
+**Same as Base** for a multimodal Base model, or can use a separate
+OpenAI-compatible Vision URL, model, and API key. Official OpenAI endpoints
+require an API key; local compatible endpoints may run without one. Provider
+keys stay in Home Assistant storage and are never returned by the management API.
 Wyoming model and voice names are optional and remain blank unless the Wyoming
 service requires a specific name.
 
@@ -128,21 +130,33 @@ Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses
 the default endpoint timing automatically and exposes no Tater-mode VAD options.
 
-Mini Tater has one built-in tool, `control_home`. It does not load Cores,
-Portals, Shop items, downloaded Verbas, web tools, file tools, or messaging
-tools. Under **Home control**, choose entities exposed to Assist or all supported
-Home Assistant entities. The selected scope is checked while context is built,
-when a target is resolved, and immediately before a device action.
-Device category, room, alias, and supported-action matching follows Tater's Shop
-`device_control` Verba behavior. For example, “office lights” is resolved only
-against light entities in the Office area, even if a satellite media player also
-contains “office” in its name.
+Mini Tater has two built-in capabilities: `device_control` and `tater_vision`.
+Astraeus receives the same kind of stable tool catalog used by Tater, plans
+atomic natural-language steps, and Thanatos passes each locked step unchanged as
+`query` to the selected tool. Device control interprets actions and values,
+resolves Home Assistant friendly names, aliases, rooms, and supported services,
+and rechecks entity scope before execution. Deterministic parsing runs first;
+unclear wording or ambiguous names can use a bounded Thanatos model call like
+Tater's Device Control Verba.
+
+Tater Vision mirrors the Tater Shop Verba for current visual questions. It can
+resolve a named Home Assistant camera, room, outdoor area, or the asking
+satellite's assigned room, capture fresh ephemeral stills, and use the existing
+Vision setting from **Models & speech**. **Same as Base** uses the Base endpoint,
+model, and key; the dedicated option uses the existing separate Vision endpoint,
+model, and key. Raw camera images are not stored in conversation history or the
+Hydra ledger. Mini Tater does not load Cores, Portals, Shop items, downloaded
+Verbas, web tools, file tools, or messaging tools. Under **Home tools**, choose
+entities exposed to Assist or all supported Home Assistant entities.
 
 The **Hydra** workspace shows conversation counts, Astraeus plans and reviews,
 Thanatos actions, Hermes responses, timing, and bounded conversation history.
 Compound requests are split into atomic steps so different devices can receive
 different commands during one turn. Use the text test on the Assistant page to
-verify the models and device tool without recording audio.
+verify the models and built-in tools without recording audio. The same chat accepts
+up to four JPEG, PNG, WebP, or GIF attachments. Vision produces bounded visual
+context first, then the request continues through the normal audited Hydra flow;
+raw image data is never written to conversation history or the Hydra ledger.
 
 ## Pair a satellite
 

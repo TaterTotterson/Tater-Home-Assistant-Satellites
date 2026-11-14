@@ -78,7 +78,7 @@ test('Home Assistant is default and hides Tater-only navigation until selected',
   assert.equal(panel._tab, 'assistant');
 });
 
-test('mini Tater pages retain the complete pipeline, one tool, and Hydra controls', () => {
+test('mini Tater pages retain the complete pipeline, both tools, and Hydra controls', () => {
   const panel = fixture();
   let assistant = panel.renderAssistantChoice();
   assert.match(assistant, /Home Assistant[\s\S]*Mini version of Tater[\s\S]*Mini-Tater/i);
@@ -88,14 +88,29 @@ test('mini Tater pages retain the complete pipeline, one tool, and Hydra control
   assert.match(assistant, /Talk to Mini-Tater/);
   assert.doesNotMatch(assistant, /data-tater-test-message[^>]*disabled/);
   const models = panel.renderModelsAndSpeech();
-  assert.match(models, /Language model[\s\S]*Beast Mode[\s\S]*Astraeus[\s\S]*Thanatos[\s\S]*Hermes[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
+  assert.match(models, /Language model[\s\S]*Image understanding[\s\S]*Same as Base[\s\S]*Different endpoint[\s\S]*Beast Mode[\s\S]*Astraeus[\s\S]*Thanatos[\s\S]*Hermes[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
   assert.doesNotMatch(models, /data-tater-vad|WebRTC/);
   panel.prepareDeviceDraft('one');
   panel._deviceSection = 'voice';
   assert.doesNotMatch(panel.renderDeviceEditor(panel._data.devices[0]), /End-of-speech sensitivity|data-special="vad"/);
-  assert.match(panel.renderHomeControl(), /One built-in capability[\s\S]*control_home[\s\S]*Exposed to Assist[\s\S]*All HA entities/);
+  assert.match(panel.renderHomeControl(), /Two built-in capabilities[\s\S]*Use for any request to control or check smart-home devices[\s\S]*device_control[\s\S]*Exposed to Assist[\s\S]*All HA entities[\s\S]*Tater Vision is Tater's visual-question tool[\s\S]*tater_vision/);
   panel._hydraSection = 'behavior';
   assert.match(panel.renderHydra(), /Maximum ledger items[\s\S]*Astraeus second plan check/);
+});
+
+test('vision can follow Base or reveal a dedicated compatible endpoint', () => {
+  const panel = fixture();
+  panel._taterDraft.assistant_mode = 'tater';
+  panel._taterDraft.vision_provider = 'base';
+  let models = panel.renderModelsAndSpeech();
+  assert.match(models, /Reuse the Base model/);
+  assert.doesNotMatch(models, /data-tater-setting="vision_base_url"/);
+
+  panel._taterDraft.vision_provider = 'openai_compatible';
+  panel._data.tater_assistant.ready.vision = { ok: false, missing: ['Vision model'] };
+  models = panel.renderModelsAndSpeech();
+  assert.match(models, /data-tater-setting="vision_base_url"[\s\S]*data-tater-setting="vision_model"[\s\S]*data-tater-setting="vision_api_key"/);
+  assert.match(models, /Finish Vision setup[\s\S]*Vision model/);
 });
 
 test('Wyoming model and voice names are blank provider-specific fields', () => {
@@ -131,6 +146,68 @@ test('saving Tater settings never posts public key-state flags', async () => {
   assert.equal(request[1], 'tater/settings');
   assert.equal(request[2].settings.llm_api_key, 'new-secret');
   assert.equal('llm_api_key_set' in request[2].settings, false);
+});
+
+test('pressing Enter sends the mini Tater chat message', async () => {
+  const panel = fixture();
+  const input = { value: 'What about now?' };
+  const send = {};
+  controls(panel, {
+    '[data-tater-test-message]': input,
+    '[data-action="test-tater"]': send,
+  });
+  let request;
+  panel.api = async (...args) => {
+    request = args;
+    return { conversation_id: 'tater-panel-test' };
+  };
+  panel.run = async action => action();
+  let prevented = false;
+
+  await input.listeners.keydown({
+    key: 'Enter',
+    isComposing: false,
+    preventDefault: () => { prevented = true; },
+  });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(request, [
+    'POST',
+    'tater/test',
+    { text: 'What about now?', conversation_id: 'tater-panel-test' },
+  ]);
+  assert.equal(panel._testMessage, '');
+});
+
+test('mini Tater chat sends attached images through vision and clears the draft', async () => {
+  const panel = fixture();
+  panel._testImages = [{ name: 'office.png', type: 'image/png', size: 12, data_url: 'data:image/png;base64,cGljdHVyZQ==' }];
+  const input = { value: 'What is on the desk?' };
+  const send = {};
+  controls(panel, {
+    '[data-tater-test-message]': input,
+    '[data-action="test-tater"]': send,
+  });
+  let request;
+  panel.api = async (...args) => {
+    request = args;
+    return { conversation_id: 'vision-chat' };
+  };
+  panel.run = async action => action();
+
+  await send.listeners.click();
+
+  assert.deepEqual(request, [
+    'POST',
+    'tater/test',
+    {
+      text: 'What is on the desk?',
+      conversation_id: 'tater-panel-test',
+      images: [{ name: 'office.png', data_url: 'data:image/png;base64,cGljdHVyZQ==' }],
+    },
+  ]);
+  assert.equal(panel._testConversationId, 'vision-chat');
+  assert.deepEqual(panel._testImages, []);
 });
 
 test('device drafts and pipeline choices survive navigation and polling', () => {

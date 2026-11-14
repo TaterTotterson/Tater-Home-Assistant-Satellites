@@ -32,9 +32,9 @@ const WAKE_VERIFIER_SETTING_KEYS = new Set([
 ]);
 const WORKSPACE_PAGES = [
   { id: "assistant", label: "Assistant", icon: "robot-outline", group: "Tater assistant", description: "Choose who owns each voice turn: Home Assistant Assist or the complete Tater pipeline." },
-  { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, speech-to-text, and text-to-speech providers." },
-  { id: "home-control", label: "Home control", icon: "home-automation", group: "Tater assistant", description: "Choose which Home Assistant entities Tater's one built-in device tool can use." },
-  { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every device-control decision." },
+  { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, vision, speech-to-text, and text-to-speech providers." },
+  { id: "home-control", label: "Home tools", icon: "home-automation", group: "Tater assistant", description: "Review Mini-Tater's built-in device-control and current-camera vision capabilities." },
+  { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every built-in tool decision." },
   { id: "satellites", label: "Satellites", icon: "access-point", group: "Your home", description: "Voice around your home, connected directly to Home Assistant." },
   { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
   { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Echo scanners and the nearby devices they connect to Home Assistant." },
@@ -176,6 +176,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._taterDraft = null;
     this._hydraSection = "ledger";
     this._testMessage = "";
+    this._testImages = [];
     this._testConversationId = "tater-panel-test";
     this._globalDraft = null;
     this._wakeDraft = null;
@@ -727,7 +728,18 @@ class TaterSatellitePanel extends HTMLElement {
       .assistant-test-message.user { justify-self: end; background: var(--tater-accent-soft); border-color: color-mix(in srgb, var(--tater-accent) 35%, var(--workspace-line)); }
       .assistant-test-message span { color: var(--workspace-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
       .assistant-test-message p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
-      .assistant-test-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+      .assistant-test-message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .assistant-test-message-attachments small { padding: 4px 7px; border: 1px solid var(--workspace-line); border-radius: 999px; color: var(--workspace-muted); background: var(--workspace-field); }
+      .assistant-test-image-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+      .assistant-test-image-preview article { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px; border: 1px solid var(--workspace-line); border-radius: 10px; background: var(--workspace-field); }
+      .assistant-test-image-preview img { width: 52px; height: 52px; border-radius: 7px; object-fit: cover; background: #111; }
+      .assistant-test-image-preview span { min-width: 0; display: grid; gap: 3px; }
+      .assistant-test-image-preview strong, .assistant-test-image-preview small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .assistant-test-image-preview small { color: var(--workspace-muted); }
+      .assistant-test-image-preview button { min-width: 32px; padding: 7px; }
+      .assistant-test-compose { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 9px; }
+      .assistant-test-compose .assistant-attach-button { min-width: 42px; padding: 8px; }
+      .assistant-test-compose input[type="file"] { display: none; }
       .provider-status { display: inline-flex; align-items: center; gap: 6px; color: var(--workspace-muted); font-size: 11px; }
       .provider-status ha-icon { --mdc-icon-size: 17px; width: 17px; height: 17px; }
       .provider-choice { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-field); }
@@ -869,7 +881,8 @@ class TaterSatellitePanel extends HTMLElement {
         .workspace-filters input { width: 120px; }
         .assistant-mode-card, .home-scope-card { grid-template-columns: auto minmax(0, 1fr); }
         .assistant-mode-card > b, .home-scope-card > b { grid-column: 2; grid-row: auto; }
-        .assistant-test-compose { grid-template-columns: 1fr; }
+        .assistant-test-compose { grid-template-columns: auto minmax(0, 1fr); }
+        .assistant-test-compose > .primary { grid-column: 1 / -1; }
         .hydra-metrics-grid { grid-template-columns: 1fr; }
       }
       @media (max-width: 500px) { .workspace-dialog-backdrop { padding: 18px 10px; } .workspace-dialog { padding: 17px; max-height: calc(100dvh - 36px); } .workspace-dialog .settings-grid { grid-template-columns: minmax(0, 1fr); } }
@@ -1364,6 +1377,24 @@ class TaterSatellitePanel extends HTMLElement {
     return `<button class="tab ${this._tab === key ? "active" : ""}" data-tab="${key}">${label}</button>`;
   }
 
+  renderAssistantTestMessage(message, settings) {
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    return `<div class="assistant-test-message ${message.role === "assistant" ? "assistant" : "user"}">
+      <span>${message.role === "assistant" ? escapeHtml(settings.assistant_name || "Tater") : "You"}</span>
+      <p>${escapeHtml(message.content || "")}</p>
+      ${attachments.length ? `<div class="assistant-test-message-attachments">${attachments.map((item) => `<small>${this.renderIcon("image-outline")} ${escapeHtml(item.name || "Image")}</small>`).join("")}</div>` : ""}
+    </div>`;
+  }
+
+  renderAssistantImagePreview() {
+    if (!this._testImages.length) return "";
+    return `<div class="assistant-test-image-preview">${this._testImages.map((image, index) => `<article>
+      <img src="${escapeHtml(image.data_url)}" alt="Preview of ${escapeHtml(image.name)}">
+      <span><strong>${escapeHtml(image.name)}</strong><small>${escapeHtml(image.type)} · ${formatBytes(image.size)}</small></span>
+      <button type="button" data-remove-tater-image="${index}" aria-label="Remove ${escapeHtml(image.name)}">${this.renderIcon("close")}</button>
+    </article>`).join("")}</div>`;
+  }
+
   renderAssistantChoice() {
     const settings = this._taterDraft || {};
     const runtime = this._data.tater_assistant || {};
@@ -1398,9 +1429,15 @@ class TaterSatellitePanel extends HTMLElement {
       </section>
 
       ${mode === "tater" ? `<section class="card assistant-test-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Verify the LLM, Hydra, and home-control tool before switching voice turns. No audio is recorded.</p></div></div>
-        <div class="assistant-test-thread">${messages.length ? messages.map((message) => `<div class="assistant-test-message ${message.role === "assistant" ? "assistant" : "user"}"><span>${message.role === "assistant" ? escapeHtml(settings.assistant_name || "Tater") : "You"}</span><p>${escapeHtml(message.content || "")}</p></div>`).join("") : '<p class="muted">No test messages yet.</p>'}</div>
-        <div class="assistant-test-compose"><input type="text" data-tater-test-message placeholder="Ask a question or control a device" value="${escapeHtml(this._testMessage)}" ${!ready.ok ? "disabled" : ""}><button type="button" class="primary" data-action="test-tater" ${!ready.ok || this._loading ? "disabled" : ""}>${this._loading ? "Working…" : "Send"}</button></div>
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Verify the LLM, Hydra, device control, and Tater Vision before switching voice turns. No audio is recorded.</p></div></div>
+        <div class="assistant-test-thread">${messages.length ? messages.map((message) => this.renderAssistantTestMessage(message, settings)).join("") : '<p class="muted">No test messages yet.</p>'}</div>
+        ${this.renderAssistantImagePreview()}
+        <div class="assistant-test-compose">
+          <button type="button" class="assistant-attach-button" data-action="attach-tater-image" title="Attach images" aria-label="Attach images" ${!ready.ok || this._loading ? "disabled" : ""}>${this.renderIcon("image-plus")}</button>
+          <input type="file" data-tater-test-image accept="image/jpeg,image/png,image/webp,image/gif" multiple>
+          <input type="text" data-tater-test-message placeholder="Ask a question, control a device, or attach an image" value="${escapeHtml(this._testMessage)}" ${!ready.ok ? "disabled" : ""}>
+          <button type="button" class="primary" data-action="test-tater" ${!ready.ok || this._loading ? "disabled" : ""}>${this._loading ? "Working…" : "Send"}</button>
+        </div>
       </section>` : ""}
 
       ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save assistant</button>`)}
@@ -1452,6 +1489,8 @@ class TaterSatellitePanel extends HTMLElement {
     const settings = this._taterDraft || {};
     const sttProvider = settings.stt_provider || "openai";
     const ttsProvider = settings.tts_provider || "openai";
+    const visionProvider = settings.vision_provider || "base";
+    const visionReady = this._data.tater_assistant?.ready?.vision || { ok: true, missing: [] };
     return `
       <section class="card provider-card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Hydra model</span><h2>Language model</h2><p class="muted">OpenAI or any compatible Chat Completions endpoint with function tools.</p></div><span class="provider-status">${settings.llm_api_key_set ? this.renderIcon("check-circle-outline") + " Key saved" : this.renderIcon("key-outline") + " Key not set"}</span></div>
@@ -1463,6 +1502,19 @@ class TaterSatellitePanel extends HTMLElement {
           ${this.taterField("assistant_name", "Assistant name", { placeholder: "Tater" })}
           <label class="field workspace-wide"><span>Personality</span><textarea data-tater-setting="personality" rows="4">${escapeHtml(settings.personality || "")}</textarea><small>Used for conversational style. Device permissions are always enforced separately.</small></label>
         </div>
+      </section>
+
+      <section class="card provider-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Visual intelligence</span><h2>Image understanding</h2><p class="muted">Understand images attached in chat and fresh camera stills requested through Tater Vision.</p></div><span class="badge ${visionReady.ok ? "online" : "update"}">${visionProvider === "base" ? "Same as Base" : visionReady.ok ? "Dedicated model" : "Setup needed"}</span></div>
+        <div class="provider-choice" role="group" aria-label="Vision model source"><button type="button" data-tater-vision-provider="base" ${visionProvider === "base" ? 'aria-current="true"' : ""}>Same as Base</button><button type="button" data-tater-vision-provider="openai_compatible" ${visionProvider === "openai_compatible" ? 'aria-current="true"' : ""}>Different endpoint</button></div>
+        ${visionProvider === "base" ? `<div class="verifier-note"><strong>Reuse the Base model</strong><p>Image requests use the Base URL, model, and API key above. The selected Base model must support image input.</p></div>` : `
+          <div class="settings-grid">
+            ${this.taterField("vision_base_url", "Vision API base URL", { placeholder: "https://api.openai.com/v1" })}
+            ${this.taterField("vision_model", "Vision model", { placeholder: "Enter a multimodal model" })}
+            ${this.taterField("vision_api_key", "Vision API key", { type: "password", autocomplete: "new-password", help: "Use the key for this endpoint. Local endpoints can leave it blank." })}
+          </div>
+          ${!visionReady.ok ? `<div class="verifier-note"><strong>Finish Vision setup</strong><p>${escapeHtml((visionReady.missing || []).join(" · "))}</p></div>` : ""}
+        `}
       </section>
 
       <section class="card provider-card beast-mode-card">
@@ -1516,22 +1568,30 @@ class TaterSatellitePanel extends HTMLElement {
   renderHomeControl() {
     const settings = this._taterDraft || {};
     const summary = this._data.tater_assistant?.home_control || {};
+    const vision = this._data.tater_assistant?.tater_vision || {};
     const scope = settings.entity_scope || "exposed";
     const examples = summary.examples || [];
+    const cameraExamples = vision.examples || [];
     return `
       <section class="card home-tool-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">One built-in capability</span><h2>Home Assistant device control</h2><p class="muted">Hydra can read and control the home. Mini Tater includes no web, files, messaging, Cores, Portals, Shop, or downloadable Verbas.</p></div><span class="badge online">control_home</span></div>
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Two built-in capabilities</span><h2>Home Assistant device control</h2><p class="muted">Use for any request to control or check smart-home devices across integrations, including lights, switches, plugs, fans, covers, garage doors, locks, thermostats, media players, remotes, scenes, scripts, and appliance readings such as washer, dryer, or dishwasher status and remaining time. Use Tater Vision for visual camera questions.</p></div><span class="badge online">device_control</span></div>
         <div class="home-scope-grid">
           <button type="button" class="home-scope-card ${scope === "exposed" ? "active" : ""}" data-entity-scope="exposed"><span>${this.renderIcon("shield-home-outline")}</span><strong>Exposed to Assist</strong><small>Use the choices already managed in Home Assistant’s Voice Assistants settings.</small><b>${scope === "exposed" ? "Selected" : "Choose"}</b></button>
           <button type="button" class="home-scope-card ${scope === "all" ? "active" : ""}" data-entity-scope="all"><span>${this.renderIcon("home-group")}</span><strong>All HA entities</strong><small>Let Tater read supported sensors and control supported device domains.</small><b>${scope === "all" ? "Selected" : "Choose"}</b></button>
         </div>
         <div class="home-scope-note">${this.renderIcon("shield-check-outline")}<span>The selected scope is checked when Tater builds context, resolves a target, and immediately before every action. Entity names and states in this scope may be sent to the configured language model.</span></div>
       </section>
+      <section class="card home-tool-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Fresh camera vision</span><h2>Tater Vision</h2><p class="muted">Tater Vision is Tater's visual-question tool. Use it whenever the answer requires looking at a person, object, room, or named camera-covered area right now—including 'what is this?', 'how do I look?', 'is the dog in the game room?', 'are there any dogs in the backyard?', and conversational follow-ups such as 'what did you see when you looked?'. If the user names a room or area, it automatically uses the cameras covering that location. If no location is named, use trusted room context supplied by a satellite or other room-aware platform; when no room context exists, ask which room, area, or camera to use.</p></div><span class="badge online">tater_vision</span></div>
+        <div class="home-scope-note">${this.renderIcon("camera-outline")}<span>${Number(vision.camera_count || 0)} camera source${Number(vision.camera_count || 0) === 1 ? "" : "s"} in the selected scope across ${Number(vision.areas || 0)} area${Number(vision.areas || 0) === 1 ? "" : "s"}. Current stills are analyzed ephemerally and raw images are not written to conversation history or the Hydra ledger.</span></div>
+        <div class="entity-preview-list">${cameraExamples.length ? cameraExamples.map((row) => `<div><span>${this.renderIcon(row.source === "native_satellite" ? "access-point" : "camera-outline")}</span><p><strong>${escapeHtml(row.name || "Camera")}</strong><small>${escapeHtml([row.room, row.source === "native_satellite" ? "Tater satellite" : "Home Assistant camera"].filter(Boolean).join(" · "))}</small></p><b>${row.available === false ? "Unavailable" : "Ready"}</b></div>`).join("") : '<p class="muted">Expose a Home Assistant camera to Assist, select all entities, or connect a camera-capable Tater satellite to use current-camera vision.</p>'}</div>
+      </section>
       <section class="card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Available now</span><h2>${Number(summary.entity_count || 0)} entities across ${Number(summary.areas || 0)} areas</h2><p class="muted">${escapeHtml((summary.domains || []).join(" · ") || "No entities are currently available in this scope.")}</p></div></div>
         <div class="entity-preview-list">${examples.length ? examples.map((row) => `<div><span>${this.renderIcon(row.domain === "light" ? "lightbulb-outline" : row.domain === "sensor" ? "gauge" : "devices")}</span><p><strong>${escapeHtml(row.name || row.entity_id)}</strong><small>${escapeHtml([row.area, row.entity_id].filter(Boolean).join(" · "))}</small></p><b>${escapeHtml(row.state || "unknown")}</b></div>`).join("") : '<p class="muted">Expose entities to Assist or select all entities to make device control available.</p>'}</div>
       </section>
-      ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save home control</button>`)}
+      <section class="card"><p class="muted">Mini-Tater includes only these two tools. It does not load web, files, messaging, Cores, Portals, Shop, or downloadable Verbas.</p></section>
+      ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save home tools</button>`)}
     `;
   }
 
@@ -1567,11 +1627,11 @@ class TaterSatellitePanel extends HTMLElement {
         </section>
       ` : `
         <section class="hydra-metrics-grid">
-          ${[["Turns", metrics.turns], ["Completed", metrics.completed], ["Failed", metrics.failed], ["Device calls", metrics.tool_calls], ["Conversations", metrics.conversations]].map(([label, value]) => `<div><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}
+          ${[["Turns", metrics.turns], ["Completed", metrics.completed], ["Failed", metrics.failed], ["Tool calls", metrics.tool_calls], ["Conversations", metrics.conversations]].map(([label, value]) => `<div><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}
         </section>
         <section class="card">
           <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Recent activity</span><h2>Hydra ledger</h2><p class="muted">Inspect the Astraeus plan, review result, Thanatos actions, Hermes response, and timing.</p></div><button type="button" class="danger" data-action="clear-hydra-ledger" ${ledger.length ? "" : "disabled"}>Clear ledger</button></div>
-          <div class="hydra-ledger">${ledger.length ? ledger.map((row) => `<details><summary><span>${escapeHtml(row.outcome || "unknown")}</span><strong>${escapeHtml(row.request || "Voice turn")}</strong><b>${Number(row.total_ms || 0)} ms</b></summary><dl><dt>Response</dt><dd>${escapeHtml(row.response || row.error || "—")}</dd><dt>Device</dt><dd>${escapeHtml(row.device_id || "—")}</dd><dt>Conversation</dt><dd>${escapeHtml(row.conversation_id || "—")}</dd></dl>${row.plan ? `<section><strong>Astraeus plan</strong><span class="badge ${row.plan_review?.approved ? "online" : "update"}">${row.plan_review?.approved ? "Approved" : "Review"}</span><p>${escapeHtml(row.plan_review?.reason || "")}</p><pre>${escapeHtml(JSON.stringify(row.plan, null, 2))}</pre></section>` : ""}${(row.tools || []).map((tool) => `<section><strong>Thanatos · ${escapeHtml(tool.name || "control_home")}</strong><span class="badge ${tool.approved ? "online" : "update"}">${tool.approved ? "Completed" : "Failed"}</span><p>${escapeHtml(tool.review || "")}</p><pre>${escapeHtml(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></section>`).join("")}</details>`).join("") : '<p class="muted">The ledger will appear after the first Tater conversation.</p>'}</div>
+          <div class="hydra-ledger">${ledger.length ? ledger.map((row) => `<details><summary><span>${escapeHtml(row.outcome || "unknown")}</span><strong>${escapeHtml(row.request || "Voice turn")}</strong><b>${Number(row.total_ms || 0)} ms</b></summary><dl><dt>Response</dt><dd>${escapeHtml(row.response || row.error || "—")}</dd><dt>Device</dt><dd>${escapeHtml(row.device_id || "—")}</dd><dt>Conversation</dt><dd>${escapeHtml(row.conversation_id || "—")}</dd></dl>${row.plan ? `<section><strong>Astraeus plan</strong><span class="badge ${row.plan_review?.approved ? "online" : "update"}">${row.plan_review?.approved ? "Approved" : "Review"}</span><p>${escapeHtml(row.plan_review?.reason || "")}</p><pre>${escapeHtml(JSON.stringify(row.plan, null, 2))}</pre></section>` : ""}${(row.tools || []).map((tool) => `<section><strong>Thanatos · ${escapeHtml(tool.name || "device_control")}</strong><span class="badge ${tool.approved ? "online" : "update"}">${tool.approved ? "Completed" : "Failed"}</span><p>${escapeHtml(tool.review || "")}</p><pre>${escapeHtml(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></section>`).join("")}</details>`).join("") : '<p class="muted">The ledger will appear after the first Tater conversation.</p>'}</div>
         </section>
       `}
     `;
@@ -2823,6 +2883,11 @@ class TaterSatellitePanel extends HTMLElement {
       this.markDirty("tater");
       this.render();
     }));
+    root.querySelectorAll("[data-tater-vision-provider]").forEach((button) => button.addEventListener("click", () => {
+      this._taterDraft.vision_provider = button.dataset.taterVisionProvider === "openai_compatible" ? "openai_compatible" : "base";
+      this.markDirty("tater");
+      this.render();
+    }));
     root.querySelectorAll("[data-entity-scope]").forEach((button) => button.addEventListener("click", () => {
       this._taterDraft.entity_scope = button.dataset.entityScope;
       this.markDirty("tater");
@@ -2835,12 +2900,69 @@ class TaterSatellitePanel extends HTMLElement {
         const key = input.dataset.taterSetting;
         this._taterDraft[key] = value;
         this.markDirty("tater");
-        if (key === "hydra_beast_mode_enabled" || /^hydra_llm_(astraeus|thanatos|hermes)_provider$/.test(key)) this.render();
+        if (key === "hydra_beast_mode_enabled" || key === "vision_provider" || /^hydra_llm_(astraeus|thanatos|hermes)_provider$/.test(key)) this.render();
       };
       input.addEventListener(input.tagName === "TEXTAREA" ? "input" : "change", update);
     });
-    root.querySelector("[data-tater-test-message]")?.addEventListener("input", (event) => {
+    const testMessageInput = root.querySelector("[data-tater-test-message]");
+    const testImageInput = root.querySelector("[data-tater-test-image]");
+    testMessageInput?.addEventListener("input", (event) => {
       this._testMessage = event.target.value;
+    });
+    root.querySelector('[data-action="attach-tater-image"]')?.addEventListener("click", () => testImageInput?.click());
+    testImageInput?.addEventListener("change", async () => {
+      const files = [...(testImageInput.files || [])];
+      if (!files.length) return;
+      if (files.length > 4) {
+        this._error = "Attach no more than four images at a time.";
+        this.render();
+        return;
+      }
+      const accepted = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+      if (files.some((file) => !accepted.has(file.type))) {
+        this._error = "Images must be JPEG, PNG, WebP, or GIF files.";
+        this.render();
+        return;
+      }
+      if (files.some((file) => file.size > 5 * 1024 * 1024) || files.reduce((sum, file) => sum + file.size, 0) > 12 * 1024 * 1024) {
+        this._error = "Each image must be 5 MB or smaller, with 12 MB total per message.";
+        this.render();
+        return;
+      }
+      try {
+        this._testImages = await Promise.all(files.map(async (file) => ({
+          name: file.name || "Image",
+          type: file.type,
+          size: file.size,
+          data_url: `data:${file.type};base64,${await fileToBase64(file)}`,
+        })));
+        this._error = "";
+      } catch (error) {
+        this._error = `Could not read the image: ${formatApiError(error)}`;
+      }
+      this.render();
+    });
+    root.querySelectorAll("[data-remove-tater-image]").forEach((button) => button.addEventListener("click", () => {
+      this._testImages.splice(Number(button.dataset.removeTaterImage), 1);
+      this.render();
+    }));
+    const submitTaterTest = () => {
+      if (this._loading) return;
+      const text = String(testMessageInput?.value || "").trim();
+      if (!text && !this._testImages.length) return;
+      return this.run(async () => {
+        const payload = { text, conversation_id: this._testConversationId };
+        if (this._testImages.length) payload.images = this._testImages.map((image) => ({ name: image.name, data_url: image.data_url }));
+        const result = await this.api("POST", "tater/test", payload);
+        this._testConversationId = result.conversation_id || this._testConversationId;
+        this._testMessage = "";
+        this._testImages = [];
+      }, "Tater completed the test turn.");
+    };
+    testMessageInput?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      return submitTaterTest();
     });
     root.querySelector('[data-action="save-tater"]')?.addEventListener("click", () => {
       const settings = clone(this._taterDraft);
@@ -2856,15 +2978,7 @@ class TaterSatellitePanel extends HTMLElement {
       this._taterDraft = clone(this._data.tater_assistant?.settings || {});
       this.render();
     });
-    root.querySelector('[data-action="test-tater"]')?.addEventListener("click", () => {
-      const text = String(root.querySelector("[data-tater-test-message]")?.value || "").trim();
-      if (!text) return;
-      this.run(async () => {
-        const result = await this.api("POST", "tater/test", { text, conversation_id: this._testConversationId });
-        this._testConversationId = result.conversation_id || this._testConversationId;
-        this._testMessage = "";
-      }, "Tater completed the test turn.");
-    });
+    root.querySelector('[data-action="test-tater"]')?.addEventListener("click", submitTaterTest);
     root.querySelector('[data-action="clear-hydra-ledger"]')?.addEventListener("click", () => {
       this.confirmAction("Clear Hydra ledger?", "Remove all stored mini-Tater execution records?", "Clear ledger", () => this.run(
         () => this.api("POST", "tater/hydra/clear", { ledger: true, conversations: false }),

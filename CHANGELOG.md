@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 1.4.9
+
+- Added `tater_vision` as Mini-Tater's second built-in Hydra tool, mirroring the
+  Tater Shop Verba for fresh Home Assistant camera and camera-capable satellite
+  stills, named room/camera and outdoor-area targeting, and asking-room fallback.
+  It uses the existing **Same as Base** or dedicated Vision route and never stores
+  raw camera images. The management chat also accepts bounded image attachments,
+  sends them through image understanding before Hydra planning, and stores only
+  attachment metadata rather than raw image data.
+- Aligned Mini-Tater with Tater's natural-language-first Hydra contract:
+  Astraeus now receives a stable two-tool capability catalog and produces atomic
+  `intent`, `nl`, and `tool_hint` steps; Thanatos calls the selected built-in
+  tool with the locked natural-language query; and the Home Assistant runtime owns
+  action, value, room, alias, capability, and service resolution with bounded
+  model fallback for unclear language or ambiguous device names.
+- Added one bounded Thanatos repair attempt for malformed or broadened native
+  tool calls, plus Tater-style native structured planning with a cached JSON
+  fallback for providers that do not support it, while retaining Home Assistant
+  entity-scope and service checks.
+- Preserved follow-up context without presenting Hermes prose as prior
+  Astraeus output, and added Enter-to-send in the management chat.
+
 ## 1.4.8
 
 - Upgraded Mini-Tater to an Astraeus, Thanatos, and Hermes Hydra flow: requests

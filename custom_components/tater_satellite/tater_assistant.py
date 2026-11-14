@@ -2,13 +2,15 @@
 
 The desktop Tater runtime intentionally is not imported here. This module owns
 the complete satellite turn when Tater mode is selected: STT, a Home Assistant
-specific Astraeus/Thanatos/Hermes loop, device control, TTS, and a bounded
-execution ledger.
+specific Astraeus/Thanatos/Hermes loop, device control, current-camera vision,
+TTS, and a bounded execution ledger.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from collections import deque
 import importlib
 import io
@@ -45,12 +47,18 @@ HYDRA_ROLE_API_KEY_FIELDS = tuple(
 )
 API_KEY_FIELDS = (
     "llm_api_key",
+    "vision_api_key",
     "stt_api_key",
     "tts_api_key",
     *HYDRA_ROLE_API_KEY_FIELDS,
 )
 MAX_PROVIDER_AUDIO_BYTES = 32 * 1024 * 1024
 MAX_STORED_SPEECH_CLIPS = 20
+MAX_VISION_IMAGES = 4
+MAX_VISION_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_VISION_TOTAL_BYTES = 12 * 1024 * 1024
+MAX_TATER_VISION_CAMERAS = 6
+VISION_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 VAD_PRE_ROLL_SECONDS = 0.4
 VAD_SPEECH_START_SECONDS = 0.06
 VAD_NO_SPEECH_SECONDS = 3.5
@@ -67,6 +75,10 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "llm_api_key": "",
     "llm_model": "",
     "llm_temperature": 0.2,
+    "vision_provider": "base",
+    "vision_base_url": "",
+    "vision_api_key": "",
+    "vision_model": "",
     "stt_provider": "openai",
     "stt_base_url": "https://api.openai.com/v1",
     "stt_api_key": "",
@@ -116,6 +128,8 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
 _STRING_LIMITS = {
     "llm_base_url": 500,
     "llm_model": 160,
+    "vision_base_url": 500,
+    "vision_model": 160,
     "stt_base_url": 500,
     "stt_model": 160,
     "stt_language": 32,
@@ -164,6 +178,21 @@ _READABLE_DOMAINS = _CONTROLLABLE_DOMAINS | {
     "person",
     "device_tracker",
 }
+
+DEVICE_CONTROL_VERBA_DESCRIPTION = (
+    "Use for any request to control or check smart-home devices across integrations, "
+    "including lights, switches, plugs, fans, covers, garage doors, locks, thermostats, "
+    "media players, remotes, scenes, scripts, and appliance readings such as washer, dryer, "
+    "or dishwasher status and remaining time. Use Tater Vision for visual camera questions."
+)
+TATER_VISION_VERBA_DESCRIPTION = (
+    "Tater Vision is Tater's visual-question tool. Use it whenever the answer requires looking at a person, "
+    "object, room, or named camera-covered area right now—including 'what is this?', 'how do I look?', "
+    "'is the dog in the game room?', 'are there any dogs in the backyard?', and conversational follow-ups such "
+    "as 'what did you see when you looked?'. If the user names a room or area, it automatically uses the cameras "
+    "covering that location. If no location is named, use trusted room context supplied by a satellite or other "
+    "room-aware platform; when no room context exists, ask which room, area, or camera to use."
+)
 
 _COMMANDS: dict[str, tuple[str | None, str, dict[str, str]]] = {
     "turn_on": (None, "turn_on", {}),
@@ -318,6 +347,25 @@ _DEVICE_CATEGORY_DOMAINS: dict[str, set[str]] = {
     "button": {"button"},
 }
 
+_COLOR_NAMES = {
+    "red",
+    "orange",
+    "amber",
+    "yellow",
+    "green",
+    "blue",
+    "cyan",
+    "teal",
+    "purple",
+    "violet",
+    "magenta",
+    "pink",
+    "white",
+    "daylight",
+    "warm white",
+    "cool white",
+}
+
 _MEDIA_PLAYER_COMMAND_FEATURES = {
     "turn_on": 128,
     "turn_off": 256,
@@ -332,29 +380,77 @@ _MEDIA_PLAYER_COMMAND_FEATURES = {
 _CONTROL_TARGET_IGNORED_WORDS = {
     "a",
     "all",
+    "back",
+    "base",
+    "brighten",
     "at",
     "can",
+    "check",
+    "clean",
+    "close",
+    "color",
+    "colour",
     "could",
     "deactivate",
+    "dim",
     "disable",
+    "dock",
     "enable",
     "everything",
+    "how",
     "for",
     "in",
     "inside",
+    "is",
+    "are",
+    "list",
+    "lock",
+    "lower",
+    "make",
+    "me",
+    "mute",
+    "next",
+    "mode",
     "my",
+    "now",
+    "open",
     "of",
     "off",
     "on",
     "please",
+    "play",
+    "press",
+    "previous",
     "power",
+    "raise",
+    "resume",
+    "return",
+    "run",
+    "s",
+    "send",
     "set",
+    "show",
+    "skip",
     "shut",
+    "speed",
+    "state",
+    "status",
+    "start",
+    "stop",
     "switch",
+    "temperature",
+    "tell",
+    "temp",
     "the",
     "to",
     "toggle",
     "turn",
+    "unlock",
+    "unmute",
+    "push",
+    "volume",
+    "what",
+    "whether",
     "with",
     "would",
     "you",
@@ -459,6 +555,11 @@ def normalize_tater_settings(
     out["tts_provider"] = (
         "wyoming" if _text(source.get("tts_provider")).lower() == "wyoming" else "openai"
     )
+    out["vision_provider"] = (
+        "openai_compatible"
+        if _text(source.get("vision_provider")).lower() == "openai_compatible"
+        else "base"
+    )
     for key, maximum in _STRING_LIMITS.items():
         out[key] = _text(source.get(key), maximum)
     if out["stt_provider"] == "wyoming" and "stt_wyoming_model" not in provided:
@@ -473,6 +574,10 @@ def normalize_tater_settings(
         out[key] = _text(source.get(key), 1000)
     out["llm_base_url"] = _normal_base_url(
         source.get("llm_base_url"), DEFAULT_TATER_SETTINGS["llm_base_url"]
+    )
+    vision_base_url = _text(source.get("vision_base_url"), 500)
+    out["vision_base_url"] = (
+        _normal_base_url(vision_base_url, "") if vision_base_url else ""
     )
     out["stt_base_url"] = _normal_base_url(
         source.get("stt_base_url"), DEFAULT_TATER_SETTINGS["stt_base_url"]
@@ -524,6 +629,51 @@ def public_tater_settings(value: Any) -> dict[str, Any]:
     for key in API_KEY_FIELDS:
         public[f"{key}_set"] = bool(settings.get(key))
     return public
+
+
+def normalize_vision_images(value: Any) -> list[dict[str, Any]]:
+    """Validate bounded image data URLs received from the management chat."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("Vision images must be a list")
+    if len(value) > MAX_VISION_IMAGES:
+        raise ValueError(f"Attach no more than {MAX_VISION_IMAGES} images")
+    images: list[dict[str, Any]] = []
+    total_bytes = 0
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("Each vision image must be an object")
+        data_url = _text(item.get("data_url"), MAX_VISION_IMAGE_BYTES * 2)
+        match = re.fullmatch(
+            r"data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)",
+            data_url,
+        )
+        if not match:
+            raise ValueError("Vision images must be base64 image data URLs")
+        mime_type = match.group(1).lower()
+        if mime_type not in VISION_IMAGE_TYPES:
+            raise ValueError("Vision images must be JPEG, PNG, WebP, or GIF files")
+        try:
+            raw = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError) as err:
+            raise ValueError("Vision image data is not valid base64") from err
+        if not raw:
+            raise ValueError("Vision images cannot be empty")
+        if len(raw) > MAX_VISION_IMAGE_BYTES:
+            raise ValueError("Each vision image must be 5 MB or smaller")
+        total_bytes += len(raw)
+        if total_bytes > MAX_VISION_TOTAL_BYTES:
+            raise ValueError("Vision attachments must total 12 MB or less")
+        images.append(
+            {
+                "data_url": data_url,
+                "name": _text(item.get("name"), 160) or f"image-{index}",
+                "mime_type": mime_type,
+                "size_bytes": len(raw),
+            }
+        )
+    return images
 
 
 def pcm_to_wav(pcm: bytes, audio_format: dict[str, Any] | None = None) -> bytes:
@@ -677,7 +827,12 @@ def _requested_device_domains(value: Any) -> set[str]:
 
 def _clean_control_target(value: Any) -> str:
     """Remove device categories and action words like the Shop device Verba."""
-    text = _normalize_name(value)
+    raw = _text(value).lower()
+    raw = re.sub(r"https?://\S+", " ", raw)
+    raw = re.sub(r"\brgb\s*\([^)]*\)", " ", raw, flags=re.I)
+    raw = re.sub(r"#[0-9a-fA-F]{3,6}\b", " ", raw)
+    raw = re.sub(r"\d{1,3}(?:\.\d+)?\s*(?:%|percent|degrees?|deg|f|c)?", " ", raw)
+    text = _normalize_name(raw)
     category_terms = {
         term
         for terms in _DEVICE_CATEGORY_QUERY_TERMS.values()
@@ -721,9 +876,10 @@ class HomeEntity:
 class HomeControlTool:
     """One bounded Hydra tool for Home Assistant entities and services."""
 
-    def __init__(self, hass: HomeAssistant, settings_getter) -> None:
+    def __init__(self, hass: HomeAssistant, settings_getter, llm_json=None) -> None:
         self.hass = hass
         self._settings_getter = settings_getter
+        self._llm_json = llm_json
 
     def _allowed(self, entity_id: str) -> bool:
         settings = self._settings_getter()
@@ -789,9 +945,246 @@ class HomeControlTool:
         ]
         if len(rows) > limit:
             lines.append(
-                f"- …and {len(rows) - limit} more. Use control_home search before acting on an unseen target."
+                f"- …and {len(rows) - limit} more. device_control resolves targets against the complete allowed inventory."
             )
         return "\n".join(lines) or "- No entities are available in the selected scope."
+
+    @staticmethod
+    def _percent_from_text(value: Any) -> int | None:
+        raw = _text(value).lower()
+        for pattern in (
+            r"\b(\d{1,3})\s*(?:%|percent)\b",
+            r"\b(?:to|at|level|position|volume|brightness|speed)\s+(\d{1,3})\b",
+        ):
+            match = re.search(pattern, raw)
+            if match:
+                return max(0, min(100, int(match.group(1))))
+        return None
+
+    @staticmethod
+    def _temperature_from_text(value: Any) -> float | None:
+        match = re.search(
+            r"\b(\d{2,3}(?:\.\d+)?)\s*(?:degrees?|deg|°|f|c)?\b",
+            _text(value).lower(),
+        )
+        return float(match.group(1)) if match else None
+
+    @staticmethod
+    def _rgb_from_text(value: Any) -> list[int] | None:
+        raw = _text(value)
+        rgb = re.search(
+            r"\brgb\s*(?:\(\s*|[:=]?\s*)(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*\)?",
+            raw,
+            flags=re.I,
+        )
+        if rgb:
+            return [max(0, min(255, int(rgb.group(index)))) for index in (1, 2, 3)]
+        hex_color = re.search(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b", raw)
+        if not hex_color:
+            return None
+        token = hex_color.group(1)
+        if len(token) == 3:
+            token = "".join(character * 2 for character in token)
+        return [int(token[0:2], 16), int(token[2:4], 16), int(token[4:6], 16)]
+
+    @staticmethod
+    def _color_name_from_text(value: Any) -> str:
+        raw = _text(value).lower()
+        for color in sorted(_COLOR_NAMES, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(color)}\b", raw):
+                return color
+        return ""
+
+    @staticmethod
+    def _hvac_mode_from_text(value: Any) -> str:
+        raw = f" {_text(value).lower()} "
+        for mode in ("heat_cool", "auto", "cool", "heat", "off", "dry", "fan_only"):
+            if f" {mode} " in raw or f" {mode.replace('_', ' ')} " in raw:
+                return mode
+        return ""
+
+    @classmethod
+    def _natural_arguments(cls, query: str) -> dict[str, Any]:
+        """Interpret the same natural-language-first contract as Device Control."""
+        raw = _text(query, 2000)
+        compact = re.sub(r"\s+", " ", f" {raw.lower()} ")
+        requested_categories = _requested_device_domains(raw)
+        percent = cls._percent_from_text(raw)
+        rgb_color = cls._rgb_from_text(raw)
+        color_name = cls._color_name_from_text(raw)
+        temperature = cls._temperature_from_text(raw)
+        hvac_mode = cls._hvac_mode_from_text(raw)
+        command = ""
+        parameters: dict[str, Any] = {}
+
+        if percent is not None and requested_categories == {"light"}:
+            command = "set_brightness"
+            parameters["brightness_pct"] = percent
+        elif percent is not None and requested_categories == {"fan"}:
+            command = "set_fan_percentage"
+            parameters["percentage"] = percent
+        elif percent is not None and requested_categories == {"cover"}:
+            command = "set_cover_position"
+            parameters["position"] = percent
+        elif percent is not None and requested_categories == {"media_player"}:
+            command = "set_volume"
+            parameters["volume_level"] = round(percent / 100.0, 3)
+        elif requested_categories == {"light"} and (rgb_color or color_name):
+            command = "set_color"
+            if rgb_color:
+                parameters["rgb_color"] = rgb_color
+            elif color_name:
+                parameters["color_name"] = color_name
+        elif requested_categories == {"climate"} and temperature is not None:
+            command = "set_temperature"
+            parameters["temperature"] = temperature
+            if hvac_mode:
+                parameters["hvac_mode"] = hvac_mode
+        elif requested_categories == {"climate"} and hvac_mode:
+            command = "set_hvac_mode"
+            parameters["hvac_mode"] = hvac_mode
+        elif re.search(r"\b(unlock|open lock)\b", compact):
+            command = "unlock"
+        elif re.search(r"\block\b", compact):
+            command = "lock"
+        elif "scene" in _requested_device_domains(raw) and re.search(r"\b(activate|run|start|turn on)\b", compact):
+            command = "activate"
+        elif "script" in _requested_device_domains(raw) and re.search(r"\b(run|start|execute|turn on)\b", compact):
+            command = "activate"
+        elif "button" in _requested_device_domains(raw) and re.search(r"\b(press|push|run)\b", compact):
+            command = "press"
+        elif "vacuum" in _requested_device_domains(raw) and re.search(r"\b(return|dock|base|home)\b", compact):
+            command = "return_to_base"
+        elif "vacuum" in _requested_device_domains(raw) and re.search(r"\b(start|clean|run)\b", compact):
+            command = "start_vacuum"
+        elif re.search(r"\b(turn|switch|power|set)\s+(?:[\w -]+?\s+)?on\b|\benable\b", compact):
+            command = "turn_on"
+        elif re.search(r"\b(turn|switch|power|shut|set)\s+(?:[\w -]+?\s+)?off\b|\b(disable|deactivate)\b", compact):
+            command = "turn_off"
+        elif re.search(r"\b(toggle|flip)\b", compact):
+            command = "toggle"
+        elif requested_categories == {"cover"} and re.search(r"\b(open|raise|up)\b", compact):
+            command = "open_cover"
+        elif requested_categories == {"cover"} and re.search(r"\b(close|shut|lower|down)\b", compact):
+            command = "close_cover"
+        elif requested_categories == {"cover"} and re.search(r"\b(stop|halt)\b", compact):
+            command = "stop_cover"
+        elif requested_categories == {"media_player"} and re.search(r"\b(next|skip)\b", compact):
+            command = "media_next"
+        elif requested_categories == {"media_player"} and re.search(r"\b(previous|back)\b", compact):
+            command = "media_previous"
+        elif requested_categories == {"media_player"} and re.search(r"\bpause\b", compact):
+            command = "media_pause"
+        elif requested_categories == {"media_player"} and re.search(r"\bstop\b", compact):
+            command = "media_stop"
+        elif requested_categories == {"media_player"} and re.search(r"\b(play|resume)\b", compact):
+            command = "media_play"
+
+        list_request = bool(
+            re.search(r"\b(list|inventory)\b", compact)
+            or re.search(r"\bshow\b.*\b(all|available|devices?|rooms?)\b", compact)
+        )
+        status_request = bool(
+            not command
+            and (
+                re.search(r"\b(status|state|check|is|are|what|whether|how|show me)\b", compact)
+                or "?" in raw
+            )
+        )
+        operation = "search" if list_request else "get_state" if status_request else "control"
+
+        target_source = raw
+        if command == "set_color":
+            for color in sorted(_COLOR_NAMES, key=len, reverse=True):
+                target_source = re.sub(rf"\b{re.escape(color)}\b", " ", target_source, flags=re.I)
+        if command == "set_hvac_mode":
+            for mode in ("heat cool", "fan only", "auto", "cool", "heat", "off", "dry"):
+                target_source = re.sub(rf"\b{re.escape(mode)}\b", " ", target_source, flags=re.I)
+        target = _clean_control_target(target_source)
+        explicit_global = bool(re.search(r"\b(all|every|everything)\b", compact))
+        result: dict[str, Any] = {"operation": operation}
+        if target:
+            result["query"] = target
+        elif explicit_global or operation in {"search", "get_state"}:
+            result["query"] = "all"
+        if command:
+            result["command"] = command
+        if parameters:
+            result["parameters"] = parameters
+        return result
+
+    async def _complete_natural_arguments(
+        self, query: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Use the Thanatos model only when deterministic Verba-style parsing is incomplete."""
+        if not callable(self._llm_json):
+            return arguments
+        operation = _text(arguments.get("operation")).lower()
+        if operation != "control" or (
+            _text(arguments.get("command")) and _text(arguments.get("query"))
+        ):
+            return arguments
+        prompt = (
+            "Interpret one natural-language Home Assistant device request. Return JSON only with keys "
+            "operation, command, target, and parameters. operation must be search, get_state, or control. "
+            f"command must be one of {', '.join(sorted(_COMMANDS))}, or an empty string. "
+            "target is only the named room or device without action words. Never invent a target, command, "
+            "or value. parameters may contain only brightness_pct, temperature, position, percentage, "
+            "color_name, rgb_color, hvac_mode, or volume_level."
+        )
+        try:
+            value = await self._llm_json(prompt, {"query": query})
+        except Exception:
+            _LOGGER.debug("Mini-Tater device interpretation fallback failed", exc_info=True)
+            return arguments
+        if not isinstance(value, dict):
+            return arguments
+        completed = dict(arguments)
+        deterministic_command = _text(completed.get("command"))
+        proposed_operation = _text(value.get("operation")).lower()
+        if proposed_operation in {"search", "get_state", "control"}:
+            completed["operation"] = proposed_operation
+        proposed_command = _text(value.get("command")).lower()
+        if not completed.get("command") and proposed_command in _COMMANDS:
+            completed["command"] = proposed_command
+        target = _clean_control_target(value.get("target"))
+        if target and (
+            not _text(completed.get("query")) or not deterministic_command
+        ):
+            completed["query"] = target
+        if not completed.get("parameters") and isinstance(value.get("parameters"), dict):
+            completed["parameters"] = _json_safe(value["parameters"])
+        return completed
+
+    async def _choose_ambiguous_row(
+        self,
+        *,
+        query: str,
+        target: str,
+        rows: list[HomeEntity],
+    ) -> HomeEntity | None:
+        """Match the Device Control Verba's bounded LLM chooser for ambiguous names."""
+        if not callable(self._llm_json) or not rows:
+            return None
+        candidates = [
+            {**row.public(), "aliases": list(row.aliases)} for row in rows[:80]
+        ]
+        prompt = (
+            "Choose the best Home Assistant entity for this device request. Return JSON only as "
+            "{\"entity_id\":\"an exact id from candidates or empty\"}. Use names, aliases, rooms, "
+            "domains, states, and the requested action. Pick exactly one only when the request clearly "
+            "identifies it. Return an empty id when ambiguous and never invent an id."
+        )
+        try:
+            value = await self._llm_json(
+                prompt,
+                {"query": query, "target": target, "candidates": candidates},
+            )
+        except Exception:
+            _LOGGER.debug("Mini-Tater device chooser failed", exc_info=True)
+            return None
+        entity_id = _text(value.get("entity_id")) if isinstance(value, dict) else ""
+        return next((row for row in rows if row.entity_id == entity_id), None)
 
     def _matches(self, row: HomeEntity, query: str) -> bool:
         wanted = _clean_control_target(query) or _normalize_name(query)
@@ -936,8 +1329,63 @@ class HomeControlTool:
         *,
         request: str = "",
     ) -> dict[str, Any]:
+        natural_query = _text(arguments.get("query"), 2000)
+        natural_contract = bool(natural_query and not _text(arguments.get("operation")))
+        if natural_contract:
+            request = natural_query
+            arguments = self._natural_arguments(natural_query)
+            arguments = await self._complete_natural_arguments(
+                natural_query, arguments
+            )
         operation = _text(arguments.get("operation")).lower() or "get_state"
+        if operation == "control" and not _text(arguments.get("query")) and not arguments.get("entity_ids"):
+            return {
+                "ok": False,
+                "error": "The device request needs a room or device name.",
+                "needs": ["Which room or device should I use?"],
+            }
         rows = self.resolve(arguments, request=request)
+        if natural_contract and operation == "control" and len(rows) > 1:
+            target = _clean_control_target(arguments.get("query"))
+            if target and target != "all":
+                exact = [
+                    row
+                    for row in rows
+                    if target == _clean_control_target(row.name)
+                    or any(
+                        target == _clean_control_target(alias)
+                        for alias in row.aliases
+                    )
+                ]
+                room = [
+                    row
+                    for row in rows
+                    if target == _clean_control_target(row.area)
+                ]
+                if len(exact) == 1:
+                    rows = exact
+                elif room:
+                    rows = room
+                else:
+                    candidates = exact or rows
+                    selected = await self._choose_ambiguous_row(
+                        query=natural_query,
+                        target=target,
+                        rows=candidates,
+                    )
+                    if selected is None:
+                        choices = ", ".join(
+                            f"{row.name}{f' in {row.area}' if row.area else ''}"
+                            for row in candidates[:10]
+                        )
+                        return {
+                            "ok": False,
+                            "error": f"The target '{target}' matched more than one device.",
+                            "needs": [
+                                f"Choose a room or specific device: {choices}"
+                            ],
+                        }
+                    rows = [selected]
         if operation == "search":
             return {"ok": True, "matches": [row.public() for row in rows[:40]], "count": len(rows)}
         if not rows:
@@ -1062,36 +1510,537 @@ class HomeControlTool:
         return {
             "type": "function",
             "function": {
-                "name": "control_home",
-                "description": (
-                    "Search, read, or control Home Assistant devices and entities. "
-                    "This is the only action tool. Search first if a target is ambiguous."
-                ),
+                "name": "device_control",
+                "description": DEVICE_CONTROL_VERBA_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["search", "get_state", "control"]},
                         "query": {
                             "type": "string",
                             "description": (
-                                "Requested room or device phrase, including category words such as lights, "
-                                "fans, switches, or speakers; use 'all' only for an explicit global request."
+                                "One complete natural-language device instruction, such as "
+                                "'turn off the office lights' or 'is the bedroom fan on'."
                             ),
                         },
-                        "entity_ids": {"type": "array", "items": {"type": "string"}},
-                        "area": {"type": "string"},
-                        "domain": {"type": "string"},
-                        "command": {"type": "string", "enum": sorted(_COMMANDS)},
-                        "parameters": {
-                            "type": "object",
-                            "description": "Command values such as brightness_pct, temperature, position, percentage, color_name, rgb_color, hvac_mode, or volume_level.",
-                            "additionalProperties": True,
-                        },
                     },
-                    "required": ["operation"],
+                    "required": ["query"],
                     "additionalProperties": False,
                 },
             },
+        }
+
+
+class TaterVisionTool:
+    """Fresh, ephemeral visual questions through Home Assistant cameras."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        manager: TaterSatelliteManager,
+        allowed,
+        describe_images,
+    ) -> None:
+        self.hass = hass
+        self.manager = manager
+        self._allowed = allowed
+        self._describe_images = describe_images
+
+    @staticmethod
+    def definition() -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "tater_vision",
+                "description": TATER_VISION_VERBA_DESCRIPTION,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The user's complete visual question, unchanged.",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    @staticmethod
+    def _normalized_words(value: Any) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", _text(value).casefold()))
+
+    @staticmethod
+    def _compact_words(value: Any) -> str:
+        return "".join(re.findall(r"[a-z0-9]+", _text(value).casefold()))
+
+    @classmethod
+    def _query_mentions(cls, query: str, label: Any) -> bool:
+        normalized_label = cls._normalized_words(label)
+        if len(normalized_label) < 3 or normalized_label in {
+            "camera",
+            "show",
+            "echo show",
+            "room",
+            "outside",
+            "inside",
+            "current room",
+            "this room",
+        }:
+            return False
+        normalized_query = cls._normalized_words(query)
+        if re.search(
+            rf"(?:^| ){re.escape(normalized_label)}(?: |$)", normalized_query
+        ):
+            return True
+        compact_label = cls._compact_words(normalized_label)
+        return len(compact_label) >= 5 and compact_label in cls._compact_words(
+            normalized_query
+        )
+
+    @classmethod
+    def _semantic_outdoor_area(cls, query: str) -> tuple[str, str] | None:
+        normalized = cls._normalized_words(query)
+        if re.search(
+            r"(?:^| )(?:out front|front yard|front lawn|front of (?:the )?(?:house|home)|front exterior)(?: |$)",
+            normalized,
+        ):
+            return "front", "Front"
+        if re.search(
+            r"(?:^| )(?:out back|back yard|backyard|rear yard|back lawn|back of (?:the )?(?:house|home)|rear exterior)(?: |$)",
+            normalized,
+        ):
+            return "back", "Back"
+        mentions_outside = bool(
+            re.search(r"(?:^| )(?:outside|outdoors|exterior)(?: |$)", normalized)
+            or re.search(
+                r"(?:^| )around (?:the )?(?:house|home)(?: |$)", normalized
+            )
+        )
+        appearance_question = bool(
+            re.search(
+                r"(?:^| )(?:wear|wearing|wore|outfit|clothes|clothing|dressed|dress|jacket|coat)(?: |$)",
+                normalized,
+            )
+        )
+        outdoor_view_request = bool(
+            re.search(
+                r"(?:^| )(?:look|see|show|check|view|inspect|watch)(?: (?:at|around|through))? (?:the )?outside(?: |$)",
+                normalized,
+            )
+            or re.search(
+                r"(?:^| )(?:weather|conditions|happening|going on) (?:out|outside)(?: |$)",
+                normalized,
+            )
+            or re.search(
+                r"(?:^| )(?:what|who|anything|anyone|someone|animal|animals|dog|dogs|cat|cats) .* outside(?: |$)",
+                normalized,
+            )
+        )
+        if mentions_outside and (outdoor_view_request or not appearance_question):
+            return "outside", "Outside"
+        if re.search(r"(?:^| )(?:the )?(?:yard|lawn)(?: |$)", normalized):
+            return "yard", "Yard"
+        return None
+
+    @classmethod
+    def _matches_semantic_area(cls, camera: dict[str, Any], area: str) -> bool:
+        words = cls._normalized_words(
+            " ".join(
+                _text(value)
+                for value in (
+                    camera.get("room"),
+                    camera.get("name"),
+                    *(camera.get("aliases") or []),
+                )
+                if _text(value)
+            )
+        )
+        tokens = set(words.split())
+        front = {"front", "doorbell", "entry", "entrance", "driveway", "garage"}
+        back = {"back", "rear", "backyard", "patio", "deck"}
+        outside = front | back | {
+            "yard",
+            "lawn",
+            "porch",
+            "outside",
+            "outdoor",
+            "exterior",
+            "gate",
+            "side",
+        }
+        if area == "front":
+            return bool(tokens & front) and not bool(tokens & {"back", "rear"})
+        if area == "back":
+            return bool(tokens & back) and "front" not in tokens
+        if area == "yard":
+            return bool(tokens & {"yard", "backyard", "lawn"})
+        return area == "outside" and bool(tokens & outside)
+
+    def cameras(self) -> list[dict[str, Any]]:
+        """Return allowed HA cameras plus connected satellite cameras."""
+        from homeassistant.helpers import area_registry as ar
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+
+        area_registry = ar.async_get(self.hass)
+        device_registry = dr.async_get(self.hass)
+        entity_registry = er.async_get(self.hass)
+        rows: list[dict[str, Any]] = []
+        for state in self.hass.states.async_all("camera"):
+            entity_id = _text(getattr(state, "entity_id", ""))
+            if not entity_id or not self._allowed(entity_id):
+                continue
+            entry = entity_registry.async_get(entity_id)
+            area_id = _text(getattr(entry, "area_id", "")) if entry else ""
+            if entry and not area_id and getattr(entry, "device_id", None):
+                device = device_registry.async_get(entry.device_id)
+                area_id = _text(getattr(device, "area_id", "")) if device else ""
+            area = area_registry.async_get_area(area_id) if area_id else None
+            attributes = dict(getattr(state, "attributes", {}) or {})
+            rows.append(
+                {
+                    "source": "home_assistant",
+                    "entity_id": entity_id,
+                    "name": _text(attributes.get("friendly_name"))
+                    or _text(getattr(state, "name", ""))
+                    or entity_id,
+                    "room": _text(getattr(area, "name", "")),
+                    "aliases": [
+                        _text(alias)
+                        for alias in (getattr(entry, "aliases", ()) or ())
+                        if _text(alias)
+                    ],
+                    "available": _text(getattr(state, "state", "")).lower()
+                    not in {"unavailable", "unknown"},
+                }
+            )
+        for runtime in getattr(self.manager, "runtimes", {}).values():
+            if not runtime.connected or not bool(
+                runtime.capabilities.get("camera_snapshot")
+            ):
+                continue
+            rows.append(
+                {
+                    "source": "native_satellite",
+                    "device_id": runtime.device_id,
+                    "name": runtime.name,
+                    "room": runtime.room,
+                    "aliases": [],
+                    "available": True,
+                    "runtime": runtime,
+                }
+            )
+        return sorted(
+            rows,
+            key=lambda row: (
+                _text(row.get("room")).casefold(),
+                _text(row.get("name")).casefold(),
+            ),
+        )
+
+    def summary(self) -> dict[str, Any]:
+        cameras = self.cameras()
+        return {
+            "camera_count": len(cameras),
+            "areas": len({_text(row.get("room")) for row in cameras if row.get("room")}),
+            "examples": [
+                {
+                    "name": row.get("name"),
+                    "room": row.get("room"),
+                    "source": row.get("source"),
+                    "available": row.get("available", True),
+                }
+                for row in cameras[:8]
+            ],
+        }
+
+    @classmethod
+    def _select_cameras(
+        cls,
+        cameras: list[dict[str, Any]],
+        query: str,
+        origin_room: str,
+        device_id: str,
+    ) -> tuple[list[dict[str, Any]], str, str]:
+        known_rooms = sorted(
+            {_text(row.get("room")) for row in cameras if row.get("room")},
+            key=lambda value: (-len(cls._compact_words(value)), value.casefold()),
+        )
+        mentioned_rooms = [room for room in known_rooms if cls._query_mentions(query, room)]
+        if mentioned_rooms:
+            longest = max(len(cls._compact_words(room)) for room in mentioned_rooms)
+            normalized = {
+                cls._normalized_words(room)
+                for room in mentioned_rooms
+                if len(cls._compact_words(room)) == longest
+            }
+            selected = [
+                row
+                for row in cameras
+                if cls._normalized_words(row.get("room")) in normalized
+            ]
+            return selected[:MAX_TATER_VISION_CAMERAS], "named_area", mentioned_rooms[0]
+
+        named = [
+            row
+            for row in cameras
+            if any(
+                cls._query_mentions(query, alias)
+                for alias in [row.get("name"), *(row.get("aliases") or [])]
+            )
+        ]
+        if named:
+            best = max(
+                max(
+                    (
+                        len(cls._compact_words(alias))
+                        for alias in [row.get("name"), *(row.get("aliases") or [])]
+                    ),
+                    default=0,
+                )
+                for row in named
+            )
+            selected = [
+                row
+                for row in named
+                if max(
+                    (
+                        len(cls._compact_words(alias))
+                        for alias in [row.get("name"), *(row.get("aliases") or [])]
+                    ),
+                    default=0,
+                )
+                == best
+            ]
+            return (
+                selected[:MAX_TATER_VISION_CAMERAS],
+                "named_camera",
+                _text(selected[0].get("room")),
+            )
+
+        semantic = cls._semantic_outdoor_area(query)
+        if semantic:
+            area, label = semantic
+            selected = [row for row in cameras if cls._matches_semantic_area(row, area)]
+            return selected[:MAX_TATER_VISION_CAMERAS], "semantic_area", label
+
+        normalized_origin = cls._normalized_words(origin_room)
+        if not normalized_origin:
+            return [], "origin_room_unknown", ""
+        selected = [
+            row
+            for row in cameras
+            if cls._normalized_words(row.get("room")) == normalized_origin
+        ]
+        selected.sort(
+            key=lambda row: (
+                0 if _text(row.get("device_id")) == device_id else 1,
+                0 if row.get("source") == "native_satellite" else 1,
+                _text(row.get("name")).casefold(),
+            )
+        )
+        return selected[:MAX_TATER_VISION_CAMERAS], "asking_room", origin_room
+
+    @staticmethod
+    def _decode_snapshot(result: Any) -> tuple[bytes | None, str]:
+        payload = (
+            result.get("result")
+            if isinstance(result, dict) and isinstance(result.get("result"), dict)
+            else result
+        )
+        mime_type = "image/jpeg"
+        if isinstance(payload, dict):
+            candidate_type = _text(
+                payload.get("content_type")
+                or payload.get("mimetype")
+                or payload.get("mime")
+                or payload.get("media_content_type")
+            ).lower()
+            if candidate_type.startswith("image/"):
+                mime_type = candidate_type.split(";", 1)[0]
+            values = [
+                payload.get(key)
+                for key in (
+                    "image_base64",
+                    "bytes",
+                    "data",
+                    "content",
+                    "image_bytes",
+                    "image_data",
+                )
+            ]
+        else:
+            values = [payload]
+        for value in values:
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                image = bytes(value)
+            elif isinstance(value, str):
+                encoded = (
+                    value.split(",", 1)[1]
+                    if value.startswith("data:") and "," in value
+                    else value
+                )
+                try:
+                    image = base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error):
+                    continue
+            else:
+                continue
+            if 0 < len(image) <= MAX_VISION_IMAGE_BYTES:
+                return image, mime_type
+        return None, mime_type
+
+    async def _snapshot(self, camera: dict[str, Any]) -> tuple[bytes, str]:
+        if camera.get("source") == "native_satellite":
+            result = await camera["runtime"].async_request(
+                "camera.snapshot",
+                {"reason": "explicit_tater_vision_request"},
+                timeout=11.0,
+            )
+            image, mime_type = self._decode_snapshot(result)
+            if not image:
+                raise RuntimeError("The satellite returned no usable image")
+            return image, mime_type
+        from homeassistant.components.camera import async_get_image
+
+        image = await async_get_image(
+            self.hass, camera["entity_id"], timeout=10, width=1280
+        )
+        content = bytes(image.content)
+        mime_type = _text(image.content_type).split(";", 1)[0].lower()
+        if not content or len(content) > MAX_VISION_IMAGE_BYTES:
+            raise RuntimeError("The camera returned an empty or oversized image")
+        if mime_type not in VISION_IMAGE_TYPES:
+            raise RuntimeError(f"The camera returned unsupported {mime_type or 'image'} data")
+        return content, mime_type
+
+    @staticmethod
+    def _vision_prompt(query: str, name: str, room: str, camera_count: int) -> str:
+        multi_view = (
+            " This is one of several views; report only the evidence visible here so Hermes can combine them."
+            if camera_count > 1
+            else ""
+        )
+        return (
+            f"This is a current still image from {name or 'a camera'}"
+            f"{f' in {room}' if room else ''}. Answer this exact visual request directly: {query}."
+            f"{multi_view} For appearance questions, give a warm, honest, practical opinion based only on what is visible. "
+            "For objects or activity, report only what the image supports. Do not identify people or infer sensitive "
+            "traits. If the subject is not visible or framing is poor, say so clearly. Keep the response concise."
+        )
+
+    async def async_call(
+        self,
+        arguments: dict[str, Any],
+        context: Context | None,
+        *,
+        request: str = "",
+        device_id: str = "",
+    ) -> dict[str, Any]:
+        del context
+        query = _text(arguments.get("query") or request, 2000)
+        if not query:
+            return {
+                "ok": False,
+                "error": "Please provide the visual question for Tater Vision.",
+                "needs": ["Ask what Tater should look at or comment on."],
+                "say_hint": "Ask what the user wants Tater to look at.",
+            }
+        cameras = self.cameras()
+        origin_runtime = getattr(self.manager, "runtimes", {}).get(device_id)
+        origin_room = _text(getattr(origin_runtime, "room", ""))
+        selected, reason, target_room = self._select_cameras(
+            cameras, query, origin_room, device_id
+        )
+        if not selected and reason == "origin_room_unknown":
+            return {
+                "ok": False,
+                "error": (
+                    "The asking satellite needs a room assignment before Tater can choose a nearby camera."
+                    if device_id and device_id != "management-panel"
+                    else "Tater Vision needs a room, area, or camera name for this request."
+                ),
+                "needs": [
+                    "Assign the asking satellite to a room."
+                    if device_id and device_id != "management-panel"
+                    else "Name the room, area, or camera Tater should use."
+                ],
+                "say_hint": "Ask which room, area, or camera Tater should look through.",
+            }
+        if not selected:
+            return {
+                "ok": False,
+                "error": f"No available camera was found for {target_room or 'that location'}.",
+                "needs": ["Make a camera available in that Home Assistant area or choose another camera."],
+                "say_hint": "Explain that Tater cannot see that location because no camera is available there.",
+            }
+
+        descriptions: list[dict[str, Any]] = []
+        failures: list[dict[str, str]] = []
+        snapshot_bytes = 0
+        for index, camera in enumerate(selected):
+            name = _text(camera.get("name")) or "Camera"
+            room = _text(camera.get("room")) or target_room
+            try:
+                image_bytes, mime_type = await self._snapshot(camera)
+                snapshot_bytes += len(image_bytes)
+                data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+                observation = await self._describe_images(
+                    self._vision_prompt(query, name, room, len(selected)),
+                    [
+                        {
+                            "name": f"tater-vision-{index + 1}.jpg",
+                            "mime_type": mime_type,
+                            "size_bytes": len(image_bytes),
+                            "data_url": data_url,
+                        }
+                    ],
+                )
+                descriptions.append(
+                    {"camera": name, "room": room, "description": observation}
+                )
+            except Exception as err:
+                failures.append(
+                    {"camera": name, "error": _text(err, 500) or type(err).__name__}
+                )
+        if not descriptions:
+            detail = "; ".join(
+                f"{row['camera']}: {row['error']}" for row in failures[:3]
+            )
+            return {
+                "ok": False,
+                "error": detail or "No selected camera returned a usable image.",
+                "say_hint": "Explain that cameras were found, but Tater could not get or analyze their current images.",
+            }
+        summary = (
+            descriptions[0]["description"]
+            if len(descriptions) == 1
+            else "\n".join(
+                f"{row['camera']}: {row['description']}" for row in descriptions
+            )
+        )
+        return {
+            "ok": True,
+            "facts": {
+                "camera_count": len(selected),
+                "vision_count": len(descriptions),
+                "vision_failure_count": len(failures),
+                "target_room": target_room,
+                "selection_reason": reason,
+                "snapshot_bytes": snapshot_bytes,
+            },
+            "data": {
+                "description": summary,
+                "vision_descriptions": descriptions,
+                "vision_failures": failures,
+                "target_room": target_room,
+            },
+            "summary_for_user": summary,
+            "say_hint": (
+                "Answer the user's visual question directly using the returned camera descriptions. "
+                "Combine multiple views when needed and do not add details the vision model did not report."
+            ),
         }
 
 
@@ -1101,9 +2050,20 @@ class MiniTaterRuntime:
     def __init__(self, manager: TaterSatelliteManager) -> None:
         self.manager = manager
         self.hass = manager.hass
-        self.home = HomeControlTool(self.hass, self.settings)
+        self.home = HomeControlTool(
+            self.hass,
+            self.settings,
+            self._device_llm_json,
+        )
+        self.vision = TaterVisionTool(
+            self.hass,
+            self.manager,
+            self.home._allowed,
+            self._describe_images,
+        )
         self._clips: dict[str, tuple[float, str, bytes]] = {}
         self._turn_lock = asyncio.Lock()
+        self._structured_text_fallbacks: set[str] = set()
 
     def setup(self) -> None:
         current = self.manager.data.get("tater_settings")
@@ -1128,6 +2088,11 @@ class MiniTaterRuntime:
         except Exception:
             _LOGGER.debug("Unable to summarize Tater home-control entities", exc_info=True)
             home_entities = []
+        try:
+            vision_summary = self.vision.summary()
+        except Exception:
+            _LOGGER.debug("Unable to summarize Tater Vision cameras", exc_info=True)
+            vision_summary = {"camera_count": 0, "areas": 0, "examples": []}
         return {
             "settings": public_tater_settings(settings),
             "ready": self.ready_status(),
@@ -1146,6 +2111,7 @@ class MiniTaterRuntime:
                 "domains": sorted({row.domain for row in home_entities}),
                 "examples": [row.public() for row in home_entities[:12]],
             },
+            "tater_vision": vision_summary,
         }
 
     def ready_status(self) -> dict[str, Any]:
@@ -1181,10 +2147,27 @@ class MiniTaterRuntime:
             missing.append("TTS API key")
         if settings["tts_provider"] == "wyoming" and not settings["tts_wyoming_host"]:
             missing.append("TTS Wyoming host")
+        vision_missing: list[str] = []
+        if settings["vision_provider"] == "openai_compatible":
+            if not settings["vision_base_url"]:
+                vision_missing.append("Vision API base URL")
+            if not settings["vision_model"]:
+                vision_missing.append("Vision model")
+            if (
+                settings["vision_base_url"]
+                and _provider_needs_key(settings["vision_base_url"])
+                and not settings["vision_api_key"]
+            ):
+                vision_missing.append("Vision API key")
         return {
             "ok": not missing,
             "missing": missing,
             "enabled": settings["assistant_mode"] == ASSISTANT_MODE_TATER,
+            "vision": {
+                "ok": not vision_missing,
+                "missing": vision_missing,
+                "provider": settings["vision_provider"],
+            },
         }
 
     async def async_update_settings(self, values: dict[str, Any]) -> dict[str, Any]:
@@ -1305,6 +2288,98 @@ class MiniTaterRuntime:
         )
         return resolved
 
+    def _vision_model_settings(self) -> dict[str, Any]:
+        """Resolve image understanding to Base or a dedicated endpoint."""
+        settings = self.settings()
+        if settings["vision_provider"] == "base":
+            return {
+                "base_url": settings["llm_base_url"],
+                "api_key": settings["llm_api_key"],
+                "model": settings["llm_model"],
+                "temperature": settings["llm_temperature"],
+                "dedicated": False,
+            }
+        return {
+            "base_url": settings["vision_base_url"],
+            "api_key": settings["vision_api_key"],
+            "model": settings["vision_model"],
+            "temperature": settings["llm_temperature"],
+            "dedicated": True,
+        }
+
+    @staticmethod
+    def _message_text(message: dict[str, Any]) -> str:
+        """Read text from common OpenAI-compatible message shapes."""
+        content = message.get("content")
+        if isinstance(content, str):
+            return _text(content, 12000)
+        if not isinstance(content, list):
+            return ""
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if _text(item.get("type")).lower() not in {"text", "output_text"}:
+                continue
+            part = _text(item.get("text"), 12000)
+            if part:
+                parts.append(part)
+        return _text("\n".join(parts), 12000)
+
+    async def _describe_images(
+        self, user_text: str, images: list[dict[str, Any]]
+    ) -> str:
+        """Produce bounded visual context before the normal Hydra turn."""
+        model = self._vision_model_settings()
+        if not model["model"]:
+            raise RuntimeError("Configure a vision-capable Base model or a dedicated Vision model first")
+        if not model["base_url"]:
+            raise RuntimeError("Configure the Vision API base URL first")
+        if _provider_needs_key(model["base_url"]) and not model["api_key"]:
+            raise RuntimeError("Configure the Vision API key first")
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    "Inspect the attached image or images for Mini-Tater. Answer the user's visual request with a "
+                    "concise, factual observation. Identify uncertainty. Do not claim that any Home Assistant action "
+                    "was performed. User request: "
+                    f"{user_text or 'Describe the attached image.'}"
+                ),
+            }
+        ]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": image["data_url"]},
+            }
+            for image in images
+        )
+        payload: dict[str, Any] = {
+            "model": model["model"],
+            "messages": [{"role": "user", "content": content}],
+            "temperature": model["temperature"],
+            "max_tokens": 1200,
+        }
+        endpoint = _endpoint(model["base_url"], "/v1/chat/completions")
+        try:
+            result = await self._post_json(endpoint, model["api_key"], payload)
+        except RuntimeError as err:
+            if "temperature" not in str(err).lower():
+                raise
+            payload.pop("temperature", None)
+            result = await self._post_json(endpoint, model["api_key"], payload)
+        choices = result.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise RuntimeError("The Vision model returned no response choice")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise RuntimeError("The Vision model returned an invalid response message")
+        observation = self._message_text(message)
+        if not observation:
+            raise RuntimeError("The Vision model returned an empty observation")
+        return observation
+
     async def _chat(
         self,
         messages: list[dict[str, Any]],
@@ -1312,6 +2387,7 @@ class MiniTaterRuntime:
         tools: bool = True,
         role: str = "hermes",
         tool_choice: str | dict[str, Any] = "auto",
+        native_tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         model = self._role_model_settings(role)
         role_name = role.capitalize()
@@ -1326,8 +2402,11 @@ class MiniTaterRuntime:
             "messages": messages,
             "temperature": model["temperature"],
         }
-        if tools:
-            payload["tools"] = [self.home.definition()]
+        if native_tools is not None:
+            payload["tools"] = native_tools
+            payload["tool_choice"] = tool_choice
+        elif tools:
+            payload["tools"] = [self.home.definition(), self.vision.definition()]
             payload["tool_choice"] = tool_choice
         endpoint = _endpoint(model["base_url"], "/v1/chat/completions")
         for attempt in range(3):
@@ -1356,6 +2435,80 @@ class MiniTaterRuntime:
             raise RuntimeError("The LLM returned an invalid response message")
         return message
 
+    async def _structured_head_json(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        role: str,
+        function_name: str,
+        description: str,
+        schema: dict[str, Any],
+        label: str,
+    ) -> dict[str, Any]:
+        """Use Tater-style native structured output with a cached text fallback."""
+        message: dict[str, Any] | None = None
+        if function_name not in self._structured_text_fallbacks:
+            native_tool = {
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "description": description,
+                    "parameters": schema,
+                },
+            }
+            try:
+                message = await self._chat(
+                    messages,
+                    tools=False,
+                    role=role,
+                    tool_choice="required",
+                    native_tools=[native_tool],
+                )
+            except RuntimeError:
+                self._structured_text_fallbacks.add(function_name)
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    function = (
+                        tool_call.get("function")
+                        if isinstance(tool_call, dict)
+                        else None
+                    )
+                    if not isinstance(function, dict) or _text(
+                        function.get("name")
+                    ) != function_name:
+                        continue
+                    try:
+                        value = json.loads(
+                            _text(function.get("arguments")) or "{}"
+                        )
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(value, dict):
+                        return value
+            if _text(message.get("content")):
+                return self._message_json(message, label)
+        fallback = await self._chat(messages, tools=False, role=role)
+        return self._message_json(fallback, label)
+
+    async def _device_llm_json(
+        self, system_prompt: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Provide the Device Control Verba's bounded interpretation/chooser call."""
+        message = await self._chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(payload, ensure_ascii=False),
+                },
+            ],
+            tools=False,
+            role="thanatos",
+        )
+        return self._message_json(message, "Device Control")
+
     @staticmethod
     def _message_json(message: dict[str, Any], label: str) -> dict[str, Any]:
         """Extract one JSON object from a head response."""
@@ -1375,36 +2528,6 @@ class MiniTaterRuntime:
         if not isinstance(value, dict):
             raise RuntimeError(f"{label} returned an invalid object")
         return value
-
-    @staticmethod
-    def _normalize_control_arguments(value: Any) -> dict[str, Any]:
-        """Keep a plan step inside the one supported Home Assistant tool."""
-        source = value if isinstance(value, dict) else {}
-        operation = _text(source.get("operation")).lower()
-        if operation not in {"search", "get_state", "control"}:
-            raise RuntimeError("Astraeus planned an unsupported home operation")
-        result: dict[str, Any] = {"operation": operation}
-        for key in ("query", "area", "domain"):
-            if item := _text(source.get(key), 300):
-                result[key] = item
-        raw_ids = source.get("entity_ids")
-        if isinstance(raw_ids, list):
-            entity_ids = list(
-                dict.fromkeys(_text(item, 300) for item in raw_ids if _text(item))
-            )[:40]
-            if entity_ids:
-                result["entity_ids"] = entity_ids
-        if operation == "control":
-            command = _text(source.get("command")).lower()
-            if command not in _COMMANDS:
-                raise RuntimeError("Astraeus planned an unsupported device command")
-            result["command"] = command
-            parameters = source.get("parameters")
-            if isinstance(parameters, dict) and parameters:
-                result["parameters"] = _json_safe(parameters)
-            if not any(result.get(key) for key in ("entity_ids", "query", "area")):
-                raise RuntimeError("Astraeus planned a device action without a target")
-        return result
 
     @classmethod
     def _normalize_plan(cls, value: Any) -> dict[str, Any]:
@@ -1435,19 +2558,29 @@ class MiniTaterRuntime:
             if not isinstance(raw_step, dict):
                 raise RuntimeError("Astraeus returned an invalid plan step")
             step_id = re.sub(
-                r"[^a-zA-Z0-9_-]+", "-", _text(raw_step.get("id"), 40)
+                r"[^a-zA-Z0-9_-]+",
+                "-",
+                _text(raw_step.get("id") or raw_step.get("step_id"), 40),
             ).strip("-") or f"step-{index}"
             if step_id in used_ids:
                 step_id = f"{step_id}-{index}"
             used_ids.add(step_id)
+            natural_instruction = _text(
+                raw_step.get("nl") or raw_step.get("instruction"),
+                500,
+            )
+            if not natural_instruction:
+                raise RuntimeError("Astraeus planned a tool step without a natural-language instruction")
+            tool_hint = _text(raw_step.get("tool_hint") or "device_control", 80)
+            if tool_hint not in {"device_control", "tater_vision"}:
+                raise RuntimeError("Astraeus selected an unavailable Mini-Tater tool")
             plan["steps"].append(
                 {
                     "id": step_id,
-                    "instruction": _text(raw_step.get("instruction"), 500)
-                    or f"Complete device action {index}",
-                    "arguments": cls._normalize_control_arguments(
-                        raw_step.get("arguments")
-                    ),
+                    "intent": _text(raw_step.get("intent"), 300)
+                    or natural_instruction,
+                    "nl": natural_instruction,
+                    "tool_hint": tool_hint,
                 }
             )
         return plan
@@ -1455,19 +2588,27 @@ class MiniTaterRuntime:
     def _astraeus_prompt(self) -> str:
         return (
             "You are Astraeus, Hydra's planning head for Mini-Tater. Route the request and return JSON only. "
-            "Use mode chat for conversation or knowledge, clarify only when a required target or value is truly missing, "
-            "and execute for Home Assistant searches, reads, or actions. For execute, create an ordered atomic plan with "
-            "one step for every requested action. Never omit a clause. Different commands require separate steps; several "
-            "entities receiving the same command may share one step. Prefer exact entity_ids from the inventory. Each step "
-            "must contain only id, instruction, and arguments matching control_home. Do not invent entities, services, or values.\n"
+            "The user message is a JSON input envelope containing the current request and, when available, a "
+            "conversation transcript. Use the transcript only to resolve follow-ups and references; it contains "
+            "Hermes replies and is not an example of your output format. "
+            "Use mode chat for conversation, knowledge, or an attached-image request whose input already contains a visual "
+            "observation. Use clarify only when a required target or value is truly missing. Use execute for Home Assistant "
+            "searches, reads, actions, or a request to inspect a current camera view. For execute, create an ordered atomic "
+            "plan with one step for every requested action or visual question. Never omit a clause. Different device commands "
+            "require separate steps; several devices receiving the same command may share one step. Resolve follow-up references "
+            "in nl using the conversation transcript. Use device_control for Home Assistant device searches, states, and actions. "
+            "Use tater_vision for current visual questions that require a fresh camera image, including what is visible, how the "
+            "user looks, or whether a person, animal, or object is in a named room or outdoor area. The nl field must preserve "
+            "the user's complete request, target, action, and value. Do not invent devices, cameras, locations, or values.\n"
             "Schema: {\"mode\":\"chat|clarify|execute\",\"goal\":\"...\",\"response\":\"optional\","
-            "\"steps\":[{\"id\":\"step-1\",\"instruction\":\"...\",\"arguments\":{"
-            "\"operation\":\"search|get_state|control\",\"query\":\"...\",\"entity_ids\":[\"domain.id\"],"
-            "\"area\":\"...\",\"domain\":\"...\",\"command\":\"supported command\","
-            "\"parameters\":{}}}]}.\n"
-            f"Supported control commands: {', '.join(sorted(_COMMANDS))}.\n"
-            "Available home entities in the selected scope:\n"
-            f"{self.home.summary()}"
+            "\"steps\":[{\"id\":\"step-1\",\"intent\":\"short purpose\","
+            "\"nl\":\"complete natural-language instruction\",\"tool_hint\":\"device_control|tater_vision\"}]}.\n"
+            "Astraeus stable execution catalog:\n"
+            "{\"available_tool_ids\":[\"device_control\",\"tater_vision\"],\"available_capabilities\":[{"
+            f"\"id\":\"device_control\",\"description\":{json.dumps(DEVICE_CONTROL_VERBA_DESCRIPTION, ensure_ascii=False)}"
+            "},{"
+            f"\"id\":\"tater_vision\",\"description\":{json.dumps(TATER_VISION_VERBA_DESCRIPTION, ensure_ascii=False)}"
+            "}]}"
         )
 
     async def _plan_turn(
@@ -1477,25 +2618,68 @@ class MiniTaterRuntime:
         *,
         repair_reason: str = "",
     ) -> dict[str, Any]:
+        transcript = [
+            {
+                "role": row.get("role"),
+                "content": _text(row.get("content"), 4000),
+            }
+            for row in history
+            if isinstance(row, dict)
+            and row.get("role") in {"user", "assistant"}
+            and _text(row.get("content"))
+        ]
+        input_envelope: dict[str, Any] = {
+            "request": user_text,
+            "conversation": transcript,
+        }
+        if repair_reason:
+            input_envelope["repair_reason"] = repair_reason
         messages = [
             {"role": "system", "content": self._astraeus_prompt()},
-            *history,
             {
                 "role": "user",
-                "content": (
-                    user_text
-                    if not repair_reason
-                    else (
-                        f"Original request: {user_text}\n"
-                        f"Repair the plan because the review found: {repair_reason}"
-                    )
-                ),
+                "content": json.dumps(input_envelope, ensure_ascii=False),
             },
         ]
+        plan_schema = {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["chat", "clarify", "execute"],
+                },
+                "goal": {"type": "string"},
+                "response": {"type": "string"},
+                "steps": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "intent": {"type": "string"},
+                            "nl": {"type": "string"},
+                            "tool_hint": {
+                                "type": "string",
+                                "enum": ["device_control", "tater_vision"],
+                            },
+                        },
+                        "required": ["id", "intent", "nl", "tool_hint"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["mode", "goal", "response", "steps"],
+            "additionalProperties": False,
+        }
         return self._normalize_plan(
-            self._message_json(
-                await self._chat(messages, tools=False, role="astraeus"),
-                "Astraeus",
+            await self._structured_head_json(
+                messages,
+                role="astraeus",
+                function_name="submit_hydra_plan",
+                description="Submit Mini-Tater's route and atomic built-in-tool plan.",
+                schema=plan_schema,
+                label="Astraeus",
             )
         )
 
@@ -1503,7 +2687,7 @@ class MiniTaterRuntime:
         self, user_text: str, plan: dict[str, Any]
     ) -> tuple[bool, str]:
         if plan.get("mode") != "execute":
-            return True, "No device plan required"
+            return True, "No tool plan required"
         if not self.settings()["hydra_astraeus_plan_review_enabled"]:
             return True, "Second plan review disabled"
         messages = [
@@ -1511,8 +2695,10 @@ class MiniTaterRuntime:
                 "role": "system",
                 "content": (
                     "You are Astraeus's second plan check. Verify that the proposed Home Assistant plan covers every "
-                    "action in the user's request exactly once, uses supported control_home arguments, does not broaden "
-                    "targets, and does not invent devices or values. Return JSON only: "
+                    "action or current visual question in the user's request exactly once, uses only device_control or "
+                    "tater_vision, selects the correct tool for each step, keeps every nl instruction atomic and "
+                    "natural-language-first, does not broaden targets, and does not invent devices, cameras, locations, "
+                    "or values. Return JSON only: "
                     "{\"approved\":true|false,\"reason\":\"short specific reason\"}."
                 ),
             },
@@ -1524,9 +2710,21 @@ class MiniTaterRuntime:
             },
         ]
         try:
-            value = self._message_json(
-                await self._chat(messages, tools=False, role="astraeus"),
-                "Astraeus review",
+            value = await self._structured_head_json(
+                messages,
+                role="astraeus",
+                function_name="submit_hydra_plan_review",
+                description="Approve or reject the proposed atomic built-in-tool plan.",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "approved": {"type": "boolean"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["approved", "reason"],
+                    "additionalProperties": False,
+                },
+                label="Astraeus review",
             )
             return bool(value.get("approved")), _text(value.get("reason"), 500)
         except Exception as err:
@@ -1538,9 +2736,11 @@ class MiniTaterRuntime:
         planned: dict[str, Any], proposed: dict[str, Any]
     ) -> bool:
         """Require Thanatos to execute the atomic action Astraeus locked."""
-        return json.dumps(_json_safe(planned), sort_keys=True) == json.dumps(
-            _json_safe(proposed), sort_keys=True
-        )
+        if set(proposed) != {"query"}:
+            return False
+        expected = " ".join(_text(planned.get("query"), 500).split()).casefold()
+        actual = " ".join(_text(proposed.get("query"), 500).split()).casefold()
+        return bool(expected) and expected == actual
 
     async def _run_thanatos_step(
         self,
@@ -1549,15 +2749,24 @@ class MiniTaterRuntime:
         step: dict[str, Any],
         previous_results: list[dict[str, Any]],
         context: Context | None,
+        device_id: str = "",
     ) -> dict[str, Any]:
-        planned_arguments = step["arguments"]
+        tool_name = step["tool_hint"]
+        tool_definition = (
+            self.vision.definition()
+            if tool_name == "tater_vision"
+            else self.home.definition()
+        )
+        planned_arguments = {"query": step["nl"]}
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are Thanatos, Hydra's execution head. Execute exactly one locked atomic step by calling "
-                    "control_home exactly once. Copy the locked arguments exactly. Do not broaden, combine, skip, "
-                    "or substitute targets or commands. Return only the native tool call."
+                    "You are Thanatos, Hydra's execution head. Execute exactly one locked atomic Astraeus step. "
+                    "The single native function supplied with this request is the authoritative execution tool contract. "
+                    f"Call {tool_name} exactly once and pass the locked step's nl text unchanged as query. Do not broaden, "
+                    "combine, skip, reinterpret, substitute the target, action, or value, or select another tool. "
+                    "Return only the native tool call."
                 ),
             },
             {
@@ -1572,42 +2781,62 @@ class MiniTaterRuntime:
                 ),
             },
         ]
-        assistant = await self._chat(
-            messages,
-            role="thanatos",
-            tool_choice="required",
-        )
-        tool_calls = assistant.get("tool_calls")
-        if not isinstance(tool_calls, list) or len(tool_calls) != 1:
-            return {
-                "ok": False,
-                "error": "Thanatos did not return exactly one control_home call",
-            }
-        tool_call = tool_calls[0]
-        function = tool_call.get("function") if isinstance(tool_call, dict) else None
-        function = function if isinstance(function, dict) else {}
-        if _text(function.get("name")) != "control_home":
-            return {"ok": False, "error": "Thanatos selected an unavailable tool"}
-        try:
-            proposed = self._normalize_control_arguments(
-                json.loads(_text(function.get("arguments")) or "{}")
+        last_error = f"Thanatos did not return a valid {tool_name} call"
+        for attempt in range(2):
+            attempt_messages = list(messages)
+            if attempt:
+                attempt_messages[0] = {
+                    "role": "system",
+                    "content": (
+                        f"{messages[0]['content']} Repair the previous call: {last_error}. "
+                        f"Call {tool_name} once with exactly {{\"query\":{json.dumps(step['nl'])}}}."
+                    ),
+                }
+            assistant = await self._chat(
+                attempt_messages,
+                role="thanatos",
+                tool_choice="required",
+                native_tools=[tool_definition],
             )
-        except (json.JSONDecodeError, RuntimeError) as err:
-            return {"ok": False, "error": f"Thanatos returned invalid arguments: {err}"}
-        if not self._same_locked_action(planned_arguments, proposed):
-            return {
-                "ok": False,
-                "error": "Thanatos changed the locked Astraeus action",
-            }
-        return await self.home.async_call(proposed, context, request=user_text)
+            tool_calls = assistant.get("tool_calls")
+            if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+                last_error = f"Thanatos did not return exactly one {tool_name} call"
+                continue
+            tool_call = tool_calls[0]
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+            function = function if isinstance(function, dict) else {}
+            if _text(function.get("name")) != tool_name:
+                last_error = "Thanatos selected an unavailable tool"
+                continue
+            try:
+                proposed = json.loads(_text(function.get("arguments")) or "{}")
+            except json.JSONDecodeError as err:
+                last_error = f"Thanatos returned invalid arguments: {err.msg}"
+                continue
+            if not isinstance(proposed, dict) or not self._same_locked_action(
+                planned_arguments, proposed
+            ):
+                last_error = "Thanatos changed the locked Astraeus natural-language action"
+                continue
+            if tool_name == "tater_vision":
+                return await self.vision.async_call(
+                    proposed,
+                    context,
+                    request=step["nl"],
+                    device_id=device_id,
+                )
+            return await self.home.async_call(proposed, context, request=step["nl"])
+        return {"ok": False, "error": last_error, "attempts": 2}
 
     def _hermes_prompt(self) -> str:
         settings = self.settings()
         return (
             f"You are Hermes, Hydra's response head for {settings['assistant_name'] or 'Tater'}, a voice assistant inside Home Assistant.\n"
             f"{settings['personality']}\n"
-            "For an execution turn, report only outcomes supported by the supplied control_home results. Cover every "
-            "requested action, including partial failures. Use friendly device or room names and requested values. "
+            "For an execution turn, report only outcomes supported by the supplied device_control or tater_vision results. "
+            "Cover every requested action or visual question, including partial failures. Use friendly device, camera, or "
+            "room names and requested values. For vision, answer the exact question from the returned descriptions and do "
+            "not add visual details the model did not report. "
             "Never claim a Home Assistant action happened when no verified execution result is supplied. "
             "Never mention tools, entity IDs, heads, plans, or internal execution. For chat, answer the user's request "
             "directly. Keep spoken replies concise and natural, usually one or two sentences."
@@ -1626,7 +2855,7 @@ class MiniTaterRuntime:
                 failures += 1
         if failures:
             summaries.append(
-                f"{failures} requested action{'s' if failures != 1 else ''} could not be completed."
+                f"{failures} requested step{'s' if failures != 1 else ''} could not be completed."
             )
         return " ".join(summaries) or "I couldn't complete that request."
 
@@ -1681,8 +2910,12 @@ class MiniTaterRuntime:
         conversation_id: str,
         device_id: str = "",
         context: Context | None = None,
+        images: Any = None,
     ) -> dict[str, Any]:
         user_text = _text(text, 12000)
+        vision_images = normalize_vision_images(images)
+        if not user_text and vision_images:
+            user_text = "Describe the attached image."
         if not user_text:
             raise ValueError("The transcript was empty")
         settings = self.settings()
@@ -1696,35 +2929,73 @@ class MiniTaterRuntime:
             "request": user_text,
             "outcome": "running",
             "tools": [],
+            "images": [
+                {
+                    "name": image["name"],
+                    "mime_type": image["mime_type"],
+                    "size_bytes": image["size_bytes"],
+                }
+                for image in vision_images
+            ],
         }
         async with self._turn_lock:
             conversations = self.manager.data.setdefault("tater_conversations", {})
             history = conversations.get(session_id)
             history = history if isinstance(history, list) else []
-            model_history = [
-                {"role": row.get("role"), "content": row.get("content")}
-                for row in history[-settings["max_llm"] :]
-                if isinstance(row, dict) and row.get("role") in {"user", "assistant"}
-            ]
+            model_history: list[dict[str, Any]] = []
+            for row in history[-settings["max_llm"] :]:
+                if not isinstance(row, dict) or row.get("role") not in {
+                    "user",
+                    "assistant",
+                }:
+                    continue
+                history_content = _text(row.get("content"), 12000)
+                prior_vision = _text(row.get("vision_context"), 12000)
+                if row.get("role") == "user" and prior_vision:
+                    history_content = (
+                        f"{history_content}\n\nPrior visual observation:\n{prior_vision}"
+                    )
+                model_history.append(
+                    {"role": row.get("role"), "content": history_content}
+                )
             messages: list[dict[str, Any]] = [
                 *model_history,
             ]
             final_text = ""
+            vision_context = ""
             try:
-                plan = await self._plan_turn(user_text, messages)
+                hydra_request = user_text
+                if vision_images:
+                    vision_context = await self._describe_images(user_text, vision_images)
+                    vision_model = self._vision_model_settings()
+                    ledger_row["vision"] = {
+                        "provider": (
+                            "dedicated" if vision_model["dedicated"] else "base"
+                        ),
+                        "model": vision_model["model"],
+                        "image_count": len(vision_images),
+                        "observation": vision_context,
+                    }
+                    hydra_request = (
+                        f"{user_text}\n\nVisual observation from the configured Vision model:\n"
+                        f"{vision_context}"
+                    )
+                plan = await self._plan_turn(hydra_request, messages)
                 initial_plan_mode = plan["mode"]
-                approved, review_reason = await self._review_plan(user_text, plan)
+                approved, review_reason = await self._review_plan(hydra_request, plan)
                 if not approved:
                     plan = await self._plan_turn(
-                        user_text,
+                        hydra_request,
                         messages,
                         repair_reason=review_reason,
                     )
                     if initial_plan_mode == "execute" and plan["mode"] != "execute":
                         approved = False
-                        review_reason = "The repaired plan dropped the required device execution"
+                        review_reason = "The repaired plan dropped the required tool execution"
                     else:
-                        approved, review_reason = await self._review_plan(user_text, plan)
+                        approved, review_reason = await self._review_plan(
+                            hydra_request, plan
+                        )
                 ledger_row["plan"] = _json_safe(plan)
                 ledger_row["plan_review"] = {
                     "approved": approved,
@@ -1738,24 +3009,27 @@ class MiniTaterRuntime:
                         )
                     for step in plan["steps"]:
                         result = await self._run_thanatos_step(
-                            user_text=user_text,
+                            user_text=hydra_request,
                             step=step,
                             previous_results=executions,
                             context=context,
+                            device_id=device_id,
                         )
                         execution = {
                             "step_id": step["id"],
-                            "instruction": step["instruction"],
-                            "arguments": _json_safe(step["arguments"]),
+                            "intent": step["intent"],
+                            "nl": step["nl"],
+                            "tool_hint": step["tool_hint"],
+                            "arguments": {"query": step["nl"]},
                             "result": _json_safe(result),
                         }
                         executions.append(execution)
                         ledger_row["tools"].append(
                             {
-                                "name": "control_home",
+                                "name": step["tool_hint"],
                                 "head": "thanatos",
                                 "step_id": step["id"],
-                                "arguments": _json_safe(step["arguments"]),
+                                "arguments": {"query": step["nl"]},
                                 "approved": bool(result.get("ok"))
                                 if isinstance(result, dict)
                                 else False,
@@ -1774,7 +3048,7 @@ class MiniTaterRuntime:
                         )
                 try:
                     final_text = await self._render_hermes(
-                        user_text=user_text,
+                        user_text=hydra_request,
                         history=messages,
                         plan=plan,
                         executions=executions,
@@ -1783,7 +3057,7 @@ class MiniTaterRuntime:
                     if plan["mode"] != "execute":
                         raise
                     _LOGGER.warning(
-                        "Hermes response failed after device execution: %s", err
+                        "Hermes response failed after tool execution: %s", err
                     )
                     final_text = self._execution_fallback(executions)
                 if not final_text:
@@ -1795,7 +3069,13 @@ class MiniTaterRuntime:
                 now = time.time()
                 history.extend(
                     [
-                        {"role": "user", "content": user_text, "time": now},
+                        {
+                            "role": "user",
+                            "content": user_text,
+                            "time": now,
+                            "attachments": ledger_row["images"],
+                            "vision_context": vision_context,
+                        },
                         {"role": "assistant", "content": final_text, "time": now},
                     ]
                 )
@@ -1829,6 +3109,7 @@ class MiniTaterRuntime:
             "conversation_id": session_id,
             "continue_conversation": False,
             "tools": ledger_row["tools"],
+            "vision": ledger_row.get("vision"),
         }
 
     async def async_transcribe(

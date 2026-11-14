@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.4.7
+
+- Renamed the embedded pipeline to Mini-Tater, clarified that it is a
+  streamlined Tater for Home Assistant, and hid its text-test chat while the
+  Home Assistant pipeline is selected.
+- Enriched successful `control_home` results with verified friendly names,
+  rooms, action values, counts, and partial failures so Mini-Tater can produce
+  specific confirmations instead of generic completion messages.
+- Aligned final device-action guidance with Tater's response style: lead with
+  the outcome, follow the configured personality, keep spoken replies brief,
+  and avoid entity IDs, internal execution details, and repetitive filler.
+
 ## 1.4.6
 
 - Aligned mini-Tater Home Assistant device targeting with the Tater Shop

@@ -230,6 +230,10 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["summary_for_user"], "Set Kitchen to 35% brightness.")
+        self.assertEqual(result["facts"], {"action": "set_brightness", "success_count": 1, "failure_count": 0})
+        self.assertEqual(result["performed"][0]["name"], "Kitchen")
+        self.assertEqual(result["performed"][0]["area"], "Kitchen")
         self.assertEqual(
             services.calls,
             [
@@ -414,7 +418,20 @@ class _Home:
 
     async def async_call(self, arguments, context, *, request=""):
         self.calls.append((arguments, context, request))
-        return {"ok": True, "performed": [{"domain": "light", "service": "turn_on"}]}
+        return {
+            "ok": True,
+            "performed": [
+                {
+                    "domain": "light",
+                    "service": "turn_on",
+                    "entity_ids": ["light.kitchen"],
+                    "name": "Kitchen light",
+                    "area": "Kitchen",
+                }
+            ],
+            "summary_for_user": "Turned on Kitchen light.",
+            "say_hint": "Report the verified outcome naturally and briefly.",
+        }
 
 
 class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
@@ -485,6 +502,12 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
             if tools:
                 definition = runtime.home.definition()
                 self.assertEqual(definition["function"]["name"], "control_home")
+                self.assertIn("vary the wording naturally", messages[0]["content"])
+                tool_messages = [row for row in messages if row.get("role") == "tool"]
+                if tool_messages:
+                    result = json.loads(tool_messages[-1]["content"])
+                    self.assertEqual(result["summary_for_user"], "Turned on Kitchen light.")
+                    self.assertEqual(result["performed"][0]["name"], "Kitchen light")
             return responses.pop(0)
 
         runtime._chat = fake_chat

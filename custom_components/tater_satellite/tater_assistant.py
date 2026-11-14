@@ -169,6 +169,49 @@ _COMMANDS: dict[str, tuple[str | None, str, dict[str, str]]] = {
     "press": ("button", "press", {}),
 }
 
+_CONTROL_ACTION_PHRASES = {
+    "turn_on": "Turned on",
+    "turn_off": "Turned off",
+    "toggle": "Toggled",
+    "open_cover": "Opened",
+    "close_cover": "Closed",
+    "stop_cover": "Stopped",
+    "lock": "Locked",
+    "unlock": "Unlocked",
+    "media_play": "Started playback on",
+    "media_pause": "Paused",
+    "media_stop": "Stopped playback on",
+    "media_next": "Skipped to the next item on",
+    "media_previous": "Went back on",
+    "start_vacuum": "Started",
+    "return_to_base": "Sent back to its base",
+    "activate": "Activated",
+    "press": "Pressed",
+}
+
+_DOMAIN_PLURALS = {
+    "binary_sensor": "binary sensors",
+    "climate": "climate devices",
+    "cover": "covers",
+    "device_tracker": "device trackers",
+    "fan": "fans",
+    "humidifier": "humidifiers",
+    "input_boolean": "input booleans",
+    "light": "lights",
+    "lock": "locks",
+    "media_player": "media players",
+    "person": "people",
+    "remote": "remotes",
+    "scene": "scenes",
+    "script": "scripts",
+    "sensor": "sensors",
+    "siren": "sirens",
+    "switch": "switches",
+    "vacuum": "vacuums",
+    "valve": "valves",
+    "water_heater": "water heaters",
+}
+
 _GENERIC_COMMAND_DOMAINS: dict[str, set[str]] = {
     "turn_on": {
         "fan",
@@ -759,6 +802,66 @@ class HomeControlTool:
             supported = 0
         return bool(supported & required_feature)
 
+    @staticmethod
+    def _target_label(rows: list[HomeEntity]) -> str:
+        """Describe verified targets with friendly names and rooms."""
+        unique = list({row.entity_id: row for row in rows}.values())
+        if len(unique) == 1:
+            row = unique[0]
+            name = row.name or row.entity_id
+            if row.area and _normalize_name(row.area) not in _normalize_name(name):
+                return f"{name} in {row.area}"
+            return name
+        areas = {row.area for row in unique if row.area}
+        domains = {row.domain for row in unique}
+        if len(areas) == 1 and len(domains) == 1:
+            domain = next(iter(domains))
+            label = _DOMAIN_PLURALS.get(domain, f"{domain.replace('_', ' ')} entities")
+            return f"{len(unique)} {label} in {next(iter(areas))}"
+        names = [row.name or row.entity_id for row in unique]
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+        if len(names) <= 4:
+            return f"{', '.join(names[:-1])}, and {names[-1]}"
+        return f"{', '.join(names[:3])}, and {len(names) - 3} more"
+
+    @classmethod
+    def _control_summary(
+        cls,
+        command: str,
+        rows: list[HomeEntity],
+        parameters: dict[str, Any],
+        failure_count: int,
+    ) -> str:
+        """Build the factual summary that Mini-Tater turns into a spoken reply."""
+        target = cls._target_label(rows)
+        if command == "set_brightness" and parameters.get("brightness_pct") is not None:
+            summary = f"Set {target} to {parameters['brightness_pct']}% brightness."
+        elif command == "set_color":
+            color = parameters.get("color_name") or parameters.get("rgb_color")
+            summary = f"Set {target} to {color}."
+        elif command == "set_cover_position" and parameters.get("position") is not None:
+            summary = f"Set {target} to {parameters['position']}% open."
+        elif command == "set_fan_percentage" and parameters.get("percentage") is not None:
+            summary = f"Set {target} to {parameters['percentage']}%."
+        elif command == "set_temperature" and parameters.get("temperature") is not None:
+            summary = f"Set {target} to {parameters['temperature']} degrees."
+        elif command == "set_hvac_mode" and parameters.get("hvac_mode"):
+            summary = f"Set {target} to {parameters['hvac_mode']} mode."
+        elif command == "set_volume" and parameters.get("volume_level") is not None:
+            summary = f"Set the volume on {target} to {parameters['volume_level']}."
+        else:
+            phrase = _CONTROL_ACTION_PHRASES.get(command)
+            summary = (
+                f"{phrase} {target}."
+                if phrase
+                else f"Ran {command.replace('_', ' ')} on {target}."
+            )
+        if failure_count:
+            noun = "target" if failure_count == 1 else "targets"
+            summary += f" {failure_count} {noun} could not be changed."
+        return summary
+
     async def async_call(
         self,
         arguments: dict[str, Any],
@@ -803,7 +906,9 @@ class HomeControlTool:
             return {"ok": False, "error": "The target is no longer available in the selected entity scope."}
 
         performed: list[dict[str, Any]] = []
+        performed_rows: list[HomeEntity] = []
         failures: list[dict[str, str]] = []
+        rows_by_id = {row.entity_id: row for row in rows}
         for domain, entity_ids in grouped.items():
             actual_service = service
             if command == "activate":
@@ -835,10 +940,26 @@ class HomeControlTool:
                         entity_id,
                         err,
                     )
-                    failures.append({"entity_id": entity_id, "error": _text(err, 500)})
+                    failed_row = rows_by_id.get(entity_id)
+                    failures.append(
+                        {
+                            "entity_id": entity_id,
+                            "name": failed_row.name if failed_row else entity_id,
+                            "area": failed_row.area if failed_row else "",
+                            "error": _text(err, 500),
+                        }
+                    )
                     continue
+                performed_row = rows_by_id[entity_id]
+                performed_rows.append(performed_row)
                 performed.append(
-                    {"domain": domain, "service": actual_service, "entity_ids": [entity_id]}
+                    {
+                        "domain": domain,
+                        "service": actual_service,
+                        "entity_ids": [entity_id],
+                        "name": performed_row.name,
+                        "area": performed_row.area,
+                    }
                 )
         if not performed:
             return {
@@ -846,7 +967,25 @@ class HomeControlTool:
                 "error": "Home Assistant rejected the action for every matched entity.",
                 "failures": failures,
             }
-        result: dict[str, Any] = {"ok": True, "performed": performed}
+        result: dict[str, Any] = {
+            "ok": True,
+            "performed": performed,
+            "facts": {
+                "action": command,
+                "success_count": len(performed),
+                "failure_count": len(failures),
+            },
+            "summary_for_user": self._control_summary(
+                command,
+                performed_rows,
+                parameters,
+                len(failures),
+            ),
+            "say_hint": (
+                "Report the verified outcome naturally and briefly. Use the friendly target or room, "
+                "include any requested value, and mention partial failures."
+            ),
+        }
         if failures:
             result["failures"] = failures
         return result
@@ -1127,6 +1266,11 @@ class MiniTaterRuntime:
             "You have exactly one tool: control_home. Use it only to search, read, or control the user's Home Assistant home. "
             "Never claim an action succeeded before the tool confirms it. Search when a target is ambiguous. "
             "For general knowledge or conversation, answer directly without a tool. Keep spoken replies concise.\n"
+            "After control_home returns, turn summary_for_user and the verified facts into a fluent spoken response. "
+            "Lead with the outcome, use the friendly device or room name, and include a requested value such as brightness or temperature. "
+            "Follow the configured personality and vary the wording naturally instead of using a generic completion template. "
+            "Do not mention tools, entity IDs, internal execution, or add filler such as 'for you'. "
+            "Use one short sentence unless a partial failure needs a second sentence.\n"
             "Available home entities in the selected scope:\n"
             f"{self.home.summary()}"
         )

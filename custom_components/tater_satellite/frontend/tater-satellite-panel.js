@@ -1369,13 +1369,13 @@ class TaterSatellitePanel extends HTMLElement {
         </button>
         <button type="button" class="assistant-mode-card ${mode === "tater" ? "active" : ""}" data-assistant-mode="tater">
           <span class="assistant-mode-icon tater">T</span>
-          <span><span class="workspace-eyebrow">Complete Tater pipeline</span><strong>Tater</strong><small>Tater owns speech, Hydra, home control, conversation memory, and playback.</small></span>
+          <span><span class="workspace-eyebrow">Mini version of Tater</span><strong>Mini-Tater</strong><small>A streamlined Tater for Home Assistant with speech, Hydra, home control, memory, and playback.</small></span>
           <b>${mode === "tater" ? "Selected" : ready.ok ? "Choose" : "Setup needed"}</b>
         </button>
       </section>
 
       <section class="card assistant-flow-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">${mode === "tater" ? "Tater mode" : "Home Assistant mode"}</span><h2>${mode === "tater" ? "A complete voice turn" : "Native Assist stays intact"}</h2><p class="muted">The selected pipeline applies to every connected Tater satellite.</p></div>
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">${mode === "tater" ? "Mini-Tater mode" : "Home Assistant mode"}</span><h2>${mode === "tater" ? "A complete voice turn" : "Native Assist stays intact"}</h2><p class="muted">The selected pipeline applies to every connected Tater satellite.</p></div>
           <span class="badge ${mode === "tater" && !ready.ok ? "update" : "online"}">${mode === "tater" ? ready.ok ? "Ready" : "Setup needed" : "Ready"}</span>
         </div>
         <div class="assistant-flow">
@@ -1387,11 +1387,11 @@ class TaterSatellitePanel extends HTMLElement {
         ${mode === "tater" && !ready.ok ? `<div class="verifier-note"><strong>Finish Tater setup</strong><p>${escapeHtml((ready.missing || []).join(" · "))}</p><button type="button" data-tab="models">Open models & speech</button></div>` : ""}
       </section>
 
-      <section class="card assistant-test-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to mini Tater</h2><p class="muted">Verify the LLM, Hydra, and home-control tool before switching voice turns. No audio is recorded.</p></div></div>
+      ${mode === "tater" ? `<section class="card assistant-test-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Verify the LLM, Hydra, and home-control tool before switching voice turns. No audio is recorded.</p></div></div>
         <div class="assistant-test-thread">${messages.length ? messages.map((message) => `<div class="assistant-test-message ${message.role === "assistant" ? "assistant" : "user"}"><span>${message.role === "assistant" ? escapeHtml(settings.assistant_name || "Tater") : "You"}</span><p>${escapeHtml(message.content || "")}</p></div>`).join("") : '<p class="muted">No test messages yet.</p>'}</div>
         <div class="assistant-test-compose"><input type="text" data-tater-test-message placeholder="Ask a question or control a device" value="${escapeHtml(this._testMessage)}" ${!ready.ok ? "disabled" : ""}><button type="button" class="primary" data-action="test-tater" ${!ready.ok || this._loading ? "disabled" : ""}>${this._loading ? "Working…" : "Send"}</button></div>
-      </section>
+      </section>` : ""}
 
       ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save assistant</button>`)}
     `;

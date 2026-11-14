@@ -74,8 +74,12 @@ test('Home Assistant is default and hides Tater-only navigation until selected',
 
 test('mini Tater pages retain the complete pipeline, one tool, and Hydra controls', () => {
   const panel = fixture();
-  const assistant = panel.renderAssistantChoice();
-  assert.match(assistant, /Home Assistant[\s\S]*Complete Tater pipeline[\s\S]*Tater/i);
+  let assistant = panel.renderAssistantChoice();
+  assert.match(assistant, /Home Assistant[\s\S]*Mini version of Tater[\s\S]*Mini-Tater/i);
+  assert.doesNotMatch(assistant, /data-tater-test-message/);
+  panel._taterDraft.assistant_mode = 'tater';
+  assistant = panel.renderAssistantChoice();
+  assert.match(assistant, /Talk to Mini-Tater/);
   assert.doesNotMatch(assistant, /data-tater-test-message[^>]*disabled/);
   const models = panel.renderModelsAndSpeech();
   assert.match(models, /Language model[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);

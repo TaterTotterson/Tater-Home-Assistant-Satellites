@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.4.8
+
+- Upgraded Mini-Tater to an Astraeus, Thanatos, and Hermes Hydra flow: requests
+  are planned into bounded atomic steps, every locked Home Assistant action is
+  executed separately, and the final spoken reply is composed from verified
+  results.
+- Added Beast Mode with Base or dedicated OpenAI-compatible model settings for
+  each Hydra head.
+- Improved compound device targeting so one request can safely control several
+  devices with the same or different commands without broadening an atomic
+  step to another requested target.
+
 ## 1.4.7
 
 - Renamed the embedded pipeline to Mini-Tater, clarified that it is a

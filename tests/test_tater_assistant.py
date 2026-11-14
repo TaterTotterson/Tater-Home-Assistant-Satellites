@@ -247,6 +247,38 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_one_control_step_can_change_several_devices(self) -> None:
+        services = _Services()
+        tool = tater.HomeControlTool(
+            SimpleNamespace(services=services), lambda: {"entity_scope": "all"}
+        )
+        lights = [
+            tater.HomeEntity(
+                "light.kitchen", "Kitchen light", "light", "on", "Kitchen", (), {}
+            ),
+            tater.HomeEntity(
+                "light.dining", "Dining light", "light", "on", "Dining", (), {}
+            ),
+        ]
+        tool.resolve = lambda _arguments, **_kwargs: lights
+        tool._allowed = lambda _entity_id: True
+
+        result = await tool.async_call(
+            {
+                "operation": "control",
+                "command": "turn_off",
+                "entity_ids": ["light.kitchen", "light.dining"],
+            },
+            None,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["facts"]["success_count"], 2)
+        self.assertEqual(
+            [call[2]["entity_id"] for call in services.calls],
+            [["light.kitchen"], ["light.dining"]],
+        )
+
     async def test_disallowed_command_cannot_become_an_arbitrary_service(self) -> None:
         services = _Services()
         tool = tater.HomeControlTool(SimpleNamespace(services=services), lambda: {"entity_scope": "all"})
@@ -334,6 +366,64 @@ class HomeControlTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual([row.entity_id for row in matches], [office_light.entity_id])
+
+    def test_compound_request_keeps_each_atomic_query_on_its_own_target(self) -> None:
+        tool = tater.HomeControlTool(SimpleNamespace(), lambda: {"entity_scope": "all"})
+        kitchen_light = tater.HomeEntity(
+            entity_id="light.kitchen",
+            name="Kitchen ceiling light",
+            domain="light",
+            state="on",
+            area="Kitchen",
+            aliases=(),
+            attributes={},
+        )
+        bedroom_fan = tater.HomeEntity(
+            entity_id="fan.bedroom",
+            name="Bedroom fan",
+            domain="fan",
+            state="off",
+            area="Bedroom",
+            aliases=(),
+            attributes={},
+        )
+        tool.entities = lambda: [kitchen_light, bedroom_fan]
+        request = "Turn the kitchen light off and the bedroom fan on"
+
+        light_matches = tool.resolve(
+            {"operation": "control", "command": "turn_off", "query": "kitchen light"},
+            request=request,
+        )
+        fan_matches = tool.resolve(
+            {"operation": "control", "command": "turn_on", "query": "bedroom fan"},
+            request=request,
+        )
+
+        self.assertEqual([row.entity_id for row in light_matches], ["light.kitchen"])
+        self.assertEqual([row.entity_id for row in fan_matches], ["fan.bedroom"])
+
+    def test_compound_same_domain_request_does_not_broaden_atomic_queries(self) -> None:
+        tool = tater.HomeControlTool(SimpleNamespace(), lambda: {"entity_scope": "all"})
+        kitchen = tater.HomeEntity(
+            "light.kitchen", "Kitchen light", "light", "on", "Kitchen", (), {}
+        )
+        bedroom = tater.HomeEntity(
+            "light.bedroom", "Bedroom light", "light", "off", "Bedroom", (), {}
+        )
+        tool.entities = lambda: [kitchen, bedroom]
+        request = "Turn the kitchen light off and the bedroom light on"
+
+        off_matches = tool.resolve(
+            {"operation": "control", "command": "turn_off", "query": "kitchen light"},
+            request=request,
+        )
+        on_matches = tool.resolve(
+            {"operation": "control", "command": "turn_on", "query": "bedroom light"},
+            request=request,
+        )
+
+        self.assertEqual([row.entity_id for row in off_matches], ["light.kitchen"])
+        self.assertEqual([row.entity_id for row in on_matches], ["light.bedroom"])
 
     def test_unsupported_media_player_power_is_filtered_by_features(self) -> None:
         player = tater.HomeEntity(
@@ -474,13 +564,43 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(runtime.ready_status()["missing"], [])
 
-    async def test_turn_exposes_only_control_home_and_records_the_ledger(self) -> None:
+    async def test_three_heads_complete_compound_device_request_and_record_the_ledger(self) -> None:
         manager = _Manager()
         runtime = tater.MiniTaterRuntime(manager)
         runtime.setup()
         home = _Home()
         runtime.home = home
         responses = [
+            {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "mode": "execute",
+                        "goal": "Turn on both requested devices",
+                        "response": "",
+                        "steps": [
+                            {
+                                "id": "kitchen",
+                                "instruction": "Turn on the kitchen light",
+                                "arguments": {
+                                    "operation": "control",
+                                    "command": "turn_on",
+                                    "entity_ids": ["light.kitchen"],
+                                },
+                            },
+                            {
+                                "id": "bedroom",
+                                "instruction": "Turn on the bedroom fan",
+                                "arguments": {
+                                    "operation": "control",
+                                    "command": "turn_on",
+                                    "entity_ids": ["fan.bedroom"],
+                                },
+                            },
+                        ],
+                    }
+                ),
+            },
             {
                 "role": "assistant",
                 "content": "",
@@ -495,35 +615,160 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ],
             },
-            {"role": "assistant", "content": "The kitchen light is on."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {
+                            "name": "control_home",
+                            "arguments": '{"operation":"control","command":"turn_on","entity_ids":["fan.bedroom"]}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "The kitchen light and bedroom fan are on.",
+            },
         ]
+        roles = []
 
-        async def fake_chat(messages, *, tools=True):
+        async def fake_chat(messages, *, tools=True, role="hermes", tool_choice="auto"):
+            roles.append((role, tools, tool_choice))
             if tools:
                 definition = runtime.home.definition()
                 self.assertEqual(definition["function"]["name"], "control_home")
-                self.assertIn("vary the wording naturally", messages[0]["content"])
-                tool_messages = [row for row in messages if row.get("role") == "tool"]
-                if tool_messages:
-                    result = json.loads(tool_messages[-1]["content"])
-                    self.assertEqual(result["summary_for_user"], "Turned on Kitchen light.")
-                    self.assertEqual(result["performed"][0]["name"], "Kitchen light")
             return responses.pop(0)
 
         runtime._chat = fake_chat
         result = await runtime.async_process_text(
-            "Turn on the kitchen light",
+            "Turn on the kitchen light and the bedroom fan",
             conversation_id="conversation-1",
             device_id="satellite-1",
         )
 
-        self.assertEqual(result["response"], "The kitchen light is on.")
-        self.assertEqual(len(home.calls), 1)
-        self.assertEqual(home.calls[0][2], "Turn on the kitchen light")
+        self.assertEqual(result["response"], "The kitchen light and bedroom fan are on.")
+        self.assertEqual(len(home.calls), 2)
+        self.assertEqual(home.calls[0][0]["entity_ids"], ["light.kitchen"])
+        self.assertEqual(home.calls[1][0]["entity_ids"], ["fan.bedroom"])
+        self.assertEqual(
+            [item[0] for item in roles],
+            ["astraeus", "thanatos", "thanatos", "hermes"],
+        )
         ledger = manager.data["tater_hydra_ledger"]
         self.assertEqual(ledger[-1]["outcome"], "done")
-        self.assertEqual(ledger[-1]["tools"][0]["name"], "control_home")
+        self.assertEqual(len(ledger[-1]["plan"]["steps"]), 2)
+        self.assertEqual(len(ledger[-1]["tools"]), 2)
+        self.assertTrue(all(row["head"] == "thanatos" for row in ledger[-1]["tools"]))
         self.assertGreater(manager.saved, 0)
+
+    async def test_second_plan_check_repairs_a_missing_compound_action(self) -> None:
+        manager = _Manager()
+        manager.data["tater_settings"]["hydra_astraeus_plan_review_enabled"] = True
+        runtime = tater.MiniTaterRuntime(manager)
+        runtime.setup()
+        home = _Home()
+        runtime.home = home
+
+        def plan(entity_ids):
+            return {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "mode": "execute",
+                        "goal": "Complete the compound request",
+                        "steps": [
+                            {
+                                "id": f"step-{index}",
+                                "instruction": f"Turn on {entity_id}",
+                                "arguments": {
+                                    "operation": "control",
+                                    "command": "turn_on",
+                                    "entity_ids": [entity_id],
+                                },
+                            }
+                            for index, entity_id in enumerate(entity_ids, start=1)
+                        ],
+                    }
+                ),
+            }
+
+        def tool_call(call_id, entity_id):
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "control_home",
+                            "arguments": json.dumps(
+                                {
+                                    "operation": "control",
+                                    "command": "turn_on",
+                                    "entity_ids": [entity_id],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            }
+
+        responses = [
+            plan(["light.kitchen"]),
+            {"role": "assistant", "content": '{"approved":false,"reason":"Bedroom fan is missing"}'},
+            plan(["light.kitchen", "fan.bedroom"]),
+            {"role": "assistant", "content": '{"approved":true,"reason":"Complete"}'},
+            tool_call("call-1", "light.kitchen"),
+            tool_call("call-2", "fan.bedroom"),
+            {"role": "assistant", "content": "Both devices are on."},
+        ]
+
+        async def fake_chat(_messages, **_kwargs):
+            return responses.pop(0)
+
+        runtime._chat = fake_chat
+        result = await runtime.async_process_text(
+            "Turn on the kitchen light and bedroom fan",
+            conversation_id="repair-plan",
+        )
+
+        self.assertEqual(result["response"], "Both devices are on.")
+        self.assertEqual(len(home.calls), 2)
+        ledger = manager.data["tater_hydra_ledger"][-1]
+        self.assertTrue(ledger["plan_review"]["approved"])
+        self.assertEqual(len(ledger["plan"]["steps"]), 2)
+
+    def test_beast_mode_routes_each_head_to_base_or_dedicated_model(self) -> None:
+        manager = _Manager()
+        manager.data["tater_settings"].update(
+            {
+                "hydra_beast_mode_enabled": True,
+                "hydra_llm_astraeus_provider": "openai_compatible",
+                "hydra_llm_astraeus_host": "http://planner.local/v1",
+                "hydra_llm_astraeus_model": "planner-model",
+                "hydra_llm_astraeus_api_key": "planner-secret",
+                "hydra_llm_thanatos_provider": "base",
+                "hydra_llm_hermes_provider": "openai_compatible",
+                "hydra_llm_hermes_host": "http://writer.local/v1",
+                "hydra_llm_hermes_model": "writer-model",
+            }
+        )
+        runtime = tater.MiniTaterRuntime(manager)
+        runtime.setup()
+
+        self.assertEqual(runtime._role_model_settings("astraeus")["model"], "planner-model")
+        self.assertTrue(runtime._role_model_settings("astraeus")["dedicated"])
+        self.assertEqual(runtime._role_model_settings("thanatos")["model"], "test-model")
+        self.assertFalse(runtime._role_model_settings("thanatos")["dedicated"])
+        self.assertEqual(runtime._role_model_settings("hermes")["model"], "writer-model")
+        public = tater.public_tater_settings(runtime.settings())
+        self.assertNotIn("hydra_llm_astraeus_api_key", public)
+        self.assertTrue(public["hydra_llm_astraeus_api_key_set"])
 
     def test_voice_entity_has_separate_home_assistant_and_tater_paths(self) -> None:
         source = (ROOT / "custom_components/tater_satellite/assist_satellite.py").read_text()

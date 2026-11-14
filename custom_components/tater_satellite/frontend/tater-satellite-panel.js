@@ -733,6 +733,16 @@ class TaterSatellitePanel extends HTMLElement {
       .provider-choice { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid var(--workspace-line); border-radius: 9px; background: var(--workspace-field); }
       .provider-choice button { min-height: 30px; border-color: transparent; background: transparent; color: var(--workspace-muted); }
       .provider-choice button[aria-current] { background: var(--workspace-panel); border-color: var(--workspace-line); color: var(--tater-accent); }
+      .beast-mode-card { display: grid; gap: 18px; }
+      .beast-mode-toggle { margin: 0; }
+      .beast-role-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .beast-role-card { min-width: 0; padding: 15px; border: 1px solid var(--workspace-line); border-radius: 10px; background: var(--workspace-field); }
+      .beast-role-card > header { display: grid; gap: 4px; margin-bottom: 14px; }
+      .beast-role-card > header span { color: var(--tater-accent); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+      .beast-role-card > header strong { font-size: 15px; }
+      .beast-role-card > header small { min-height: 34px; color: var(--workspace-muted); line-height: 1.45; }
+      .beast-role-card .settings-grid { grid-template-columns: minmax(0, 1fr); }
+      .beast-role-card.muted { opacity: .65; }
       .home-scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .home-scope-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 17px; text-align: left; background: var(--workspace-field); }
       .home-scope-card > span { grid-row: 1 / span 2; color: var(--tater-accent); }
@@ -848,7 +858,7 @@ class TaterSatellitePanel extends HTMLElement {
         .trainer-identity { gap: 10px; }
         .trainer-mark { display: none; }
         .workspace-section-nav button { font-size: 11px; padding: 7px 9px; }
-        .assistant-mode-grid, .home-scope-grid { grid-template-columns: 1fr; }
+        .assistant-mode-grid, .home-scope-grid, .beast-role-grid { grid-template-columns: 1fr; }
         .assistant-flow { grid-template-columns: 1fr; }
         .assistant-flow > i { transform: rotate(90deg); justify-self: center; }
         .hydra-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1408,8 +1418,34 @@ class TaterSatellitePanel extends HTMLElement {
       options.step !== undefined ? `step="${options.step}"` : "",
       options.placeholder ? `placeholder="${escapeHtml(options.placeholder)}"` : "",
       options.autocomplete ? `autocomplete="${escapeHtml(options.autocomplete)}"` : "",
+      options.disabled ? "disabled" : "",
     ].filter(Boolean).join(" ");
     return `<label class="field"><span>${escapeHtml(label)}</span><input data-tater-setting="${escapeHtml(key)}" type="${escapeHtml(type)}" value="${type === "password" ? "" : escapeHtml(value)}" ${attributes}>${options.help ? `<small>${escapeHtml(options.help)}${type === "password" && saved ? " A key is saved." : ""}</small>` : type === "password" && saved ? '<small>A key is saved. Leave this blank to keep it.</small>' : ""}</label>`;
+  }
+
+  taterSelect(key, label, options, config = {}) {
+    const settings = this._taterDraft || {};
+    const value = String(settings[key] ?? config.fallback ?? "");
+    return `<label class="field"><span>${escapeHtml(label)}</span><select data-tater-setting="${escapeHtml(key)}" ${config.disabled ? "disabled" : ""}>${options.map(([id, text]) => `<option value="${escapeHtml(id)}" ${value === id ? "selected" : ""}>${escapeHtml(text)}</option>`).join("")}</select>${config.help ? `<small>${escapeHtml(config.help)}</small>` : ""}</label>`;
+  }
+
+  renderBeastRole(role, label, description) {
+    const settings = this._taterDraft || {};
+    const providerKey = `hydra_llm_${role}_provider`;
+    const dedicated = settings[providerKey] === "openai_compatible";
+    const disabled = !settings.hydra_beast_mode_enabled;
+    const fieldsDisabled = disabled || !dedicated;
+    return `
+      <article class="beast-role-card ${disabled ? "muted" : ""}">
+        <header><span>Hydra head</span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(description)}</small></header>
+        <div class="settings-grid">
+          ${this.taterSelect(providerKey, "Model source", [["base", "Use Base model"], ["openai_compatible", "Dedicated model"]], { disabled })}
+          ${this.taterField(`hydra_llm_${role}_host`, "API base URL", { placeholder: "https://api.openai.com/v1", disabled: fieldsDisabled })}
+          ${this.taterField(`hydra_llm_${role}_model`, "Model", { placeholder: "Enter a model", disabled: fieldsDisabled })}
+          ${this.taterField(`hydra_llm_${role}_api_key`, "API key", { type: "password", autocomplete: "new-password", disabled: fieldsDisabled })}
+        </div>
+      </article>
+    `;
   }
 
   renderModelsAndSpeech() {
@@ -1426,6 +1462,16 @@ class TaterSatellitePanel extends HTMLElement {
           ${this.taterField("llm_temperature", "Temperature", { type: "number", min: 0, max: 2, step: 0.1 })}
           ${this.taterField("assistant_name", "Assistant name", { placeholder: "Tater" })}
           <label class="field workspace-wide"><span>Personality</span><textarea data-tater-setting="personality" rows="4">${escapeHtml(settings.personality || "")}</textarea><small>Used for conversational style. Device permissions are always enforced separately.</small></label>
+        </div>
+      </section>
+
+      <section class="card provider-card beast-mode-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Advanced routing</span><h2>Beast Mode</h2><p class="muted">Give planning, execution, and the final response their own models. When disabled, all three heads use the Base model above.</p></div><span class="badge ${settings.hydra_beast_mode_enabled ? "online" : ""}">${settings.hydra_beast_mode_enabled ? "Enabled" : "Base model"}</span></div>
+        <label class="toggle-field beast-mode-toggle"><span><strong>Use dedicated head models</strong><small>Each head can still choose Use Base model, matching Tater’s Beast Mode behavior.</small></span><input data-tater-setting="hydra_beast_mode_enabled" type="checkbox" ${settings.hydra_beast_mode_enabled ? "checked" : ""}></label>
+        <div class="beast-role-grid">
+          ${this.renderBeastRole("astraeus", "Astraeus", "Plans every requested action and routes conversation turns.")}
+          ${this.renderBeastRole("thanatos", "Thanatos", "Executes each locked Home Assistant action without broadening it.")}
+          ${this.renderBeastRole("hermes", "Hermes", "Composes the final spoken answer from verified results.")}
         </div>
       </section>
 
@@ -1501,7 +1547,7 @@ class TaterSatellitePanel extends HTMLElement {
       </nav>
       ${this._hydraSection === "behavior" ? `
         <section class="card">
-          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Conversation windows</span><h2>Hydra behavior</h2><p class="muted">The same display, storage, model-context, and ledger limits used by Tater.</p></div></div>
+          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Three-head runtime</span><h2>Hydra behavior</h2><p class="muted">Astraeus plans, Thanatos executes each locked action, and Hermes writes the verified response.</p></div></div>
           <div class="settings-grid">
             ${this.taterField("max_display", "Messages shown", { type: "number", min: 1, max: 100 })}
             ${this.taterField("max_store", "Maximum stored messages", { type: "number", min: 0, max: 10000, help: "Use 0 for unlimited storage." })}
@@ -1509,7 +1555,7 @@ class TaterSatellitePanel extends HTMLElement {
             ${this.taterField("hydra_max_ledger_items", "Maximum ledger items", { type: "number", min: 1, max: 10000 })}
           </div>
           <div class="hydra-toggle-list">
-            <label class="toggle-field"><span><strong>Astraeus second plan check</strong><small>Review a proposed device action before it runs. This adds one model call and some latency.</small></span><input data-tater-setting="hydra_astraeus_plan_review_enabled" type="checkbox" ${settings.hydra_astraeus_plan_review_enabled ? "checked" : ""}></label>
+            <label class="toggle-field"><span><strong>Astraeus second plan check</strong><small>Review the complete atomic plan for missing actions, invented targets, or broadened scope before Thanatos runs it.</small></span><input data-tater-setting="hydra_astraeus_plan_review_enabled" type="checkbox" ${settings.hydra_astraeus_plan_review_enabled ? "checked" : ""}></label>
             <label class="toggle-field"><span><strong>Auto-continue incomplete final response</strong><small>Ask the model once more when a tool turn does not produce a spoken answer.</small></span><input data-tater-setting="hydra_auto_continue_incomplete_final_enabled" type="checkbox" ${settings.hydra_auto_continue_incomplete_final_enabled ? "checked" : ""}></label>
           </div>
         </section>
@@ -1524,8 +1570,8 @@ class TaterSatellitePanel extends HTMLElement {
           ${[["Turns", metrics.turns], ["Completed", metrics.completed], ["Failed", metrics.failed], ["Device calls", metrics.tool_calls], ["Conversations", metrics.conversations]].map(([label, value]) => `<div><span>${label}</span><strong>${Number(value || 0)}</strong></div>`).join("")}
         </section>
         <section class="card">
-          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Recent activity</span><h2>Hydra ledger</h2><p class="muted">Inspect the request, plan review, device result, final response, and timing.</p></div><button type="button" class="danger" data-action="clear-hydra-ledger" ${ledger.length ? "" : "disabled"}>Clear ledger</button></div>
-          <div class="hydra-ledger">${ledger.length ? ledger.map((row) => `<details><summary><span>${escapeHtml(row.outcome || "unknown")}</span><strong>${escapeHtml(row.request || "Voice turn")}</strong><b>${Number(row.total_ms || 0)} ms</b></summary><dl><dt>Response</dt><dd>${escapeHtml(row.response || row.error || "—")}</dd><dt>Device</dt><dd>${escapeHtml(row.device_id || "—")}</dd><dt>Conversation</dt><dd>${escapeHtml(row.conversation_id || "—")}</dd></dl>${(row.tools || []).map((tool) => `<section><strong>${escapeHtml(tool.name || "control_home")}</strong><span class="badge ${tool.approved ? "online" : "update"}">${tool.approved ? "Approved" : "Blocked"}</span><p>${escapeHtml(tool.review || "")}</p><pre>${escapeHtml(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></section>`).join("")}</details>`).join("") : '<p class="muted">The ledger will appear after the first Tater conversation.</p>'}</div>
+          <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Recent activity</span><h2>Hydra ledger</h2><p class="muted">Inspect the Astraeus plan, review result, Thanatos actions, Hermes response, and timing.</p></div><button type="button" class="danger" data-action="clear-hydra-ledger" ${ledger.length ? "" : "disabled"}>Clear ledger</button></div>
+          <div class="hydra-ledger">${ledger.length ? ledger.map((row) => `<details><summary><span>${escapeHtml(row.outcome || "unknown")}</span><strong>${escapeHtml(row.request || "Voice turn")}</strong><b>${Number(row.total_ms || 0)} ms</b></summary><dl><dt>Response</dt><dd>${escapeHtml(row.response || row.error || "—")}</dd><dt>Device</dt><dd>${escapeHtml(row.device_id || "—")}</dd><dt>Conversation</dt><dd>${escapeHtml(row.conversation_id || "—")}</dd></dl>${row.plan ? `<section><strong>Astraeus plan</strong><span class="badge ${row.plan_review?.approved ? "online" : "update"}">${row.plan_review?.approved ? "Approved" : "Review"}</span><p>${escapeHtml(row.plan_review?.reason || "")}</p><pre>${escapeHtml(JSON.stringify(row.plan, null, 2))}</pre></section>` : ""}${(row.tools || []).map((tool) => `<section><strong>Thanatos · ${escapeHtml(tool.name || "control_home")}</strong><span class="badge ${tool.approved ? "online" : "update"}">${tool.approved ? "Completed" : "Failed"}</span><p>${escapeHtml(tool.review || "")}</p><pre>${escapeHtml(JSON.stringify({ arguments: tool.arguments, result: tool.result }, null, 2))}</pre></section>`).join("")}</details>`).join("") : '<p class="muted">The ledger will appear after the first Tater conversation.</p>'}</div>
         </section>
       `}
     `;
@@ -2786,8 +2832,10 @@ class TaterSatellitePanel extends HTMLElement {
       const update = () => {
         let value = input.type === "checkbox" ? input.checked : input.value;
         if (input.type === "number") value = Number(value);
-        this._taterDraft[input.dataset.taterSetting] = value;
+        const key = input.dataset.taterSetting;
+        this._taterDraft[key] = value;
         this.markDirty("tater");
+        if (key === "hydra_beast_mode_enabled" || /^hydra_llm_(astraeus|thanatos|hermes)_provider$/.test(key)) this.render();
       };
       input.addEventListener(input.tagName === "TEXTAREA" ? "input" : "change", update);
     });

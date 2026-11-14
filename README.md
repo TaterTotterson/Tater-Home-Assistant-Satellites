@@ -117,6 +117,13 @@ in Home Assistant storage and are never returned by the management API.
 Wyoming model and voice names are optional and remain blank unless the Wyoming
 service requires a specific name.
 
+Mini-Tater runs the same three Hydra roles as Tater: **Astraeus** creates a
+bounded atomic plan, **Thanatos** executes each locked Home Assistant action,
+and **Hermes** writes the final response from verified results. By default all
+three heads share the Base language model. Enable **Beast Mode** to keep any
+role on Base or give it a dedicated OpenAI-compatible endpoint, model, and API
+key.
+
 Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses
 the default endpoint timing automatically and exposes no Tater-mode VAD options.
@@ -131,10 +138,11 @@ Device category, room, alias, and supported-action matching follows Tater's Shop
 against light entities in the Office area, even if a satellite media player also
 contains “office” in its name.
 
-The **Hydra** workspace shows conversation counts, tool decisions, the second
-plan review, results, timing, and bounded conversation history. Use its text test
-on the Assistant page to verify the model and device tool without recording
-audio.
+The **Hydra** workspace shows conversation counts, Astraeus plans and reviews,
+Thanatos actions, Hermes responses, timing, and bounded conversation history.
+Compound requests are split into atomic steps so different devices can receive
+different commands during one turn. Use the text test on the Assistant page to
+verify the models and device tool without recording audio.
 
 ## Pair a satellite
 

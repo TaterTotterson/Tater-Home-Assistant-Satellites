@@ -16,6 +16,12 @@ function fixture() {
   const panel = new Panel();
   const device = (id, board) => ({ device_id: id, name: id, board, board_key: board, connected: true, settings: copy(settings.defaults), capabilities: { speaker: true, output_chain: 1, do_not_disturb: 1, screen_power_management: 1, screen_clock_format: 1, screen_climate: 1 }, wake_family: 'echo', firmware: {} });
   panel._data = { global_settings: copy(settings.defaults), shared_wake_settings: copy(settings.defaults), settings_schema: copy(settings.schema), devices: [device('one', 'crown'), device('two', 'satellite1')], pipelines: [], tater_assistant: { settings: { assistant_mode: 'home_assistant', llm_base_url: 'https://api.openai.com/v1', llm_model: '', llm_api_key_set: false, stt_provider: 'openai', stt_base_url: 'https://api.openai.com/v1', stt_model: 'gpt-4o-transcribe', stt_wyoming_model: '', stt_api_key_set: false, tts_provider: 'openai', tts_base_url: 'https://api.openai.com/v1', tts_model: 'gpt-4o-tts', tts_voice: 'alloy', tts_wyoming_voice: '', tts_api_key_set: false, entity_scope: 'exposed', assistant_name: 'Tater', personality: 'Warm', max_display: 8, max_store: 20, max_llm: 8, hydra_max_ledger_items: 1500, hydra_astraeus_plan_review_enabled: true, hydra_auto_continue_incomplete_final_enabled: false }, ready: { ok: true, missing: [] }, home_control: { entity_count: 2, areas: 1, domains: ['light'], examples: [{ entity_id: 'light.kitchen', name: 'Kitchen', area: 'Kitchen', state: 'off', domain: 'light' }] }, metrics: {}, ledger: [], messages: [] } };
+  Object.assign(panel._data.tater_assistant.settings, {
+    hydra_beast_mode_enabled: false,
+    hydra_llm_astraeus_provider: 'base',
+    hydra_llm_thanatos_provider: 'base',
+    hydra_llm_hermes_provider: 'base',
+  });
   panel.syncDrafts(panel._data);
   panel.render = () => {};
   return panel;
@@ -82,7 +88,7 @@ test('mini Tater pages retain the complete pipeline, one tool, and Hydra control
   assert.match(assistant, /Talk to Mini-Tater/);
   assert.doesNotMatch(assistant, /data-tater-test-message[^>]*disabled/);
   const models = panel.renderModelsAndSpeech();
-  assert.match(models, /Language model[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
+  assert.match(models, /Language model[\s\S]*Beast Mode[\s\S]*Astraeus[\s\S]*Thanatos[\s\S]*Hermes[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
   assert.doesNotMatch(models, /data-tater-vad|WebRTC/);
   panel.prepareDeviceDraft('one');
   panel._deviceSection = 'voice';

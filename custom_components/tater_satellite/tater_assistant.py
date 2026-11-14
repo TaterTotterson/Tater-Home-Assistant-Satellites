@@ -1,8 +1,9 @@
 """Small, Home Assistant-only Tater voice runtime.
 
-The desktop Tater runtime intentionally is not imported here.  This module owns
-the complete satellite turn when Tater mode is selected: STT, the compact Hydra
-tool loop, Home Assistant device control, TTS, and a bounded execution ledger.
+The desktop Tater runtime intentionally is not imported here. This module owns
+the complete satellite turn when Tater mode is selected: STT, a Home Assistant
+specific Astraeus/Thanatos/Hermes loop, device control, TTS, and a bounded
+execution ledger.
 """
 
 from __future__ import annotations
@@ -38,7 +39,16 @@ ASSISTANT_MODE_TATER = "tater"
 ENTITY_SCOPE_EXPOSED = "exposed"
 ENTITY_SCOPE_ALL = "all"
 
-API_KEY_FIELDS = ("llm_api_key", "stt_api_key", "tts_api_key")
+HYDRA_ROLE_IDS = ("astraeus", "thanatos", "hermes")
+HYDRA_ROLE_API_KEY_FIELDS = tuple(
+    f"hydra_llm_{role}_api_key" for role in HYDRA_ROLE_IDS
+)
+API_KEY_FIELDS = (
+    "llm_api_key",
+    "stt_api_key",
+    "tts_api_key",
+    *HYDRA_ROLE_API_KEY_FIELDS,
+)
 MAX_PROVIDER_AUDIO_BYTES = 32 * 1024 * 1024
 MAX_STORED_SPEECH_CLIPS = 20
 VAD_PRE_ROLL_SECONDS = 0.4
@@ -84,6 +94,23 @@ DEFAULT_TATER_SETTINGS: dict[str, Any] = {
     "hydra_max_ledger_items": 1500,
     "hydra_astraeus_plan_review_enabled": True,
     "hydra_auto_continue_incomplete_final_enabled": False,
+    "hydra_beast_mode_enabled": False,
+    **{
+        f"hydra_llm_{role}_provider": "base"
+        for role in HYDRA_ROLE_IDS
+    },
+    **{
+        f"hydra_llm_{role}_host": ""
+        for role in HYDRA_ROLE_IDS
+    },
+    **{
+        f"hydra_llm_{role}_model": ""
+        for role in HYDRA_ROLE_IDS
+    },
+    **{
+        f"hydra_llm_{role}_api_key": ""
+        for role in HYDRA_ROLE_IDS
+    },
 }
 
 _STRING_LIMITS = {
@@ -101,6 +128,14 @@ _STRING_LIMITS = {
     "tts_wyoming_voice": 160,
     "assistant_name": 80,
     "personality": 4000,
+    **{
+        f"hydra_llm_{role}_host": 500
+        for role in HYDRA_ROLE_IDS
+    },
+    **{
+        f"hydra_llm_{role}_model": 160
+        for role in HYDRA_ROLE_IDS
+    },
 }
 
 _CONTROLLABLE_DOMAINS = {
@@ -466,6 +501,19 @@ def normalize_tater_settings(
     out["hydra_auto_continue_incomplete_final_enabled"] = bool(
         source.get("hydra_auto_continue_incomplete_final_enabled", False)
     )
+    out["hydra_beast_mode_enabled"] = bool(
+        source.get("hydra_beast_mode_enabled", False)
+    )
+    for role in HYDRA_ROLE_IDS:
+        provider_key = f"hydra_llm_{role}_provider"
+        host_key = f"hydra_llm_{role}_host"
+        out[provider_key] = (
+            "openai_compatible"
+            if _text(source.get(provider_key)).lower() == "openai_compatible"
+            else "base"
+        )
+        host = _text(source.get(host_key), 500)
+        out[host_key] = _normal_base_url(host, "") if host else ""
     return out
 
 
@@ -769,7 +817,17 @@ class HomeControlTool:
         area = _normalize_name(arguments.get("area"))
         domain = _text(arguments.get("domain")).lower()
         request_domains = _requested_device_domains(request)
-        requested_domains = request_domains or _requested_device_domains(query)
+        query_domains = _requested_device_domains(query)
+        # A single-category request is authoritative and guards against a model
+        # choosing a similarly named entity from the wrong domain. Compound
+        # requests use the current atomic tool query to select the relevant
+        # category instead of broadening every step to every requested domain.
+        if len(request_domains) == 1:
+            requested_domains = request_domains
+        elif query_domains:
+            requested_domains = query_domains & request_domains or query_domains
+        else:
+            requested_domains = request_domains
         if requested_domains:
             rows = [row for row in rows if row.domain in requested_domains]
         elif domain:
@@ -784,7 +842,16 @@ class HomeControlTool:
             rows = [row for row in rows if _normalize_name(row.area) == area]
         request_target = _clean_control_target(request)
         query_target = _clean_control_target(query)
-        target = request_target if request_domains and request_target else query_target
+        query_conflicts_with_request_domain = bool(
+            len(request_domains) == 1
+            and query_domains
+            and not (query_domains & request_domains)
+        )
+        target = (
+            request_target
+            if query_conflicts_with_request_domain and request_target
+            else query_target or request_target
+        )
         if target and query.lower() not in {"all", "everything"}:
             rows = [row for row in rows if self._matches(row, target)]
         return rows
@@ -1088,6 +1155,20 @@ class MiniTaterRuntime:
             missing.append("LLM model")
         if _provider_needs_key(settings["llm_base_url"]) and not settings["llm_api_key"]:
             missing.append("LLM API key")
+        if settings["hydra_beast_mode_enabled"]:
+            for role in HYDRA_ROLE_IDS:
+                if settings[f"hydra_llm_{role}_provider"] == "base":
+                    continue
+                label = role.capitalize()
+                host = settings[f"hydra_llm_{role}_host"]
+                if not host:
+                    missing.append(f"{label} API base URL")
+                if not settings[f"hydra_llm_{role}_model"]:
+                    missing.append(f"{label} model")
+                if host and _provider_needs_key(host) and not settings[
+                    f"hydra_llm_{role}_api_key"
+                ]:
+                    missing.append(f"{label} API key")
         if settings["stt_provider"] == "openai" and not (
             settings["stt_api_key"] or settings["llm_api_key"]
         ) and _provider_needs_key(settings["stt_base_url"]):
@@ -1199,28 +1280,74 @@ class MiniTaterRuntime:
             raise RuntimeError("Provider returned an invalid JSON response")
         return data
 
-    async def _chat(self, messages: list[dict[str, Any]], *, tools: bool = True) -> dict[str, Any]:
+    def _role_model_settings(self, role: str) -> dict[str, Any]:
+        """Resolve one Hydra head to the Base or its Beast Mode model."""
         settings = self.settings()
-        if not settings["llm_model"]:
-            raise RuntimeError("Configure the Tater LLM model first")
-        if _provider_needs_key(settings["llm_base_url"]) and not settings["llm_api_key"]:
-            raise RuntimeError("Configure the Tater LLM API key first")
-        payload: dict[str, Any] = {
+        role_id = role if role in HYDRA_ROLE_IDS else "hermes"
+        resolved = {
+            "base_url": settings["llm_base_url"],
+            "api_key": settings["llm_api_key"],
             "model": settings["llm_model"],
-            "messages": messages,
             "temperature": settings["llm_temperature"],
+            "dedicated": False,
+        }
+        if not settings["hydra_beast_mode_enabled"]:
+            return resolved
+        if settings[f"hydra_llm_{role_id}_provider"] == "base":
+            return resolved
+        resolved.update(
+            {
+                "base_url": settings[f"hydra_llm_{role_id}_host"],
+                "api_key": settings[f"hydra_llm_{role_id}_api_key"],
+                "model": settings[f"hydra_llm_{role_id}_model"],
+                "dedicated": True,
+            }
+        )
+        return resolved
+
+    async def _chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: bool = True,
+        role: str = "hermes",
+        tool_choice: str | dict[str, Any] = "auto",
+    ) -> dict[str, Any]:
+        model = self._role_model_settings(role)
+        role_name = role.capitalize()
+        if not model["model"]:
+            raise RuntimeError(f"Configure the {role_name} model first")
+        if not model["base_url"]:
+            raise RuntimeError(f"Configure the {role_name} API base URL first")
+        if _provider_needs_key(model["base_url"]) and not model["api_key"]:
+            raise RuntimeError(f"Configure the {role_name} API key first")
+        payload: dict[str, Any] = {
+            "model": model["model"],
+            "messages": messages,
+            "temperature": model["temperature"],
         }
         if tools:
             payload["tools"] = [self.home.definition()]
-            payload["tool_choice"] = "auto"
-        endpoint = _endpoint(settings["llm_base_url"], "/v1/chat/completions")
-        try:
-            result = await self._post_json(endpoint, settings["llm_api_key"], payload)
-        except RuntimeError as err:
-            if "temperature" not in str(err).lower():
+            payload["tool_choice"] = tool_choice
+        endpoint = _endpoint(model["base_url"], "/v1/chat/completions")
+        for attempt in range(3):
+            try:
+                result = await self._post_json(endpoint, model["api_key"], payload)
+                break
+            except RuntimeError as err:
+                detail = str(err).lower()
+                if "temperature" in detail and "temperature" in payload:
+                    payload.pop("temperature", None)
+                    continue
+                if (
+                    payload.get("tool_choice") == "required"
+                    and ("tool_choice" in detail or "required" in detail)
+                ):
+                    payload["tool_choice"] = "auto"
+                    continue
                 raise
-            payload.pop("temperature", None)
-            result = await self._post_json(endpoint, settings["llm_api_key"], payload)
+        else:  # pragma: no cover - every retry either succeeds or raises
+            raise RuntimeError(f"{role_name} provider rejected the request")
         choices = result.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise RuntimeError("The LLM returned no response choice")
@@ -1229,51 +1356,323 @@ class MiniTaterRuntime:
             raise RuntimeError("The LLM returned an invalid response message")
         return message
 
-    async def _review_action(self, user_text: str, arguments: dict[str, Any]) -> tuple[bool, str]:
-        if arguments.get("operation") != "control":
-            return True, "Read-only device operation"
-        settings = self.settings()
-        if not settings["hydra_astraeus_plan_review_enabled"]:
-            return True, "Second plan check disabled"
-        review_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Hydra's second plan checker. Review one proposed Home Assistant device action. "
-                    "Approve only when it clearly matches the user's request and has a concrete target. "
-                    "Return JSON only: {\"approved\":true|false,\"reason\":\"short reason\"}."
-                ),
-            },
-            {"role": "user", "content": json.dumps({"request": user_text, "proposed_control_home": arguments})},
-        ]
+    @staticmethod
+    def _message_json(message: dict[str, Any], label: str) -> dict[str, Any]:
+        """Extract one JSON object from a head response."""
+        content = _text(message.get("content"), 30000)
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I)
         try:
-            message = await self._chat(review_messages, tools=False)
-            content = _text(message.get("content"), 2000)
+            value = json.loads(content)
+        except json.JSONDecodeError:
             match = re.search(r"\{.*\}", content, re.DOTALL)
-            value = json.loads(match.group(0) if match else content)
-            if isinstance(value, dict):
-                return bool(value.get("approved")), _text(value.get("reason"), 300)
-        except Exception as err:
-            _LOGGER.warning("Hydra plan review failed; blocking action: %s", err)
-            return False, f"Plan review failed: {err}"
-        return False, "Plan review did not return a valid decision"
+            if not match:
+                raise RuntimeError(f"{label} did not return JSON") from None
+            try:
+                value = json.loads(match.group(0))
+            except json.JSONDecodeError as err:
+                raise RuntimeError(f"{label} returned invalid JSON: {err.msg}") from err
+        if not isinstance(value, dict):
+            raise RuntimeError(f"{label} returned an invalid object")
+        return value
 
-    def _system_prompt(self) -> str:
-        settings = self.settings()
+    @staticmethod
+    def _normalize_control_arguments(value: Any) -> dict[str, Any]:
+        """Keep a plan step inside the one supported Home Assistant tool."""
+        source = value if isinstance(value, dict) else {}
+        operation = _text(source.get("operation")).lower()
+        if operation not in {"search", "get_state", "control"}:
+            raise RuntimeError("Astraeus planned an unsupported home operation")
+        result: dict[str, Any] = {"operation": operation}
+        for key in ("query", "area", "domain"):
+            if item := _text(source.get(key), 300):
+                result[key] = item
+        raw_ids = source.get("entity_ids")
+        if isinstance(raw_ids, list):
+            entity_ids = list(
+                dict.fromkeys(_text(item, 300) for item in raw_ids if _text(item))
+            )[:40]
+            if entity_ids:
+                result["entity_ids"] = entity_ids
+        if operation == "control":
+            command = _text(source.get("command")).lower()
+            if command not in _COMMANDS:
+                raise RuntimeError("Astraeus planned an unsupported device command")
+            result["command"] = command
+            parameters = source.get("parameters")
+            if isinstance(parameters, dict) and parameters:
+                result["parameters"] = _json_safe(parameters)
+            if not any(result.get(key) for key in ("entity_ids", "query", "area")):
+                raise RuntimeError("Astraeus planned a device action without a target")
+        return result
+
+    @classmethod
+    def _normalize_plan(cls, value: Any) -> dict[str, Any]:
+        """Validate Astraeus output before another head can act on it."""
+        source = value if isinstance(value, dict) else {}
+        mode = _text(source.get("mode")).lower()
+        mode = {
+            "action": "execute",
+            "control": "execute",
+            "answer": "chat",
+            "question": "clarify",
+        }.get(mode, mode)
+        if mode not in {"chat", "clarify", "execute"}:
+            raise RuntimeError("Astraeus did not choose a valid turn mode")
+        plan: dict[str, Any] = {
+            "mode": mode,
+            "goal": _text(source.get("goal"), 500),
+            "response": _text(source.get("response"), 4000),
+            "steps": [],
+        }
+        if mode != "execute":
+            return plan
+        raw_steps = source.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise RuntimeError("Astraeus returned an empty execution plan")
+        used_ids: set[str] = set()
+        for index, raw_step in enumerate(raw_steps[:12], start=1):
+            if not isinstance(raw_step, dict):
+                raise RuntimeError("Astraeus returned an invalid plan step")
+            step_id = re.sub(
+                r"[^a-zA-Z0-9_-]+", "-", _text(raw_step.get("id"), 40)
+            ).strip("-") or f"step-{index}"
+            if step_id in used_ids:
+                step_id = f"{step_id}-{index}"
+            used_ids.add(step_id)
+            plan["steps"].append(
+                {
+                    "id": step_id,
+                    "instruction": _text(raw_step.get("instruction"), 500)
+                    or f"Complete device action {index}",
+                    "arguments": cls._normalize_control_arguments(
+                        raw_step.get("arguments")
+                    ),
+                }
+            )
+        return plan
+
+    def _astraeus_prompt(self) -> str:
         return (
-            f"You are {settings['assistant_name'] or 'Tater'}, a voice assistant inside Home Assistant.\n"
-            f"{settings['personality']}\n"
-            "You have exactly one tool: control_home. Use it only to search, read, or control the user's Home Assistant home. "
-            "Never claim an action succeeded before the tool confirms it. Search when a target is ambiguous. "
-            "For general knowledge or conversation, answer directly without a tool. Keep spoken replies concise.\n"
-            "After control_home returns, turn summary_for_user and the verified facts into a fluent spoken response. "
-            "Lead with the outcome, use the friendly device or room name, and include a requested value such as brightness or temperature. "
-            "Follow the configured personality and vary the wording naturally instead of using a generic completion template. "
-            "Do not mention tools, entity IDs, internal execution, or add filler such as 'for you'. "
-            "Use one short sentence unless a partial failure needs a second sentence.\n"
+            "You are Astraeus, Hydra's planning head for Mini-Tater. Route the request and return JSON only. "
+            "Use mode chat for conversation or knowledge, clarify only when a required target or value is truly missing, "
+            "and execute for Home Assistant searches, reads, or actions. For execute, create an ordered atomic plan with "
+            "one step for every requested action. Never omit a clause. Different commands require separate steps; several "
+            "entities receiving the same command may share one step. Prefer exact entity_ids from the inventory. Each step "
+            "must contain only id, instruction, and arguments matching control_home. Do not invent entities, services, or values.\n"
+            "Schema: {\"mode\":\"chat|clarify|execute\",\"goal\":\"...\",\"response\":\"optional\","
+            "\"steps\":[{\"id\":\"step-1\",\"instruction\":\"...\",\"arguments\":{"
+            "\"operation\":\"search|get_state|control\",\"query\":\"...\",\"entity_ids\":[\"domain.id\"],"
+            "\"area\":\"...\",\"domain\":\"...\",\"command\":\"supported command\","
+            "\"parameters\":{}}}]}.\n"
+            f"Supported control commands: {', '.join(sorted(_COMMANDS))}.\n"
             "Available home entities in the selected scope:\n"
             f"{self.home.summary()}"
         )
+
+    async def _plan_turn(
+        self,
+        user_text: str,
+        history: list[dict[str, Any]],
+        *,
+        repair_reason: str = "",
+    ) -> dict[str, Any]:
+        messages = [
+            {"role": "system", "content": self._astraeus_prompt()},
+            *history,
+            {
+                "role": "user",
+                "content": (
+                    user_text
+                    if not repair_reason
+                    else (
+                        f"Original request: {user_text}\n"
+                        f"Repair the plan because the review found: {repair_reason}"
+                    )
+                ),
+            },
+        ]
+        return self._normalize_plan(
+            self._message_json(
+                await self._chat(messages, tools=False, role="astraeus"),
+                "Astraeus",
+            )
+        )
+
+    async def _review_plan(
+        self, user_text: str, plan: dict[str, Any]
+    ) -> tuple[bool, str]:
+        if plan.get("mode") != "execute":
+            return True, "No device plan required"
+        if not self.settings()["hydra_astraeus_plan_review_enabled"]:
+            return True, "Second plan review disabled"
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Astraeus's second plan check. Verify that the proposed Home Assistant plan covers every "
+                    "action in the user's request exactly once, uses supported control_home arguments, does not broaden "
+                    "targets, and does not invent devices or values. Return JSON only: "
+                    "{\"approved\":true|false,\"reason\":\"short specific reason\"}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {"request": user_text, "plan": plan}, ensure_ascii=False
+                ),
+            },
+        ]
+        try:
+            value = self._message_json(
+                await self._chat(messages, tools=False, role="astraeus"),
+                "Astraeus review",
+            )
+            return bool(value.get("approved")), _text(value.get("reason"), 500)
+        except Exception as err:
+            _LOGGER.warning("Hydra plan review failed; blocking action: %s", err)
+            return False, f"Plan review failed: {err}"
+
+    @staticmethod
+    def _same_locked_action(
+        planned: dict[str, Any], proposed: dict[str, Any]
+    ) -> bool:
+        """Require Thanatos to execute the atomic action Astraeus locked."""
+        return json.dumps(_json_safe(planned), sort_keys=True) == json.dumps(
+            _json_safe(proposed), sort_keys=True
+        )
+
+    async def _run_thanatos_step(
+        self,
+        *,
+        user_text: str,
+        step: dict[str, Any],
+        previous_results: list[dict[str, Any]],
+        context: Context | None,
+    ) -> dict[str, Any]:
+        planned_arguments = step["arguments"]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Thanatos, Hydra's execution head. Execute exactly one locked atomic step by calling "
+                    "control_home exactly once. Copy the locked arguments exactly. Do not broaden, combine, skip, "
+                    "or substitute targets or commands. Return only the native tool call."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "request": user_text,
+                        "locked_step": step,
+                        "previous_results": previous_results,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        assistant = await self._chat(
+            messages,
+            role="thanatos",
+            tool_choice="required",
+        )
+        tool_calls = assistant.get("tool_calls")
+        if not isinstance(tool_calls, list) or len(tool_calls) != 1:
+            return {
+                "ok": False,
+                "error": "Thanatos did not return exactly one control_home call",
+            }
+        tool_call = tool_calls[0]
+        function = tool_call.get("function") if isinstance(tool_call, dict) else None
+        function = function if isinstance(function, dict) else {}
+        if _text(function.get("name")) != "control_home":
+            return {"ok": False, "error": "Thanatos selected an unavailable tool"}
+        try:
+            proposed = self._normalize_control_arguments(
+                json.loads(_text(function.get("arguments")) or "{}")
+            )
+        except (json.JSONDecodeError, RuntimeError) as err:
+            return {"ok": False, "error": f"Thanatos returned invalid arguments: {err}"}
+        if not self._same_locked_action(planned_arguments, proposed):
+            return {
+                "ok": False,
+                "error": "Thanatos changed the locked Astraeus action",
+            }
+        return await self.home.async_call(proposed, context, request=user_text)
+
+    def _hermes_prompt(self) -> str:
+        settings = self.settings()
+        return (
+            f"You are Hermes, Hydra's response head for {settings['assistant_name'] or 'Tater'}, a voice assistant inside Home Assistant.\n"
+            f"{settings['personality']}\n"
+            "For an execution turn, report only outcomes supported by the supplied control_home results. Cover every "
+            "requested action, including partial failures. Use friendly device or room names and requested values. "
+            "Never claim a Home Assistant action happened when no verified execution result is supplied. "
+            "Never mention tools, entity IDs, heads, plans, or internal execution. For chat, answer the user's request "
+            "directly. Keep spoken replies concise and natural, usually one or two sentences."
+        )
+
+    @staticmethod
+    def _execution_fallback(executions: list[dict[str, Any]]) -> str:
+        summaries: list[str] = []
+        failures = 0
+        for execution in executions:
+            result = execution.get("result")
+            if isinstance(result, dict) and result.get("ok"):
+                if summary := _text(result.get("summary_for_user"), 1000):
+                    summaries.append(summary)
+            else:
+                failures += 1
+        if failures:
+            summaries.append(
+                f"{failures} requested action{'s' if failures != 1 else ''} could not be completed."
+            )
+        return " ".join(summaries) or "I couldn't complete that request."
+
+    async def _render_hermes(
+        self,
+        *,
+        user_text: str,
+        history: list[dict[str, Any]],
+        plan: dict[str, Any],
+        executions: list[dict[str, Any]],
+    ) -> str:
+        messages = [
+            {"role": "system", "content": self._hermes_prompt()},
+            *history,
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "request": user_text,
+                        "route": plan.get("mode"),
+                        "planner_response": plan.get("response"),
+                        "goal": plan.get("goal"),
+                        "executions": executions,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        message = await self._chat(messages, tools=False, role="hermes")
+        final_text = _text(message.get("content"), 12000)
+        if not final_text and self.settings()[
+            "hydra_auto_continue_incomplete_final_enabled"
+        ]:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Finish with the complete short spoken response now.",
+                }
+            )
+            final_text = _text(
+                (
+                    await self._chat(messages, tools=False, role="hermes")
+                ).get("content"),
+                12000,
+            )
+        return final_text
 
     async def async_process_text(
         self,
@@ -1308,62 +1707,91 @@ class MiniTaterRuntime:
                 if isinstance(row, dict) and row.get("role") in {"user", "assistant"}
             ]
             messages: list[dict[str, Any]] = [
-                {"role": "system", "content": self._system_prompt()},
                 *model_history,
-                {"role": "user", "content": user_text},
             ]
             final_text = ""
             try:
-                for _index in range(8):
-                    assistant = await self._chat(messages)
-                    tool_calls = assistant.get("tool_calls")
-                    if not isinstance(tool_calls, list) or not tool_calls:
-                        final_text = _text(assistant.get("content"), 12000)
-                        break
-                    messages.append(assistant)
-                    for tool_call in tool_calls:
-                        function = tool_call.get("function") if isinstance(tool_call, dict) else None
-                        function = function if isinstance(function, dict) else {}
-                        name = _text(function.get("name"))
-                        try:
-                            arguments = json.loads(_text(function.get("arguments")) or "{}")
-                        except json.JSONDecodeError:
-                            arguments = {}
-                        if name != "control_home" or not isinstance(arguments, dict):
-                            result = {"ok": False, "error": "Only control_home is available"}
-                            approved, review_reason = False, "Unknown tool"
-                        else:
-                            approved, review_reason = await self._review_action(user_text, arguments)
-                            result = (
-                                await self.home.async_call(
-                                    arguments,
-                                    context,
-                                    request=user_text,
-                                )
-                                if approved
-                                else {"ok": False, "error": review_reason}
-                            )
+                plan = await self._plan_turn(user_text, messages)
+                initial_plan_mode = plan["mode"]
+                approved, review_reason = await self._review_plan(user_text, plan)
+                if not approved:
+                    plan = await self._plan_turn(
+                        user_text,
+                        messages,
+                        repair_reason=review_reason,
+                    )
+                    if initial_plan_mode == "execute" and plan["mode"] != "execute":
+                        approved = False
+                        review_reason = "The repaired plan dropped the required device execution"
+                    else:
+                        approved, review_reason = await self._review_plan(user_text, plan)
+                ledger_row["plan"] = _json_safe(plan)
+                ledger_row["plan_review"] = {
+                    "approved": approved,
+                    "reason": review_reason,
+                }
+                executions: list[dict[str, Any]] = []
+                if plan["mode"] == "execute":
+                    if not approved:
+                        raise RuntimeError(
+                            f"Astraeus could not produce an approved plan: {review_reason}"
+                        )
+                    for step in plan["steps"]:
+                        result = await self._run_thanatos_step(
+                            user_text=user_text,
+                            step=step,
+                            previous_results=executions,
+                            context=context,
+                        )
+                        execution = {
+                            "step_id": step["id"],
+                            "instruction": step["instruction"],
+                            "arguments": _json_safe(step["arguments"]),
+                            "result": _json_safe(result),
+                        }
+                        executions.append(execution)
                         ledger_row["tools"].append(
                             {
-                                "name": name or "unknown",
-                                "arguments": _json_safe(arguments),
-                                "approved": approved,
-                                "review": review_reason,
+                                "name": "control_home",
+                                "head": "thanatos",
+                                "step_id": step["id"],
+                                "arguments": _json_safe(step["arguments"]),
+                                "approved": bool(result.get("ok"))
+                                if isinstance(result, dict)
+                                else False,
+                                "review": (
+                                    "Executed the locked Astraeus step"
+                                    if isinstance(result, dict) and result.get("ok")
+                                    else _text(
+                                        result.get("error")
+                                        if isinstance(result, dict)
+                                        else "Execution failed",
+                                        500,
+                                    )
+                                ),
                                 "result": _json_safe(result),
                             }
                         )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": _text(tool_call.get("id")) or secrets.token_hex(4),
-                                "content": json.dumps(result, ensure_ascii=False),
-                            }
-                        )
-                if not final_text and settings["hydra_auto_continue_incomplete_final_enabled"]:
-                    messages.append({"role": "user", "content": "Finish with a short final spoken response."})
-                    final_text = _text((await self._chat(messages, tools=False)).get("content"), 12000)
+                try:
+                    final_text = await self._render_hermes(
+                        user_text=user_text,
+                        history=messages,
+                        plan=plan,
+                        executions=executions,
+                    )
+                except Exception as err:
+                    if plan["mode"] != "execute":
+                        raise
+                    _LOGGER.warning(
+                        "Hermes response failed after device execution: %s", err
+                    )
+                    final_text = self._execution_fallback(executions)
                 if not final_text:
-                    final_text = "I couldn't complete that request."
+                    final_text = (
+                        self._execution_fallback(executions)
+                        if plan["mode"] == "execute"
+                        else plan.get("response") or "I couldn't complete that request."
+                    )
                 now = time.time()
                 history.extend(
                     [

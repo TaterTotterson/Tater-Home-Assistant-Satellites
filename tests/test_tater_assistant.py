@@ -7,7 +7,7 @@ import io
 import json
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 import wave
@@ -19,7 +19,11 @@ if "aiohttp" not in sys.modules and importlib.util.find_spec("aiohttp") is None:
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "custom_components" / "tater_satellite" / "tater_assistant.py"
-SPEC = importlib.util.spec_from_file_location("tater_satellite_tater_assistant", MODULE_PATH)
+TEST_PACKAGE = "tater_satellite_assistant_tests"
+package = ModuleType(TEST_PACKAGE)
+package.__path__ = [str(MODULE_PATH.parent)]
+sys.modules[TEST_PACKAGE] = package
+SPEC = importlib.util.spec_from_file_location(f"{TEST_PACKAGE}.tater_assistant", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 tater = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = tater
@@ -749,13 +753,18 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
         runtime = tater.MiniTaterRuntime(_Manager())
         prompt = runtime._astraeus_prompt()
 
-        self.assertIn('"available_tool_ids":["device_control","tater_vision"]', prompt)
+        self.assertIn('"available_tool_ids":["device_control","tater_vision","voicepe_remote_timer"]', prompt)
         self.assertIn('"id":"device_control","description"', prompt)
         self.assertIn('"id":"tater_vision","description"', prompt)
         self.assertNotIn('"usage"', prompt)
         self.assertNotIn('"how_to_use"', prompt)
         self.assertIn(tater.DEVICE_CONTROL_VERBA_DESCRIPTION, prompt)
         self.assertIn(tater.TATER_VISION_VERBA_DESCRIPTION, prompt)
+        self.assertIn(tater.TIMER_VERBA_DESCRIPTION, prompt)
+        self.assertEqual(
+            tater.TimerTool.definition()["function"]["description"],
+            tater.TIMER_VERBA_DESCRIPTION,
+        )
         self.assertEqual(
             tater.HomeControlTool.definition()["function"]["description"],
             tater.DEVICE_CONTROL_VERBA_DESCRIPTION,
@@ -931,6 +940,71 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
         ledger = manager.data["tater_hydra_ledger"][-1]
         self.assertEqual(ledger["tools"][0]["name"], "tater_vision")
         self.assertNotIn("data:image", json.dumps(ledger))
+
+    async def test_hydra_executes_timer_and_device_steps_with_separate_locked_nl_contracts(self) -> None:
+        manager = _Manager()
+        commands = []
+
+        async def request(command, payload, **_kwargs):
+            commands.append((command, payload))
+            return {
+                "ok": True,
+                "timer": {**payload, "state": "armed", "remaining_ms": payload["duration_ms"]},
+            }
+
+        manager.runtimes = {
+            "sat-1": SimpleNamespace(
+                name="Kitchen Echo",
+                room="Kitchen",
+                device_id="sat-1",
+                connected=True,
+                capabilities={"timers": True},
+                async_request=request,
+            )
+        }
+        runtime = tater.MiniTaterRuntime(manager)
+        runtime.setup()
+        runtime.home = _Home()
+        steps = [
+            {"id": "pasta", "intent": "Start pasta timer", "nl": "Set a pasta timer for five minutes", "tool_hint": "voicepe_remote_timer"},
+            {"id": "light", "intent": "Turn on light", "nl": "Turn on the kitchen light", "tool_hint": "device_control"},
+        ]
+        responses = [
+            {"role": "assistant", "content": json.dumps({"mode": "execute", "goal": "Start timer and light", "response": "", "steps": steps})},
+            *[
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"function": {"name": step["tool_hint"], "arguments": json.dumps({"query": step["nl"]})}}],
+                }
+                for step in steps
+            ],
+            {"role": "assistant", "content": "Your five-minute pasta timer is set, and the kitchen light is on."},
+        ]
+        contracts = []
+
+        async def chat(_messages, **kwargs):
+            if kwargs.get("role") == "thanatos":
+                contracts.append(kwargs["native_tools"])
+            return responses.pop(0)
+
+        runtime._chat = chat
+        result = await runtime.async_process_text(
+            "Set a pasta timer for five minutes and turn on the kitchen light",
+            conversation_id="timer-and-device",
+            device_id="sat-1",
+        )
+
+        self.assertIn("pasta", result["response"])
+        self.assertEqual(commands[0][0], "timer.start")
+        self.assertEqual(commands[0][1]["duration_ms"], 300000)
+        self.assertEqual(commands[0][1]["name"], "pasta")
+        self.assertEqual(runtime.home.calls[0][0], {"query": "Turn on the kitchen light"})
+        self.assertEqual([len(rows) for rows in contracts], [1, 1])
+        self.assertEqual(set(contracts[0][0]["function"]["parameters"]["properties"]), {"query"})
+        ledger = manager.data["tater_hydra_ledger"][-1]
+        self.assertEqual([row["name"] for row in ledger["tools"]], ["voicepe_remote_timer", "device_control"])
+        self.assertEqual(ledger["tools"][0]["arguments"], {"query": "Set a pasta timer for five minutes"})
+        self.assertNotIn("timers", manager.data)
 
     async def test_three_heads_complete_compound_device_request_and_record_the_ledger(self) -> None:
         manager = _Manager()

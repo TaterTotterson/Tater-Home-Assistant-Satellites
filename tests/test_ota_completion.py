@@ -16,6 +16,27 @@ SPEC.loader.exec_module(ota)
 
 
 class OtaCompletionTests(unittest.TestCase):
+    def test_system_stage_requires_new_rootfs_before_final_app(self):
+        state = ota.OtaState()
+        state.begin('v5.0.1', 2, stage='system', expected_system_version='v5.0.1',
+                    final_command={'url': 'https://example.invalid/app'}, now=100)
+        state.apply_status({'status': 'complete', 'progress': 100})
+        self.assertEqual(state.progress, 49)
+        state.note_reconnect(3, 'v5.0.1')
+        self.assertTrue(state.in_progress)
+        self.assertFalse(state.system_reconnect_ready(2, {'system_version': 'v5.0.1'}))
+        self.assertTrue(state.system_reconnect_ready(3, {'system_version': 'v5.0.1'}))
+        state.begin_final(3, now=110)
+        state.note_reconnect(4, 'v5.0.1')
+        self.assertEqual(state.progress, 100)
+
+    def test_system_rollback_never_advances_to_final_app(self):
+        state = ota.OtaState()
+        state.begin('v5.0.1', 2, stage='system', expected_system_version='v5.0.1')
+        self.assertFalse(state.system_reconnect_ready(3, {'system_version': 'v5.0.0'}))
+        self.assertFalse(state.in_progress)
+        self.assertIn('final app update was not sent', state.message)
+
     def state(self):
         state = ota.OtaState()
         state.begin("native-voicepe-0.3.13", 4, now=100.0)

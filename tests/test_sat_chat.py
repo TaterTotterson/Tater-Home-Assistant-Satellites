@@ -86,6 +86,59 @@ def _messages(runtime: FakeRuntime, kind: str) -> list[dict]:
 
 
 class SatChatCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_qualified_echo_boards_negotiate_balanced_hardware(self):
+        for board in ('checkers', 'cronos', 'crown', 'athena', 'rook'):
+            manager = FakeManager()
+            first = FakeRuntime(manager, 'first', board=board)
+            second = FakeRuntime(manager, 'second', board='cronos')
+            for peer in (first, second):
+                peer.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1,
+                                         sat_chat_h264_balanced=True)
+                if peer.board in ('athena', 'rook'):
+                    peer.capabilities['sat_chat_h264_balanced_only'] = True
+            coordinator = sat_chat.TaterSatChatCoordinator(manager)
+            try:
+                await coordinator.async_start(first, 'second', mode='video')
+                self.assertEqual(_messages(first, 'sat_chat.started')[0]['video_send_profile'], 'echo-h264-balanced')
+                width, height = (640, 480) if board == 'rook' else (768, 432)
+                wire = b'TSCV2' + struct.pack('<IIIIIQQ', width, height, 30, 4, 1, 1234, 42) + b'\0\0\0\1\x65\x88'
+                await coordinator.async_route_binary(first, wire)
+                await asyncio.sleep(0)
+                self.assertEqual(second.binary, [wire])
+            finally:
+                await coordinator.async_shutdown()
+
+    async def test_balanced_only_boards_never_receive_legacy_full_h264(self):
+        self.kitchen.board = 'athena'
+        self.kitchen.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1)
+        self.office.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1)
+        self.assertFalse(sat_chat._h264_capable(self.kitchen))
+        self.kitchen.capabilities.update(sat_chat_h264_balanced=True, sat_chat_h264_balanced_only=True)
+        self.assertTrue(sat_chat._h264_capable(self.kitchen))
+        self.assertFalse(sat_chat._h264_pair_compatible(self.kitchen, self.office))
+        await self.coordinator.async_start(self.kitchen, 'office', mode='video')
+        self.assertEqual(_messages(self.kitchen, 'sat_chat.started')[0]['video_send_profile'], 'echo-balanced')
+
+    async def test_backpressure_does_not_block_receive_and_audio_has_priority(self):
+        for peer in (self.kitchen, self.office):
+            peer.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1,
+                                     sat_chat_h264_balanced=True)
+        await self.coordinator.async_start(self.kitchen, 'office', mode='video')
+        self.office.block_next_binary = True
+        def frame(seq):
+            return b'TSCV2' + struct.pack('<IIIIIQQ', 768, 432, 30, seq, int(seq == 0), seq * 33333, 42) + b'\0\0\0\1\x65\x88'
+        await self.coordinator.async_route_binary(self.kitchen, frame(0))
+        await asyncio.wait_for(self.office.binary_started.wait(), 1)
+        await self.coordinator.async_route_binary(self.kitchen, frame(1))
+        for n in range(10):
+            await asyncio.wait_for(self.coordinator.async_route_binary(self.kitchen, bytes([n]) * 640), .1)
+        directory = await asyncio.wait_for(self.coordinator.async_directory('kitchen'), .1)
+        self.assertTrue(directory['call'])
+        self.office.binary_release.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        self.assertEqual(self.office.binary, [frame(0), *[bytes([n]) * 640 for n in range(6, 10)], frame(1)])
+
     async def test_balanced_h264_requires_both_peers_and_relays_exactly(self) -> None:
         for runtime in (self.kitchen, self.office):
             runtime.capabilities.update(sat_chat_h264=True, sat_chat_h264_version=1, sat_chat_h264_balanced=True)
@@ -198,7 +251,7 @@ class SatChatCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.kitchen.capabilities["sat_chat_h264"] = True
         self.kitchen.capabilities["sat_chat_h264_version"] = 1
         await self.coordinator.async_start(self.kitchen,"office",mode="video")
-        self.assertEqual(_messages(self.kitchen,"sat_chat.started")[0]["video_send_profile"],"echo-low")
+        self.assertEqual(_messages(self.kitchen,"sat_chat.started")[0]["video_send_profile"],"echo-balanced")
         wire = b"TSCV2" + struct.pack("<IIIIIQQ",1280,720,30,0,1,0,123) + b"\0\0\0\1\x65\x88"
         self.assertTrue(await self.coordinator.async_route_binary(self.kitchen,wire))
         await asyncio.sleep(0)
@@ -223,8 +276,8 @@ class SatChatCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("_video_profiles", result["call"])
         kitchen_started = _messages(self.kitchen, "sat_chat.started")[0]
         office_started = _messages(self.office, "sat_chat.started")[0]
-        self.assertEqual(kitchen_started["video_send_profile"], "echo-low")
-        self.assertEqual(office_started["video_send_profile"], "echo-low")
+        self.assertEqual(kitchen_started["video_send_profile"], "echo-balanced")
+        self.assertEqual(office_started["video_send_profile"], "echo-balanced")
 
         kitchen_directory = _messages(self.kitchen, "sat_chat.directory")[-1]
         self.assertEqual(kitchen_directory["participant_count"], 1)
@@ -235,13 +288,14 @@ class SatChatCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_athena_uses_the_echo_video_profile(self) -> None:
         athena = FakeRuntime(self.manager, "bedroom", board="athena")
 
-        self.assertEqual(sat_chat._video_receive_profile(athena), "echo-low")
+        self.assertEqual(sat_chat._video_receive_profile(athena), "echo-balanced")
 
     async def test_call_audio_routes_to_peer_and_not_to_assist(self) -> None:
         await self.coordinator.async_start(self.kitchen, "office", mode="audio")
         pcm = b"\x01\x02" * 320
 
         handled = await self.coordinator.async_route_binary(self.kitchen, pcm)
+        await asyncio.sleep(0)
 
         self.assertTrue(handled)
         self.assertEqual(self.office.binary, [pcm])

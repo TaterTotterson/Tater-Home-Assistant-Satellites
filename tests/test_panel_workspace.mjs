@@ -78,7 +78,7 @@ test('Home Assistant is default and hides Tater-only navigation until selected',
   assert.equal(panel._tab, 'assistant');
 });
 
-test('mini Tater pages retain the complete pipeline, both tools, and Hydra controls', () => {
+test('mini Tater pages retain the complete pipeline, all three tools, and Hydra controls', () => {
   const panel = fixture();
   let assistant = panel.renderAssistantChoice();
   assert.match(assistant, /Home Assistant[\s\S]*Mini version of Tater[\s\S]*Mini-Tater/i);
@@ -93,7 +93,7 @@ test('mini Tater pages retain the complete pipeline, both tools, and Hydra contr
   panel.prepareDeviceDraft('one');
   panel._deviceSection = 'voice';
   assert.doesNotMatch(panel.renderDeviceEditor(panel._data.devices[0]), /End-of-speech sensitivity|data-special="vad"/);
-  assert.match(panel.renderHomeControl(), /Two built-in capabilities[\s\S]*Use for any request to control or check smart-home devices[\s\S]*device_control[\s\S]*Exposed to Assist[\s\S]*All HA entities[\s\S]*Tater Vision is Tater's visual-question tool[\s\S]*tater_vision/);
+  assert.match(panel.renderHomeControl(), /Three built-in capabilities[\s\S]*Use for any request to control or check smart-home devices[\s\S]*device_control[\s\S]*Exposed to Assist[\s\S]*All HA entities[\s\S]*Tater Vision is Tater's visual-question tool[\s\S]*tater_vision[\s\S]*Use this for normal timer requests[\s\S]*voicepe_remote_timer/);
   panel._hydraSection = 'behavior';
   assert.match(panel.renderHydra(), /Maximum ledger items[\s\S]*Astraeus second plan check/);
 });
@@ -297,6 +297,34 @@ test('a pending device save clears only the device that initiated it', async () 
   assert.equal(panel._dirtyScopes.has('device:one'), false);
   assert.equal(panel._dirtyScopes.has('device:two'), true);
   assert.equal(panel._deviceDraft.aec_enabled, true);
+});
+
+test('conversation style is visible only on capable device displays and saves only that device', async () => {
+  const panel = fixture();
+  const device = panel._data.devices[0];
+  device.capabilities.screen_power_management_version = 1;
+  const keys = (scope, target = device) => panel.settingsSectionsFor(device.settings, scope, target).flatMap(section => section.fields.map(field => field.key));
+  assert.ok(!keys('device').includes('screen_text_style'));
+  device.capabilities.screen_text_style = true;
+  assert.ok(keys('device').includes('screen_text_style'));
+  assert.ok(!keys('global').includes('screen_text_style'));
+  for (const board of ['checkers', 'cronos', 'crown', 'athena', 'rook']) {
+    Object.assign(device, { board, board_key: board });
+    assert.ok(keys('device').includes('screen_text_style'), board);
+  }
+  Object.assign(device, { board: 's3_box', board_key: 's3_box' });
+  assert.ok(!keys('device').includes('screen_text_style'));
+  Object.assign(device, { board: 'athena', board_key: 'athena' });
+  panel.prepareDeviceDraft('one');
+  panel._deviceDraft.screen_text_style = 'matrix';
+  const save = {};
+  controls(panel, { '[data-action="save-device"]': save });
+  let request;
+  panel.api = async (...args) => { request = args; };
+  panel.run = async action => action();
+  await save.listeners.click();
+  assert.deepEqual(request, ['POST', 'settings/device/one', { settings: { screen_text_style: 'matrix' }, pipeline_id: '' }]);
+  assert.equal(panel._data.devices[1].settings.screen_text_style, 'smooth');
 });
 
 test('device save still posts only changed firmware settings plus pipeline', async () => {

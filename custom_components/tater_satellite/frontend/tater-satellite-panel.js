@@ -33,7 +33,7 @@ const WAKE_VERIFIER_SETTING_KEYS = new Set([
 const WORKSPACE_PAGES = [
   { id: "assistant", label: "Assistant", icon: "robot-outline", group: "Tater assistant", description: "Choose who owns each voice turn: Home Assistant Assist or the complete Tater pipeline." },
   { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, vision, speech-to-text, and text-to-speech providers." },
-  { id: "home-control", label: "Home tools", icon: "home-automation", group: "Tater assistant", description: "Review Mini-Tater's built-in device-control and current-camera vision capabilities." },
+  { id: "home-control", label: "Home tools", icon: "home-automation", group: "Tater assistant", description: "Review Mini-Tater's built-in device control, camera vision, and satellite timers." },
   { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every built-in tool decision." },
   { id: "satellites", label: "Satellites", icon: "access-point", group: "Your home", description: "Voice around your home, connected directly to Home Assistant." },
   { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
@@ -1429,7 +1429,7 @@ class TaterSatellitePanel extends HTMLElement {
       </section>
 
       ${mode === "tater" ? `<section class="card assistant-test-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Verify the LLM, Hydra, device control, and Tater Vision before switching voice turns. No audio is recorded.</p></div></div>
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Verify the LLM, Hydra, device control, Tater Vision, and timers before switching voice turns. Name a satellite or room for timer requests here. No audio is recorded.</p></div></div>
         <div class="assistant-test-thread">${messages.length ? messages.map((message) => this.renderAssistantTestMessage(message, settings)).join("") : '<p class="muted">No test messages yet.</p>'}</div>
         ${this.renderAssistantImagePreview()}
         <div class="assistant-test-compose">
@@ -1569,12 +1569,13 @@ class TaterSatellitePanel extends HTMLElement {
     const settings = this._taterDraft || {};
     const summary = this._data.tater_assistant?.home_control || {};
     const vision = this._data.tater_assistant?.tater_vision || {};
+    const timers = this._data.tater_assistant?.timers || {};
     const scope = settings.entity_scope || "exposed";
     const examples = summary.examples || [];
     const cameraExamples = vision.examples || [];
     return `
       <section class="card home-tool-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Two built-in capabilities</span><h2>Home Assistant device control</h2><p class="muted">Use for any request to control or check smart-home devices across integrations, including lights, switches, plugs, fans, covers, garage doors, locks, thermostats, media players, remotes, scenes, scripts, and appliance readings such as washer, dryer, or dishwasher status and remaining time. Use Tater Vision for visual camera questions.</p></div><span class="badge online">device_control</span></div>
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Three built-in capabilities</span><h2>Home Assistant device control</h2><p class="muted">Use for any request to control or check smart-home devices across integrations, including lights, switches, plugs, fans, covers, garage doors, locks, thermostats, media players, remotes, scenes, scripts, and appliance readings such as washer, dryer, or dishwasher status and remaining time. Use Tater Vision for visual camera questions.</p></div><span class="badge online">device_control</span></div>
         <div class="home-scope-grid">
           <button type="button" class="home-scope-card ${scope === "exposed" ? "active" : ""}" data-entity-scope="exposed"><span>${this.renderIcon("shield-home-outline")}</span><strong>Exposed to Assist</strong><small>Use the choices already managed in Home Assistant’s Voice Assistants settings.</small><b>${scope === "exposed" ? "Selected" : "Choose"}</b></button>
           <button type="button" class="home-scope-card ${scope === "all" ? "active" : ""}" data-entity-scope="all"><span>${this.renderIcon("home-group")}</span><strong>All HA entities</strong><small>Let Tater read supported sensors and control supported device domains.</small><b>${scope === "all" ? "Selected" : "Choose"}</b></button>
@@ -1590,7 +1591,11 @@ class TaterSatellitePanel extends HTMLElement {
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Available now</span><h2>${Number(summary.entity_count || 0)} entities across ${Number(summary.areas || 0)} areas</h2><p class="muted">${escapeHtml((summary.domains || []).join(" · ") || "No entities are currently available in this scope.")}</p></div></div>
         <div class="entity-preview-list">${examples.length ? examples.map((row) => `<div><span>${this.renderIcon(row.domain === "light" ? "lightbulb-outline" : row.domain === "sensor" ? "gauge" : "devices")}</span><p><strong>${escapeHtml(row.name || row.entity_id)}</strong><small>${escapeHtml([row.area, row.entity_id].filter(Boolean).join(" · "))}</small></p><b>${escapeHtml(row.state || "unknown")}</b></div>`).join("") : '<p class="muted">Expose entities to Assist or select all entities to make device control available.</p>'}</div>
       </section>
-      <section class="card"><p class="muted">Mini-Tater includes only these two tools. It does not load web, files, messaging, Cores, Portals, Shop, or downloadable Verbas.</p></section>
+      <section class="card home-tool-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Satellite timers</span><h2>Timer</h2><p class="muted">Use this for normal timer requests. Set, start, create, cancel, stop, silence, snooze, or check multiple named timers from one natural-language request. Examples: set a pasta timer for 5 minutes; start a 90 second timer; how much time is left on the pasta timer; cancel the 10 minute timer.</p></div><span class="badge online">voicepe_remote_timer</span></div>
+        <div class="home-scope-note">${this.renderIcon("timer-outline")}<span>${Number(timers.satellite_count || 0)} connected satellite${Number(timers.satellite_count || 0) === 1 ? " supports" : "s support"} timers. The satellite owns the countdown and alarm, including while disconnected. Ask from a satellite or name one in chat. Snooze defaults to five minutes; new timers are limited to two hours, matching the Timer Verba default.</span></div>
+      </section>
+      <section class="card"><p class="muted">Mini-Tater includes these three tools. It does not load web, files, messaging, Cores, Portals, Shop, or downloadable Verbas.</p></section>
       ${this.renderDraftFooter("tater", `<button type="button" data-action="reset-tater-draft">Discard</button><button type="button" class="primary" data-action="save-tater">Save home tools</button>`)}
     `;
   }
@@ -2789,6 +2794,7 @@ class TaterSatellitePanel extends HTMLElement {
           <div class="fact"><label>Installed</label><span>${escapeHtml(device.firmware_version || "Unknown")}</span></div>
           <div class="fact"><label>Available</label><span>${escapeHtml(firmware.firmware_version || "Unknown")}</span></div>
         </div>
+        ${firmware.ota_blocked_reason ? `<p class="muted">${escapeHtml(firmware.ota_blocked_reason)}</p>` : ""}
         <button class="${firmware.update_available ? "primary" : ""}" data-ota="${escapeHtml(device.device_id)}" ${device.connected && firmware.has_ota ? "" : "disabled"}>
           ${firmware.update_available ? "Install update" : "Reinstall latest"}
         </button>

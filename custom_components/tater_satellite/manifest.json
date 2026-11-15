@@ -1,7 +1,7 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "codeowners": [
     "@TaterTotterson"
   ],

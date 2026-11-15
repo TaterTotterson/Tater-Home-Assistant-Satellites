@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased
+## 1.4.10
+
+- Block the Echo hardware-platform OTA until its one-time full USB upgrade is
+  complete, with a keep-settings explanation in the panel and update entity.
+  Check platform eligibility before compatibility bridges; support verified
+  system-first/app-second OTA after migration, and refuse continuing if Linux
+  rolls back or reconnects on the wrong system version. Native ESP updates are
+  unchanged.
+- Match Tater's qualified hardware Sat Chat negotiation for Checkers, Cronos,
+  Crown, Athena and Rook. Athena/Rook require their balanced-only capability;
+  older/mixed peers retain JPEG. Preserve H.264 GOP order/keyframe recovery,
+  use bounded audio-priority media queues and avoid blocking the source's
+  receive loop under peer backpressure. Hardware video requires matching
+  capability-advertising firmware; legacy pairs retain JPEG compatibility.
+
+- Added Timer (`voicepe_remote_timer`) as Mini-Tater's third built-in tool with
+  the exact Timer Verba description and natural-language-only `query` contract.
+  It supports named timers, spoken durations, remaining-time checks, cancel,
+  silence, and snooze through live satellite commands. Satellites keep owning
+  countdowns and alarms while disconnected, with no bridge timer database.
+- Added per-satellite **Conversation text** in Display & Night: Smooth (default)
+  or Matrix symbol cycling with shuffled letter reveals on updated Echo GPU UIs.
+  Unsupported firmware does not receive the setting. Local touchscreen changes
+  are saved to the same satellite's override, without affecting voice defaults.
+- Recognize Cronos as an Echo display when offering per-satellite screen settings.
 
 ## 1.4.9
 

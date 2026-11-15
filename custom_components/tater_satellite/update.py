@@ -46,6 +46,20 @@ class TaterFirmwareUpdate(TaterSatelliteEntity, UpdateEntity):
         super().__init__(runtime, "firmware")
 
     @property
+    def supported_features(self) -> UpdateEntityFeature:
+        info = self.runtime.manager.firmware.info_for_board(
+            self.runtime.firmware_catalog_target, self.runtime.capabilities)
+        if info.get('usb_upgrade_required'):
+            return UpdateEntityFeature.PROGRESS
+        return UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
+
+    @property
+    def release_summary(self) -> str | None:
+        info = self.runtime.manager.firmware.info_for_board(
+            self.runtime.firmware_catalog_target, self.runtime.capabilities)
+        return str(info.get('ota_blocked_reason') or '') or None
+
+    @property
     def available(self) -> bool:
         """Return whether release metadata is available."""
         return bool(

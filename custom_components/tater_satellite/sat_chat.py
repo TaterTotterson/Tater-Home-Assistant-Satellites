@@ -21,6 +21,7 @@ H264_HEADER_BYTES = 41
 MAX_VIDEO_FRAME_BYTES = 2 * 1024 * 1024
 MAX_SAT_CHAT_FRAME_BYTES = len(VIDEO_FRAME_PREFIX) + MAX_VIDEO_FRAME_BYTES
 MAX_H264_RELAY_FRAMES = 32
+MAX_AUDIO_RELAY_FRAMES = 4
 
 
 def _text(value: Any) -> str:
@@ -50,9 +51,15 @@ def _valid_h264_frame(data: bytes, *, balanced: bool = False) -> bool:
 
 
 def _h264_capable(runtime: SatelliteRuntime | None) -> bool:
+    if runtime is None:
+        return False
+    board = _text(runtime.board).lower().replace('_', '-')
+    caps = runtime.capabilities
+    qualified = (board in {'checkers', 'cronos', 'crown'} or
+                 board in {'athena', 'rook'} and _truthy(caps.get('sat_chat_h264_balanced_only'))
+                 and _truthy(caps.get('sat_chat_h264_balanced')))
     return (
-        runtime is not None
-        and _text(runtime.board).lower() in {"checkers", "cronos"}
+        qualified
         and _truthy(runtime.capabilities.get("sat_chat_h264"))
         and runtime.capabilities.get("sat_chat_h264_version") == 1
     )
@@ -97,6 +104,9 @@ def _h264_receive_max_height(runtime: SatelliteRuntime) -> int:
 def _h264_pair_compatible(caller: SatelliteRuntime, target: SatelliteRuntime) -> bool:
     if not _h264_capable(caller) or not _h264_capable(target):
         return False
+    if any(_text(peer.board).lower() in {'athena', 'rook'} or
+           _truthy(peer.capabilities.get('sat_chat_h264_balanced_only')) for peer in (caller, target)):
+        return False
     caller_height = 960 if _text(caller.board).lower() == "cronos" else 720
     target_height = 960 if _text(target.board).lower() == "cronos" else 720
     return (_h264_receive_max_height(caller) >= target_height
@@ -107,7 +117,9 @@ def _video_receive_profile(runtime: SatelliteRuntime | None) -> str:
     board = _text(runtime.board if runtime is not None else "").lower().replace(
         "_", "-"
     )
-    if board in {"checkers", "crown", "athena", "rook"}:
+    if board in {"checkers", "cronos", "crown", "athena"}:
+        return "echo-balanced"
+    if board == "rook":
         return "echo-low"
     return ""
 
@@ -428,18 +440,11 @@ class TaterSatChatCoordinator:
             )
             return True
 
-        peer = self.manager.runtimes.get(peer_id)
-        if peer is None or not await peer.async_send_bytes(data):
-            await self.async_end(
-                call_id=call_id,
-                actor=source_id,
-                reason="peer_disconnected",
-                force=True,
-            )
+        await self._async_queue_video_frame(call_id, source_id, peer_id, bytes(data), audio=True)
         return True
 
     async def _async_queue_video_frame(
-        self, call_id: str, source: str, peer: str, data: bytes
+        self, call_id: str, source: str, peer: str, data: bytes, *, audio: bool = False
     ) -> None:
         key = (_text(call_id), _text(peer))
         async with self._lock:
@@ -451,27 +456,48 @@ class TaterSatChatCoordinator:
                 or task.done()
             ):
                 queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_H264_RELAY_FRAMES)
+                relay = {'queue': queue, 'audio_queue': asyncio.Queue(maxsize=MAX_AUDIO_RELAY_FRAMES),
+                         'ready': asyncio.Event()}
                 task = asyncio.create_task(
-                    self._async_video_relay_worker(key, source, peer, queue),
+                    self._async_video_relay_worker(key, source, peer, relay),
                     name=f"tater_sat_chat_video_{peer}",
                 )
-                relay = {"queue": queue, "task": task}
+                relay['task'] = task
                 self._video_relays[key] = relay
-            _enqueue_video_packet(relay, data)
+            if audio:
+                audio_queue = relay['audio_queue']
+                if audio_queue.full():
+                    audio_queue.get_nowait()
+                audio_queue.put_nowait(data)
+            else:
+                _enqueue_video_packet(relay, data)
+            relay['ready'].set()
 
     async def _async_video_relay_worker(
         self,
         key: tuple[str, str],
         source: str,
         peer: str,
-        queue: asyncio.Queue[bytes],
+        relay: dict[str, Any],
     ) -> None:
         try:
             while True:
-                frame = await queue.get()
+                # One media writer per destination. A slow video send cannot
+                # block the source's WebSocket receive/control loop; pending
+                # PCM takes priority and both queues have bounded latency.
+                audio_queue, queue, ready = relay['audio_queue'], relay['queue'], relay['ready']
+                if audio_queue.empty() and queue.empty():
+                    ready.clear()
+                    if audio_queue.empty() and queue.empty():
+                        await ready.wait()
+                        continue
+                frame = (audio_queue if not audio_queue.empty() else queue).get_nowait()
                 runtime = self.manager.runtimes.get(peer)
-                if runtime is None or not await runtime.async_send_bytes(frame):
+                if runtime is None:
                     raise ConnectionError("Sat Chat video peer disconnected")
+                async with asyncio.timeout(5.0):
+                    if not await runtime.async_send_bytes(frame):
+                        raise ConnectionError("Sat Chat media peer disconnected")
         except asyncio.CancelledError:
             raise
         except Exception:

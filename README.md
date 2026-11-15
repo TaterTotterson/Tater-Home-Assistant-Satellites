@@ -25,6 +25,9 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
+Latest changes: [1.4.10 release notes](RELEASE_NOTES.md), including Mini-Tater
+timers, per-satellite text styles and Echo hardware-platform update safeguards.
+
 ## Install with HACS
 
 [![Open your Home Assistant instance and add this repository to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TaterTotterson&repository=Tater-Home-Assistant-Satellites&category=integration)
@@ -51,7 +54,8 @@ integration from **Devices & services**.
   pipeline, with Disabled, Observe, and Enabled modes plus per-satellite results
 - Announcements, continued conversations, timers, TTS playback, and diagnostics
 - Direct Sat Chat audio and video calls between compatible satellites, relayed
-  locally over their existing authenticated connections
+  locally over their existing authenticated connections, with capability-gated
+  H.264 on updated Echo Shows/Spot and JPEG fallback for other pairs
 - Echo screen Climate and Cameras panels, including continuous Home Assistant
   camera streams with automatic snapshot fallback
 - Native Home Assistant media-player entities with URL and media-source music
@@ -96,6 +100,13 @@ Diagnostics sections; additional schema sections remain available under Other
 settings. Unsaved drafts stay available while moving between these workspaces.
 Save each section to apply it to the bridge.
 
+On updated Echo GPU UIs, each satellite's **Display & Night → Conversation
+text** selects **Smooth** (the default) or **Matrix** for recognized speech
+and replies. Matrix cycles symbols before letters settle in a shuffled order.
+The choice affects only that satellite; changes made on its touchscreen are
+saved back to the same override. Older firmware and non-Echo screens hide the
+option. Software-rendered screens keep the text readable without the effect.
+
 Use **Server & pairing** to view the Home Assistant address and active pairing
 code. **Add satellite** generates a new temporary pairing code.
 
@@ -130,7 +141,8 @@ Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses
 the default endpoint timing automatically and exposes no Tater-mode VAD options.
 
-Mini Tater has two built-in capabilities: `device_control` and `tater_vision`.
+Mini Tater has three built-in capabilities: `device_control`, `tater_vision`, and
+`voicepe_remote_timer` (Timer).
 Astraeus receives the same kind of stable tool catalog used by Tater, plans
 atomic natural-language steps, and Thanatos passes each locked step unchanged as
 `query` to the selected tool. Device control interprets actions and values,
@@ -157,6 +169,15 @@ verify the models and built-in tools without recording audio. The same chat acce
 up to four JPEG, PNG, WebP, or GIF attachments. Vision produces bounded visual
 context first, then the request continues through the normal audited Hydra flow;
 raw image data is never written to conversation history or the Hydra ledger.
+
+**Timer** follows the Tater Shop Verba's description and natural-language `query`
+contract. Ask to start named timers, check time remaining, cancel or silence an
+alarm, or snooze (five minutes by default). The satellite owns the timer state,
+countdown, and alarm, so it continues while disconnected; the bridge queries
+live state and does not restore or reset timers on reconnect. Start durations
+are capped at two hours, matching the Verba default. Voice requests use the
+asking satellite; in management chat, name the destination satellite or room.
+When a room or timer selection is ambiguous, Mini-Tater asks which one to use.
 
 ## Pair a satellite
 
@@ -408,11 +429,22 @@ Echo, and Tater ThirdReality release manifests and matches images by the
 firmware target reported by each satellite. Home Assistant downloads the
 requested image, verifies its published size and SHA-256 hash, and exposes it
 through a short-lived local URL. Echo Dot 2 (`biscuit`), Echo 2 (`radar`), Echo
-Show 5 first generation (`checkers`), Echo Show 8 first generation (`crown`),
+Show 5 first generation (`checkers`), Show 5 second generation (`cronos`), Echo Show 8 first generation (`crown`),
 Echo Show 8 second generation (`athena`), Echo Spot first generation (`rook`),
 and ThirdReality Voice & Music Assistant (`thirdreality_s420`) receive the same
 update entity, availability check, progress, reboot verification, and OTA flow
 as the other satellites.
+
+The new Echo hardware platform requires a **one-time full USB factory upgrade**
+from v4.2.3, even on satellites that previously supported OTA. The integration
+shows a USB-required explanation and disables OTA until the installed platform
+matches. The new app, bridge and system packages use a format that v4.2.3
+firmware itself rejects, so updating the host first is not required for safety.
+Use the matching Echo factory installer, keeping its default preserve-settings
+behavior; a rootfs-only `--repair` is not a kernel/platform upgrade. After USB
+migration, normal compatible OTA resumes. When Linux itself needs updating,
+the bridge stages the system, verifies its version after reboot, then sends
+the final app update. A rolled-back system does not advance to the final app.
 
 - Use **Install update** for a connected satellite. The integration sends the
   board-matched OTA image and tracks progress through the satellite entity.
@@ -422,11 +454,12 @@ as the other satellites.
 
 Echo factory installation is intentionally not offered through ESP Web Tools.
 Use the model-specific factory archive and installer published by Tater Echo
-Firmware. After that first installation, normal Biscuit and Checkers updates
-are wireless from Home Assistant, as are Radar, Crown, Athena, and Rook updates.
-When an older screen build needs the newer component-aware updater, Home
+Firmware. After installing the matching hardware platform, compatible updates
+are wireless from Home Assistant on all Echo targets.
+When a compatible screen build needs the newer component-aware updater, Home
 Assistant installs the published compatibility bridge, verifies its capability
-after reboot, and then sends the final release automatically.
+after reboot, and then sends the final release automatically. A compatibility
+bridge never bypasses the one-time USB platform requirement.
 
 ThirdReality S420 factory installation and recovery are also intentionally not
 offered through ESP Web Tools. They use the Amlogic Tater Local USB flow and

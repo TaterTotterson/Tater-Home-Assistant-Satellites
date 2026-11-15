@@ -27,6 +27,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from .timer_tool import TIMER_TOOL_ID, TIMER_VERBA_DESCRIPTION, TimerTool
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -193,6 +195,7 @@ TATER_VISION_VERBA_DESCRIPTION = (
     "covering that location. If no location is named, use trusted room context supplied by a satellite or other "
     "room-aware platform; when no room context exists, ask which room, area, or camera to use."
 )
+MINI_TATER_TOOL_IDS = ("device_control", "tater_vision", TIMER_TOOL_ID)
 
 _COMMANDS: dict[str, tuple[str | None, str, dict[str, str]]] = {
     "turn_on": (None, "turn_on", {}),
@@ -2061,6 +2064,7 @@ class MiniTaterRuntime:
             self.home._allowed,
             self._describe_images,
         )
+        self.timer = TimerTool(self.manager, self._timer_llm_json)
         self._clips: dict[str, tuple[float, str, bytes]] = {}
         self._turn_lock = asyncio.Lock()
         self._structured_text_fallbacks: set[str] = set()
@@ -2112,6 +2116,7 @@ class MiniTaterRuntime:
                 "examples": [row.public() for row in home_entities[:12]],
             },
             "tater_vision": vision_summary,
+            "timers": self.timer.summary(),
         }
 
     def ready_status(self) -> dict[str, Any]:
@@ -2406,7 +2411,7 @@ class MiniTaterRuntime:
             payload["tools"] = native_tools
             payload["tool_choice"] = tool_choice
         elif tools:
-            payload["tools"] = [self.home.definition(), self.vision.definition()]
+            payload["tools"] = [self.home.definition(), self.vision.definition(), self.timer.definition()]
             payload["tool_choice"] = tool_choice
         endpoint = _endpoint(model["base_url"], "/v1/chat/completions")
         for attempt in range(3):
@@ -2509,6 +2514,27 @@ class MiniTaterRuntime:
         )
         return self._message_json(message, "Device Control")
 
+    async def _timer_llm_json(
+        self, system_prompt: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Match the Timer Verba's bounded fallback for unusual durations."""
+        return await self._structured_head_json(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            role="thanatos",
+            function_name="extract_timer_duration",
+            description="Extract only the duration explicitly requested for this timer.",
+            schema={
+                "type": "object",
+                "properties": {"seconds": {"type": ["integer", "null"]}},
+                "required": ["seconds"],
+                "additionalProperties": False,
+            },
+            label="Timer duration",
+        )
+
     @staticmethod
     def _message_json(message: dict[str, Any], label: str) -> dict[str, Any]:
         """Extract one JSON object from a head response."""
@@ -2572,7 +2598,7 @@ class MiniTaterRuntime:
             if not natural_instruction:
                 raise RuntimeError("Astraeus planned a tool step without a natural-language instruction")
             tool_hint = _text(raw_step.get("tool_hint") or "device_control", 80)
-            if tool_hint not in {"device_control", "tater_vision"}:
+            if tool_hint not in MINI_TATER_TOOL_IDS:
                 raise RuntimeError("Astraeus selected an unavailable Mini-Tater tool")
             plan["steps"].append(
                 {
@@ -2593,21 +2619,25 @@ class MiniTaterRuntime:
             "Hermes replies and is not an example of your output format. "
             "Use mode chat for conversation, knowledge, or an attached-image request whose input already contains a visual "
             "observation. Use clarify only when a required target or value is truly missing. Use execute for Home Assistant "
-            "searches, reads, actions, or a request to inspect a current camera view. For execute, create an ordered atomic "
+            "searches, reads, actions, timer requests, or a request to inspect a current camera view. For execute, create an ordered atomic "
             "plan with one step for every requested action or visual question. Never omit a clause. Different device commands "
             "require separate steps; several devices receiving the same command may share one step. Resolve follow-up references "
             "in nl using the conversation transcript. Use device_control for Home Assistant device searches, states, and actions. "
             "Use tater_vision for current visual questions that require a fresh camera image, including what is visible, how the "
-            "user looks, or whether a person, animal, or object is in a named room or outdoor area. The nl field must preserve "
+            "user looks, or whether a person, animal, or object is in a named room or outdoor area. Use voicepe_remote_timer "
+            "for timer requests. Split different timer actions or separate new timers into their own natural-language steps. "
+            "The nl field must preserve "
             "the user's complete request, target, action, and value. Do not invent devices, cameras, locations, or values.\n"
             "Schema: {\"mode\":\"chat|clarify|execute\",\"goal\":\"...\",\"response\":\"optional\","
             "\"steps\":[{\"id\":\"step-1\",\"intent\":\"short purpose\","
-            "\"nl\":\"complete natural-language instruction\",\"tool_hint\":\"device_control|tater_vision\"}]}.\n"
+            "\"nl\":\"complete natural-language instruction\",\"tool_hint\":\"device_control|tater_vision|voicepe_remote_timer\"}]}.\n"
             "Astraeus stable execution catalog:\n"
-            "{\"available_tool_ids\":[\"device_control\",\"tater_vision\"],\"available_capabilities\":[{"
+            "{\"available_tool_ids\":[\"device_control\",\"tater_vision\",\"voicepe_remote_timer\"],\"available_capabilities\":[{"
             f"\"id\":\"device_control\",\"description\":{json.dumps(DEVICE_CONTROL_VERBA_DESCRIPTION, ensure_ascii=False)}"
             "},{"
             f"\"id\":\"tater_vision\",\"description\":{json.dumps(TATER_VISION_VERBA_DESCRIPTION, ensure_ascii=False)}"
+            "},{"
+            f"\"id\":\"voicepe_remote_timer\",\"description\":{json.dumps(TIMER_VERBA_DESCRIPTION, ensure_ascii=False)}"
             "}]}"
         )
 
@@ -2661,7 +2691,7 @@ class MiniTaterRuntime:
                             "nl": {"type": "string"},
                             "tool_hint": {
                                 "type": "string",
-                                "enum": ["device_control", "tater_vision"],
+                                "enum": list(MINI_TATER_TOOL_IDS),
                             },
                         },
                         "required": ["id", "intent", "nl", "tool_hint"],
@@ -2695,8 +2725,9 @@ class MiniTaterRuntime:
                 "role": "system",
                 "content": (
                     "You are Astraeus's second plan check. Verify that the proposed Home Assistant plan covers every "
-                    "action or current visual question in the user's request exactly once, uses only device_control or "
-                    "tater_vision, selects the correct tool for each step, keeps every nl instruction atomic and "
+                    "action, timer request, or current visual question in the user's request exactly once, uses only "
+                    "device_control, tater_vision, or voicepe_remote_timer, selects the correct tool for each step, "
+                    "keeps every nl instruction atomic and "
                     "natural-language-first, does not broaden targets, and does not invent devices, cameras, locations, "
                     "or values. Return JSON only: "
                     "{\"approved\":true|false,\"reason\":\"short specific reason\"}."
@@ -2752,11 +2783,14 @@ class MiniTaterRuntime:
         device_id: str = "",
     ) -> dict[str, Any]:
         tool_name = step["tool_hint"]
-        tool_definition = (
-            self.vision.definition()
-            if tool_name == "tater_vision"
-            else self.home.definition()
-        )
+        tool = {
+            "device_control": self.home,
+            "tater_vision": self.vision,
+            TIMER_TOOL_ID: self.timer,
+        }.get(tool_name)
+        if tool is None:
+            return {"ok": False, "error": "The planned tool is unavailable."}
+        tool_definition = tool.definition()
         planned_arguments = {"query": step["nl"]}
         messages = [
             {
@@ -2818,8 +2852,8 @@ class MiniTaterRuntime:
             ):
                 last_error = "Thanatos changed the locked Astraeus natural-language action"
                 continue
-            if tool_name == "tater_vision":
-                return await self.vision.async_call(
+            if tool_name in {"tater_vision", TIMER_TOOL_ID}:
+                return await tool.async_call(
                     proposed,
                     context,
                     request=step["nl"],
@@ -2833,8 +2867,10 @@ class MiniTaterRuntime:
         return (
             f"You are Hermes, Hydra's response head for {settings['assistant_name'] or 'Tater'}, a voice assistant inside Home Assistant.\n"
             f"{settings['personality']}\n"
-            "For an execution turn, report only outcomes supported by the supplied device_control or tater_vision results. "
-            "Cover every requested action or visual question, including partial failures. Use friendly device, camera, or "
+            "For an execution turn, report only outcomes supported by the supplied device_control, tater_vision, or "
+            "voicepe_remote_timer results. Cover every requested action, timer request, or visual question, including "
+            "partial failures. For timers, use verified names, durations, time left, or ringing state and ask for missing "
+            "duration, satellite, or timer selection when required. Use friendly device, camera, or "
             "room names and requested values. For vision, answer the exact question from the returned descriptions and do "
             "not add visual details the model did not report. "
             "Never claim a Home Assistant action happened when no verified execution result is supplied. "

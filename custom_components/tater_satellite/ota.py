@@ -34,6 +34,7 @@ class OtaState:
     required_capability: str = ""
     minimum_capability_version: int = 0
     final_command: dict[str, Any] = field(default_factory=dict)
+    expected_system_version: str = ""
 
     def begin(
         self,
@@ -44,18 +45,20 @@ class OtaState:
         required_capability: Any = "",
         minimum_capability_version: int = 0,
         final_command: dict[str, Any] | None = None,
+        expected_system_version: str = "",
         now: float | None = None,
     ) -> int:
         """Start a new OTA attempt and return its generation token."""
         started_at = time.time() if now is None else now
         self.attempt += 1
         self.in_progress = True
-        self.stage = "bridge" if stage == "bridge" else "final"
-        self.stage_count = 2 if self.stage == "bridge" else 1
+        self.stage = stage if stage in {'bridge', 'system'} else 'final'
+        self.stage_count = 2 if self.stage in {'bridge', 'system'} else 1
         self.progress = 0
         self.message = (
             "OTA compatibility bridge command sent (stage 1 of 2)"
             if self.stage == "bridge"
+            else "System OTA command sent (stage 1 of 2)" if self.stage == 'system'
             else "OTA command sent"
         )
         self.expected_version = _text(expected_version)
@@ -68,7 +71,18 @@ class OtaState:
             0, int(minimum_capability_version or 0)
         )
         self.final_command = dict(final_command or {})
+        self.expected_system_version = _text(expected_system_version)
         return self.attempt
+
+    def system_reconnect_ready(self, connection_generation: int, capabilities: dict[str, Any]) -> bool:
+        if (not self.in_progress or self.stage != 'system'
+                or connection_generation <= self.initial_connection_generation):
+            return False
+        if (not self.expected_system_version or
+                _text(capabilities.get('system_version')) != self.expected_system_version):
+            self.fail('System OTA did not boot the expected Linux version; the final app update was not sent.')
+            return False
+        return True
 
     @staticmethod
     def _capability_version(capabilities: dict[str, Any], name: str) -> int:
@@ -115,7 +129,7 @@ class OtaState:
         self.attempt += 1
         self.stage = "final"
         self.progress = 50
-        self.message = "OTA bridge verified; final firmware command sent (stage 2 of 2)"
+        self.message = "OTA platform verified; final firmware command sent (stage 2 of 2)"
         self.initial_connection_generation = max(0, int(connection_generation))
         self.disconnect_seen = False
         self.reboot_requested = False
@@ -149,7 +163,7 @@ class OtaState:
             if self.stage_count == 2:
                 self.progress = (
                     min(49, int(progress * 0.49))
-                    if self.stage == "bridge"
+                    if self.stage in {'bridge', 'system'}
                     else min(99, 50 + int(progress * 0.49))
                 )
             else:
@@ -173,6 +187,8 @@ class OtaState:
         self.message = self._reconnect_message()
 
     def _reconnect_message(self) -> str:
+        if self.stage == 'system':
+            return 'System OTA staged. Waiting for the expected Linux version before the final app update.'
         if self.stage == "bridge":
             return (
                 "OTA bridge installed. Waiting for the satellite to reconnect "
@@ -187,7 +203,7 @@ class OtaState:
         """Verify the first post-command connection against the release version."""
         if (
             not self.in_progress
-            or self.stage == "bridge"
+            or self.stage in {'bridge', 'system'}
             or int(connection_generation) <= self.initial_connection_generation
         ):
             return

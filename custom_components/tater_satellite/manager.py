@@ -82,6 +82,7 @@ from .settings import (
     normalize_wake_family_settings,
     speaker_defaults_for,
     supports_do_not_disturb,
+    supports_screen_text_style,
     wake_family_for,
 )
 from .trainer import TrainerLinkManager
@@ -186,6 +187,7 @@ _SETTINGS_WIRE_GROUPS = (
         "screen_night_end",
         "screen_night_display",
         "screen_clock_format",
+        "screen_text_style",
         "screen_local_time_seconds",
     ),
 )
@@ -678,7 +680,7 @@ class SatelliteRuntime:
             ),
         )
         available = self.manager.firmware.info_for_board(
-            self.firmware_catalog_target
+            self.firmware_catalog_target, self.capabilities
         )
         installed = self.firmware_version
         latest = text(available.get("firmware_version"))
@@ -1260,6 +1262,36 @@ class TaterSatelliteManager:
             else {}
         )
         overrides["volume_percent"] = volume
+        runtime.record["overrides"] = overrides
+        self.store.async_delay_save(lambda: self.data, 1.0)
+        return True
+
+    def _adopt_reported_device_text_style(
+        self, runtime: SatelliteRuntime, payload: dict[str, Any]
+    ) -> bool:
+        """Keep an accepted local screen choice scoped to this satellite."""
+        if not supports_screen_text_style(runtime.board, runtime.capabilities):
+            return False
+        if (
+            runtime.settings_sync_state != "confirmed"
+            or payload.get("error")
+            or payload.get("ok") is False
+        ):
+            return False
+        live = payload.get("settings")
+        if not isinstance(live, dict):
+            return False
+        style = live.get("screen_text_style")
+        if not isinstance(style, str) or style not in {"smooth", "matrix"}:
+            return False
+        overrides = (
+            dict(runtime.record.get("overrides"))
+            if isinstance(runtime.record.get("overrides"), dict)
+            else {}
+        )
+        if overrides.get("screen_text_style") == style:
+            return False
+        overrides["screen_text_style"] = style
         runtime.record["overrides"] = overrides
         self.store.async_delay_save(lambda: self.data, 1.0)
         return True
@@ -2308,7 +2340,8 @@ class TaterSatelliteManager:
         attempt = runtime.ota.begin(
             expected_version,
             runtime.connection_generation,
-            stage="bridge" if migration else "final",
+            stage="system" if initial_kind == 'system' else "bridge" if migration else "final",
+            expected_system_version=text(plan.get('system_version')),
             required_capability=migration.get("required_capability"),
             minimum_capability_version=int(
                 migration.get("minimum_capability_version") or 0
@@ -2317,7 +2350,7 @@ class TaterSatelliteManager:
         )
         runtime.notify()
         if not await runtime.async_send(
-            "ota.url",
+            "ota.system.url" if initial_kind == 'system' else "ota.url",
             {
                 "url": url,
                 "sha256": signed.sha256,
@@ -2336,7 +2369,7 @@ class TaterSatelliteManager:
         return {
             "ok": True,
             "url": url,
-            "staged": bool(migration),
+            "staged": bool(final_kind),
             "device": runtime.public_snapshot(),
         }
 
@@ -2609,6 +2642,7 @@ class TaterSatelliteManager:
                 )
                 runtime.settings_last_confirmed = time.time()
             self._adopt_reported_device_volume(runtime, payload)
+            self._adopt_reported_device_text_style(runtime, payload)
             runtime.notify()
             return
         if kind in {"log", "ota.status"}:
@@ -2833,8 +2867,10 @@ class TaterSatelliteManager:
             await self._update_record_from_hello(runtime, payload)
             self.bluetooth.async_connect_runtime(runtime)
             ota_was_in_progress = runtime.ota.in_progress
-            if runtime.ota.stage == "bridge":
-                if runtime.ota.bridge_reconnect_ready(
+            if runtime.ota.stage in {'bridge', 'system'}:
+                ready = (runtime.ota.system_reconnect_ready if runtime.ota.stage == 'system'
+                         else runtime.ota.bridge_reconnect_ready)
+                if ready(
                     runtime.connection_generation,
                     runtime.capabilities,
                 ):

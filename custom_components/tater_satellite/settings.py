@@ -108,6 +108,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "screen_night_end": "07:00",
     "screen_night_display": "red_clock",
     "screen_clock_format": "12h",
+    "screen_text_style": "smooth",
     "screen_climate_entity": "",
     "screen_room_temperature_entities": "",
     "led_brightness": 80,
@@ -130,6 +131,7 @@ ECHO_SCREEN_DEFAULTS: dict[str, Any] = {
     "screen_night_end": "07:00",
     "screen_night_display": "red_clock",
     "screen_clock_format": "12h",
+    "screen_text_style": "smooth",
 }
 
 FIRMWARE_SETTING_KEYS = {
@@ -186,6 +188,7 @@ FIRMWARE_SETTING_KEYS = {
     "screen_night_end",
     "screen_night_display",
     "screen_clock_format",
+    "screen_text_style",
     "led_brightness",
     "led_color",
     "led_listening_animation",
@@ -986,7 +989,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
             "and overnight behavior."
         ),
         "scopes": ["device"],
-        "include_boards": ["s3_box", "checkers", "crown", "athena", "rook"],
+        "include_boards": ["s3_box", "checkers", "cronos", "crown", "athena", "rook"],
         "required_capability": "screen_power_management_version",
         "minimum_capability_version": 1,
         "capability_fallback_boards": ["s3_box"],
@@ -1001,6 +1004,23 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                     {"value": "12h", "label": "12-hour (6:48 PM)"},
                     {"value": "24h", "label": "24-hour (18:48)"},
                 ],
+            },
+            {
+                "key": "screen_text_style",
+                "label": "Conversation text",
+                "type": "select",
+                "exclude_boards": ["s3_box"],
+                "required_capability": "screen_text_style",
+                "options": [
+                    {"value": "smooth", "label": "Smooth (default)"},
+                    {"value": "matrix", "label": "Matrix"},
+                ],
+                "description": (
+                    "Animate recognized speech and replies on this satellite. "
+                    "Smooth slides and fades; Matrix cycles symbols before letters "
+                    "settle in a shuffled order. Requires the GPU UI; software "
+                    "rendering keeps text readable without the effect."
+                ),
             },
             {
                 "key": "screen_climate_entity",
@@ -1220,6 +1240,7 @@ _ALLOWED = {
     "audio_output_mode": {"auto", "internal", "aux", "both"},
     "screen_night_display": {"dim", "red_clock", "off"},
     "screen_clock_format": {"12h", "24h"},
+    "screen_text_style": {"smooth", "matrix"},
     "logging_level": {"error", "warning", "info", "debug"},
     "led_listening_animation": {
         row["value"] for row in LISTENING_ANIMATION_OPTIONS
@@ -1403,6 +1424,8 @@ def board_supports_screen_settings(board: Any) -> bool:
         "checkers",
         "echo-show-5",
         "echo-show-5-1st-gen",
+        "cronos",
+        "echo-show-5-2nd-gen",
         "crown",
         "echo-show-8",
         "echo-show-8-1st-gen",
@@ -1416,6 +1439,8 @@ def board_supports_screen_settings(board: Any) -> bool:
         "checkers",
         "echoshow5",
         "echoshow51stgen",
+        "cronos",
+        "echoshow52ndgen",
         "crown",
         "echoshow8",
         "echoshow81stgen",
@@ -1479,6 +1504,11 @@ def supports_screen_clock_format(
         return False
     values = capabilities if isinstance(capabilities, dict) else {}
     return values.get("screen_clock_format") is True
+
+
+def supports_screen_text_style(board: Any, capabilities: dict[str, Any] | None = None) -> bool:
+    """Only the updated Echo screen firmware accepts this presentation choice."""
+    return board_is_echo_screen(board) and (capabilities or {}).get("screen_text_style") is True
 
 
 def board_supports_audio_output_settings(board: Any) -> bool:
@@ -1721,6 +1751,8 @@ def firmware_payload(
     )
     if not supports_screen_clock_format(board, capabilities):
         payload.pop("screen_clock_format", None)
+    if not supports_screen_text_style(board, capabilities):
+        payload.pop("screen_text_style", None)
     if supports_screen_power_management(board, capabilities):
         if board_is_s3_screen(board):
             for key in (

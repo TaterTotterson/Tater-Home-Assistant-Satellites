@@ -107,6 +107,22 @@ def required_ota_migration(
     return {}
 
 
+def ota_upgrade_requirement(device: dict[str, Any], capabilities: dict[str, Any]) -> str:
+    """Block a platform transition before offering a compatibility bridge."""
+    policy = device.get("ota_policy")
+    if policy is None:
+        return ""
+    if (not isinstance(policy, dict)
+            or type(policy.get("package_schema")) is not int
+            or policy["package_schema"] < 2
+            or not str(policy.get("platform") or "").strip()):
+        return "Echo OTA platform policy is invalid; update is blocked."
+    if (capability_version(capabilities, "ota_package_schema") < policy["package_schema"]
+            or str(capabilities.get("ota_platform") or "").strip() != str(policy["platform"]).strip()):
+        return "One-time full USB upgrade required for this Echo hardware update. Wi-Fi, pairing and satellite settings are preserved by default; do not use rootfs-only repair."
+    return ""
+
+
 def normalize_echo_manifest(
     payload: dict[str, Any],
     *,
@@ -125,10 +141,16 @@ def normalize_echo_manifest(
         key = board_manifest_key(raw_key)
         if not key or not isinstance(raw_target, dict):
             continue
+        raw_system = raw_target.get('system_ota')
+        if raw_system is not None and not isinstance(raw_system, dict):
+            raise ValueError(f'Tater Echo {key} System OTA policy is invalid')
+        minimum_system = str((raw_system or {}).get('minimum_system_version') or version).strip()
+        if _VERSION.search(minimum_system) is None:
+            raise ValueError(f'Tater Echo {key} minimum system version is invalid')
         raw_artifacts = raw_target.get("artifacts")
         artifacts: dict[str, dict[str, Any]] = {}
         if isinstance(raw_artifacts, dict):
-            for kind in ("factory", "ota", "ota_bridge"):
+            for kind in ("factory", "ota", "ota_bridge", "system"):
                 raw_artifact = raw_artifacts.get(kind)
                 if not isinstance(raw_artifact, dict):
                     continue
@@ -210,6 +232,8 @@ def normalize_echo_manifest(
                 "flash_size": "",
                 "artifacts": artifacts,
                 "ota_migrations": migrations,
+                "ota_policy": raw_target.get("ota_policy"),
+                "minimum_system_version": minimum_system,
                 "browser_usb_supported": False,
                 "factory_install_external": True,
                 "release_url": ECHO_FIRMWARE_RELEASE_URL,
@@ -541,6 +565,8 @@ class FirmwareCatalog:
                     for item in row.get("ota_migrations", [])
                     if isinstance(item, dict)
                 ],
+                "ota_policy": row.get("ota_policy"),
+                "minimum_system_version": row.get("minimum_system_version"),
             }
         return {
             "available": bool(devices),
@@ -559,11 +585,11 @@ class FirmwareCatalog:
             "source_errors": dict(self._source_errors),
         }
 
-    def info_for_board(self, board: Any) -> dict[str, Any]:
+    def info_for_board(self, board: Any, capabilities: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return update metadata for one board."""
         key = board_manifest_key(board)
         public = self.snapshot().get("devices", {}).get(key)
-        return (
+        result = (
             dict(public)
             if isinstance(public, dict)
             else {
@@ -573,6 +599,14 @@ class FirmwareCatalog:
                 "has_factory": False,
             }
         )
+        if capabilities is not None:
+            reason = ota_upgrade_requirement(result, capabilities)
+            result['usb_upgrade_required'] = bool(reason)
+            result['ota_blocked_reason'] = reason
+            if reason:
+                result['has_ota'] = False
+                result['has_ota_bridge'] = False
+        return result
 
     def _device_row(self, board: Any) -> dict[str, Any]:
         key = board_manifest_key(board)
@@ -590,6 +624,20 @@ class FirmwareCatalog:
     ) -> dict[str, Any]:
         """Choose the direct or staged OTA artifacts for one satellite."""
         device = self._device_row(board)
+        reason = ota_upgrade_requirement(device, capabilities or {})
+        if reason:
+            raise RuntimeError(reason)
+        artifacts = device.get('artifacts') or {}
+        minimum_system = str(device.get('minimum_system_version') or '').strip()
+        if (isinstance(artifacts.get('system'), dict) and minimum_system
+                and version_tuple((capabilities or {}).get('system_version')) < version_tuple(minimum_system)):
+            if capability_version(capabilities or {}, 'system_ota_version') < 1:
+                raise RuntimeError('This Echo needs a full USB upgrade before a system update is possible.')
+            # USB-upgraded firmware already understands the new package and
+            # sidecar formats. Stage the rootfs, verify its version on hello,
+            # then update the app override that remains on writable /data.
+            return {'initial_kind': 'system', 'final_kind': 'ota', 'migration': {},
+                    'system_version': device['firmware_version']}
         migration = required_ota_migration(device, capabilities or {})
         if migration:
             return {

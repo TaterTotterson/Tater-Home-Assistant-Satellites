@@ -137,6 +137,12 @@ three heads share the Base language model. Enable **Beast Mode** to keep any
 role on Base or give it a dedicated OpenAI-compatible endpoint, model, and API
 key.
 
+Mini-Tater supplies the asking satellite's name and current room to every Hydra
+head and the plan review, using the same default-room rule as Tater. Requests
+such as "turn on the lights" use that room unless the user names another room
+or a specific device. Each turn reads the room again; management chat has no
+assumed room, and an unassigned satellite never supplies a guessed location.
+
 Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses
 the default endpoint timing automatically and exposes no Tater-mode VAD options.

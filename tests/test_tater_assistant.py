@@ -709,6 +709,172 @@ class _Vision:
         }
 
 
+class MiniHydraRoomContextTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def runtime(room="Kitchen"):
+        manager = _Manager()
+        manager.runtimes = {
+            "sat-1": SimpleNamespace(
+                name="Kitchen satellite", room=room, record={"room": "Bedroom"}
+            )
+        }
+        runtime = tater.MiniTaterRuntime(manager)
+        runtime.setup()
+        runtime.home = _Home()
+        return runtime, manager
+
+    @staticmethod
+    def plan(query):
+        return {
+            "role": "assistant",
+            "content": json.dumps({
+                "mode": "execute", "goal": query, "response": "",
+                "steps": [{
+                    "id": "lights", "intent": query, "nl": query,
+                    "tool_hint": "device_control",
+                }],
+            }),
+        }
+
+    @staticmethod
+    def tool_call(query):
+        return {
+            "role": "assistant",
+            "tool_calls": [{"function": {
+                "name": "device_control", "arguments": json.dumps({"query": query}),
+            }}],
+        }
+
+    async def test_resolved_room_reaches_every_head_and_survives_plan_and_tool_repairs(self):
+        runtime, manager = self.runtime()
+        manager.data["tater_settings"]["hydra_astraeus_plan_review_enabled"] = True
+        query = "Turn on the Kitchen lights"
+        responses = iter([
+            self.plan(query),
+            {"role": "assistant", "content": '{"approved":false,"reason":"Check the requested target"}'},
+            self.plan(query),
+            {"role": "assistant", "content": '{"approved":true,"reason":"Correct room"}'},
+            self.tool_call("Turn on all lights"),
+            self.tool_call(query),
+            {"role": "assistant", "content": "The Kitchen lights are on."},
+        ])
+        calls = []
+
+        async def chat(messages, *, role="hermes", **_kwargs):
+            calls.append((role, messages))
+            return next(responses)
+
+        runtime._chat = chat
+        await runtime.async_process_text(
+            "Turn on the lights", conversation_id="voice", device_id="sat-1"
+        )
+
+        self.assertEqual(
+            [role for role, _messages in calls],
+            ["astraeus", "astraeus", "astraeus", "astraeus", "thanatos", "thanatos", "hermes"],
+        )
+        for _role, messages in calls:
+            prompt = messages[0]["content"]
+            self.assertIn('- Device: "Kitchen satellite"', prompt)
+            self.assertIn('- Area/Room: "Kitchen"', prompt)
+            self.assertNotIn('- Area/Room: "Bedroom"', prompt)
+            self.assertIn("DEFAULT ROOM RULE", prompt)
+        self.assertEqual(runtime.home.calls[0][0], {"query": query})
+        self.assertEqual(len(runtime.home.calls), 1)
+        ledger = manager.data["tater_hydra_ledger"][-1]
+        self.assertEqual(ledger["request"], "Turn on the lights")
+        self.assertEqual(ledger["voice_context"], {
+            "device_id": "sat-1", "device_name": "Kitchen satellite", "area_name": "Kitchen",
+        })
+        self.assertEqual(
+            manager.data["tater_conversations"]["voice"][0]["content"], "Turn on the lights"
+        )
+
+    async def test_explicit_room_is_not_replaced_by_the_satellite_room(self):
+        runtime, _manager = self.runtime()
+        query = "Turn on the Bedroom fan"
+        responses = iter([
+            self.plan(query), self.tool_call(query),
+            {"role": "assistant", "content": "The Bedroom fan is on."},
+        ])
+        planner_input = []
+
+        async def chat(messages, *, role="hermes", **_kwargs):
+            if role == "astraeus":
+                planner_input.append(json.loads(messages[-1]["content"]))
+                self.assertIn(
+                    "An explicitly requested room or device always takes precedence",
+                    messages[0]["content"],
+                )
+            return next(responses)
+
+        runtime._chat = chat
+        await runtime.async_process_text(
+            query, conversation_id="explicit", device_id="sat-1"
+        )
+        self.assertEqual(planner_input[0]["request"], query)
+        self.assertEqual(runtime.home.calls[0][0], {"query": query})
+
+    async def test_room_is_refreshed_each_turn_and_does_not_leak_into_panel_chat(self):
+        runtime, manager = self.runtime()
+        prompts = []
+
+        async def chat(messages, *, role="hermes", **_kwargs):
+            prompts.append((role, messages[0]["content"]))
+            if role == "astraeus":
+                return {"role": "assistant", "content": json.dumps({
+                    "mode": "chat", "goal": "Answer", "response": "", "steps": [],
+                })}
+            return {"role": "assistant", "content": "Hello."}
+
+        runtime._chat = chat
+        await runtime.async_process_text("Hello", conversation_id="shared", device_id="sat-1")
+        manager.runtimes["sat-1"].room = "Office"
+        await runtime.async_process_text("Hello again", conversation_id="shared", device_id="sat-1")
+        await runtime.async_process_text("Hello", conversation_id="shared", device_id="management-panel")
+
+        self.assertEqual([role for role, _prompt in prompts], ["astraeus", "hermes"] * 3)
+        for _role, prompt in prompts[:2]:
+            self.assertIn('- Area/Room: "Kitchen"', prompt)
+        for _role, prompt in prompts[2:4]:
+            self.assertIn('- Area/Room: "Office"', prompt)
+            self.assertNotIn('- Area/Room: "Kitchen"', prompt)
+        for _role, prompt in prompts[4:]:
+            self.assertNotIn("VOICE CONTEXT", prompt)
+        contexts = [row["voice_context"] for row in manager.data["tater_hydra_ledger"]]
+        self.assertEqual([row.get("area_name") for row in contexts], ["Kitchen", "Office", None])
+        for row in manager.data["tater_conversations"]["shared"]:
+            self.assertNotIn("VOICE CONTEXT", row["content"])
+
+    async def test_unassigned_and_unknown_satellites_do_not_guess_a_room(self):
+        runtime, manager = self.runtime(room="")
+        prompts = []
+
+        async def chat(messages, *, role="hermes", **_kwargs):
+            prompts.append(messages[0]["content"])
+            if role == "astraeus":
+                return {"role": "assistant", "content": json.dumps({
+                    "mode": "clarify", "goal": "Find the room", "response": "Which room?", "steps": [],
+                })}
+            return {"role": "assistant", "content": "Which room?"}
+
+        runtime._chat = chat
+        await runtime.async_process_text(
+            "Turn on the lights", conversation_id="unassigned", device_id="sat-1"
+        )
+        for prompt in prompts:
+            self.assertIn('- Area/Room: "(unknown)"', prompt)
+            self.assertIn("If Area/Room is unknown, do not guess a room", prompt)
+            self.assertNotIn('- Area/Room: "Bedroom"', prompt)
+        prompts.clear()
+        await runtime.async_process_text(
+            "Turn on the lights", conversation_id="unknown", device_id="missing-sat"
+        )
+        for prompt in prompts:
+            self.assertNotIn("VOICE CONTEXT", prompt)
+        self.assertEqual(manager.data["tater_hydra_ledger"][-1]["voice_context"], {})
+
+
 class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
     class _TestVad:
         @staticmethod

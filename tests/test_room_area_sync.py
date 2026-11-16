@@ -23,7 +23,6 @@ ENTRY_ID = "entry-1"
 
 MANAGER_METHODS = (
     "_registry_device",
-    "area_name_for",
     "_async_device_registry_updated",
     "_async_area_registry_updated",
     "_apply_firmware_room",
@@ -141,12 +140,18 @@ class FakeAreaRegistry:
             if area.name.casefold() == name.casefold():
                 return area
         self.created.append(name)
-        return self.add(name.lower().replace(" ", "_"), name)
+        base_id = name.lower().replace(" ", "_")
+        area_id = base_id
+        suffix = 2
+        while area_id in self.areas:
+            area_id = f"{base_id}_{suffix}"
+            suffix += 1
+        return self.add(area_id, name)
 
 
 def fake_runtime(manager: Any, device_id: str, record: dict) -> SimpleNamespace:
     """Stand in for SatelliteRuntime in _authenticate."""
-    return SimpleNamespace(
+    return FakeRuntime(
         manager=manager, device_id=device_id, name=record["name"], record=record
     )
 
@@ -199,8 +204,12 @@ ROOM = load_methods(
 )["room"]
 
 
-def make_runtime(device_id: str, room: str = "") -> SimpleNamespace:
-    return SimpleNamespace(
+class FakeRuntime(SimpleNamespace):
+    room = property(ROOM)
+
+
+def make_runtime(device_id: str, room: str = "") -> FakeRuntime:
+    return FakeRuntime(
         device_id=device_id,
         name=device_id,
         record={"room": room, "name": device_id},
@@ -220,75 +229,81 @@ class RuntimeRoomTests(unittest.TestCase):
         self.manager, self.devices, self.areas = build_manager()
 
     def runtime_room(self, manager: Any, record_room: str = "Kitchen") -> str:
-        runtime = SimpleNamespace(
+        return ROOM(SimpleNamespace(
             manager=manager, device_id="sat-1", record={"room": record_room}
-        )
-        return ROOM(runtime)
+        ))
 
-    def test_room_prefers_the_ha_area_name(self) -> None:
+    def test_firmware_room_wins_over_a_different_ha_area(self) -> None:
         self.areas.add("bedroom", "Bedroom")
         self.devices.add("sat-1", "reg-1", "bedroom")
-        self.assertEqual(self.runtime_room(self.manager), "Bedroom")
+        self.assertEqual(self.runtime_room(self.manager), "Kitchen")
+        self.assertEqual(self.devices.lookups, [])
 
-    def test_room_falls_back_to_the_firmware_room_without_an_area(self) -> None:
+    def test_room_uses_firmware_without_an_area(self) -> None:
         self.devices.add("sat-1", "reg-1", None)
         self.assertEqual(self.runtime_room(self.manager), "Kitchen")
 
-    def test_room_falls_back_without_a_registry_device(self) -> None:
+    def test_room_uses_firmware_without_a_registry_device(self) -> None:
         self.assertEqual(self.runtime_room(self.manager), "Kitchen")
 
-    def test_room_does_not_write_the_area_into_the_record(self) -> None:
+    def test_ha_area_rename_cannot_change_the_firmware_room(self) -> None:
+        area = self.areas.add("kitchen", "Kitchen")
+        self.devices.add("sat-1", "reg-1", "kitchen")
+        area.name = "Bedroom"
+        self.assertEqual(self.runtime_room(self.manager), "Kitchen")
+
+    def test_room_is_independent_of_the_ha_registry(self) -> None:
+        self.devices.async_get_device = Mock(side_effect=RuntimeError("unavailable"))
+        self.assertEqual(self.runtime_room(self.manager), "Kitchen")
+        self.devices.async_get_device.assert_not_called()
+
+    def test_room_works_without_a_manager(self) -> None:
+        self.assertEqual(ROOM(SimpleNamespace(record={"room": "Kitchen"})), "Kitchen")
+
+    def test_room_trims_firmware_metadata(self) -> None:
+        self.assertEqual(self.runtime_room(self.manager, " Office "), "Office")
+
+    def test_unknown_firmware_room_does_not_fall_back_to_ha(self) -> None:
         self.areas.add("bedroom", "Bedroom")
         self.devices.add("sat-1", "reg-1", "bedroom")
-        runtime = SimpleNamespace(
-            manager=self.manager, device_id="sat-1", record={"room": "Kitchen"}
-        )
-        self.assertEqual(ROOM(runtime), "Bedroom")
-        self.assertEqual(runtime.record["room"], "Kitchen")
-
-    def test_room_uses_the_record_when_the_manager_has_no_hass(self) -> None:
-        manager = SimpleNamespace(area_name_for=Mock(return_value="Bedroom"))
-        self.assertEqual(self.runtime_room(manager), "Kitchen")
-        manager.area_name_for.assert_not_called()
-
-    def test_room_uses_the_record_when_the_manager_has_no_helper(self) -> None:
-        manager = SimpleNamespace(hass=object())
-        self.assertEqual(self.runtime_room(manager), "Kitchen")
-
-    def test_room_uses_the_record_when_the_helper_fails(self) -> None:
-        manager = SimpleNamespace(
-            hass=object(), area_name_for=Mock(side_effect=RuntimeError("no registry"))
-        )
-        self.assertEqual(self.runtime_room(manager), "Kitchen")
-
-    def test_room_ignores_non_string_helper_results(self) -> None:
-        manager = SimpleNamespace(hass=object(), area_name_for=Mock(return_value=Mock()))
-        self.assertEqual(self.runtime_room(manager), "Kitchen")
-
-    def test_room_is_empty_without_area_or_firmware_room(self) -> None:
-        self.assertEqual(self.runtime_room(self.manager, record_room=""), "")
+        self.assertEqual(self.runtime_room(self.manager, ""), "")
 
 
-class AreaNameForTests(unittest.TestCase):
+class FirmwareAreaMatchingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manager, self.devices, self.areas = build_manager()
 
-    def test_returns_the_area_name(self) -> None:
-        self.areas.add("living_room", " Living Room ")
-        self.devices.add("sat-1", "reg-1", "living_room")
-        self.assertEqual(self.manager.area_name_for("sat-1"), "Living Room")
-        self.assertEqual(self.devices.lookups, [{(DOMAIN, "sat-1")}])
+    def test_existing_area_matches_firmware_case_insensitively(self) -> None:
+        self.areas.add("office", "Office")
+        self.devices.add("sat-1", "reg-1", "bedroom")
+        self.manager._apply_firmware_room("sat-1", "office")
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "office"})])
+        self.assertEqual(self.areas.created, [])
 
-    def test_no_device(self) -> None:
-        self.assertEqual(self.manager.area_name_for("sat-1"), "")
+    def test_matching_area_never_writes_or_loops(self) -> None:
+        self.areas.add("office", "Office")
+        self.devices.add("sat-1", "reg-1", "office")
+        for _ in range(3):
+            self.manager._apply_firmware_room("sat-1", "Office")
+        self.assertEqual(self.devices.updates, [])
 
-    def test_device_without_area(self) -> None:
+    def test_unknown_firmware_room_unassigns_the_satellite_only(self) -> None:
+        self.devices.add("sat-1", "reg-1", "office")
+        other = self.devices.add("sat-2", "reg-2", "office")
+        self.manager._apply_firmware_room("sat-1", "")
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": None})])
+        self.assertEqual(other.area_id, "office")
+        self.assertEqual(self.areas.requested, [])
+
+    def test_unknown_room_without_an_assignment_makes_no_change(self) -> None:
         self.devices.add("sat-1", "reg-1", None)
-        self.assertEqual(self.manager.area_name_for("sat-1"), "")
+        self.manager._apply_firmware_room("sat-1", "")
+        self.assertEqual(self.devices.updates, [])
+        self.assertEqual(self.areas.created, [])
 
-    def test_area_missing_from_registry(self) -> None:
-        self.devices.add("sat-1", "reg-1", "gone")
-        self.assertEqual(self.manager.area_name_for("sat-1"), "")
+    def test_missing_device_does_not_create_an_area(self) -> None:
+        self.manager._apply_firmware_room("sat-1", "Kitchen")
+        self.assertEqual(self.areas.requested, [])
 
 
 class RegistryDeviceLookupTests(unittest.TestCase):
@@ -297,7 +312,7 @@ class RegistryDeviceLookupTests(unittest.TestCase):
         manager, _, areas = build_manager(devices)
         areas.add("bedroom", "Bedroom")
         devices.add("sat-1", "reg-1", "bedroom")
-        self.assertEqual(manager.area_name_for("sat-1"), "Bedroom")
+        manager._apply_firmware_room("sat-1", "Bedroom")
         self.assertEqual(devices.entry_lookups, [((DOMAIN, "sat-1"), ENTRY_ID)])
         self.assertEqual(devices.lookups, [])
 
@@ -323,24 +338,36 @@ class RegistryDeviceLookupTests(unittest.TestCase):
 class DeviceRegistryEventTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manager, self.devices, self.areas = build_manager()
-        self.sat1 = make_runtime("sat-1")
-        self.sat2 = make_runtime("sat-2")
+        self.sat1 = make_runtime("sat-1", "Kitchen")
+        self.sat2 = make_runtime("sat-2", "Bedroom")
+        self.areas.add("kitchen", "Kitchen")
+        self.areas.add("bedroom", "Bedroom")
         self.manager.runtimes = {"sat-1": self.sat1, "sat-2": self.sat2}
         self.devices.add("sat-1", "reg-1", "kitchen")
         self.devices.add("sat-2", "reg-2", "bedroom")
 
-    def test_area_change_of_our_device_notifies_it(self) -> None:
+    def test_area_change_is_repaired_without_overriding_the_room(self) -> None:
+        self.devices.by_identifier[(DOMAIN, "sat-2")].area_id = "kitchen"
         self.manager._async_device_registry_updated(
             device_event("update", "reg-2", {"area_id": "kitchen"})
         )
         self.sat2.notify.assert_called_once_with()
         self.sat1.notify.assert_not_called()
+        self.assertEqual(self.sat2.room, "Bedroom")
+        self.assertEqual(self.devices.updates, [("reg-2", {"area_id": "bedroom"})])
+        # The resulting HA event is idempotent, so it cannot create a loop.
+        self.manager._async_device_registry_updated(
+            device_event("update", "reg-2", {"area_id": "kitchen"})
+        )
+        self.assertEqual(len(self.devices.updates), 1)
 
     def test_area_cleared_notifies(self) -> None:
+        self.devices.by_identifier[(DOMAIN, "sat-1")].area_id = None
         self.manager._async_device_registry_updated(
             device_event("update", "reg-1", {"area_id": None})
         )
         self.sat1.notify.assert_called_once_with()
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "kitchen"})])
 
     def test_other_devices_are_ignored(self) -> None:
         self.manager._async_device_registry_updated(
@@ -357,13 +384,16 @@ class DeviceRegistryEventTests(unittest.TestCase):
         self.sat1.notify.assert_not_called()
         self.assertEqual(self.devices.lookups, [])
 
-    def test_create_and_remove_are_ignored(self) -> None:
-        for action in ("create", "remove"):
-            self.manager._async_device_registry_updated(
-                device_event(action, "reg-1", {"area_id": "kitchen"})
-            )
+    def test_remove_is_ignored(self) -> None:
+        self.manager._async_device_registry_updated(device_event("remove", "reg-1"))
         self.sat1.notify.assert_not_called()
         self.assertEqual(self.devices.lookups, [])
+
+    def test_new_registry_device_is_matched_after_entity_creation(self) -> None:
+        self.devices.by_identifier[(DOMAIN, "sat-1")].area_id = "bedroom"
+        self.manager._async_device_registry_updated(device_event("create", "reg-1"))
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "kitchen"})])
+        self.sat1.notify.assert_called_once_with()
 
     def test_registry_failures_never_raise(self) -> None:
         self.devices.async_get_device = Mock(side_effect=RuntimeError("boom"))
@@ -376,9 +406,11 @@ class DeviceRegistryEventTests(unittest.TestCase):
 class AreaRegistryEventTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manager, self.devices, self.areas = build_manager()
-        self.kitchen_a = make_runtime("sat-1")
-        self.kitchen_b = make_runtime("sat-2")
-        self.bedroom = make_runtime("sat-3")
+        self.kitchen_a = make_runtime("sat-1", "Kitchen")
+        self.kitchen_b = make_runtime("sat-2", "Kitchen")
+        self.bedroom = make_runtime("sat-3", "Bedroom")
+        self.areas.add("kitchen", "Kitchen")
+        self.areas.add("bedroom", "Bedroom")
         self.unregistered = make_runtime("sat-4")
         self.manager.runtimes = {
             runtime.device_id: runtime
@@ -396,12 +428,23 @@ class AreaRegistryEventTests(unittest.TestCase):
     def area_event(self, action: str, area_id: str | None) -> SimpleNamespace:
         return SimpleNamespace(data={"action": action, "area_id": area_id})
 
-    def test_rename_notifies_only_runtimes_in_that_area(self) -> None:
+    def test_rename_rematches_only_satellites_and_preserves_firmware(self) -> None:
+        self.areas.areas["kitchen"].name = "Lounge"
+        other = self.devices.add("unrelated", "reg-other", "kitchen")
         self.manager._async_area_registry_updated(self.area_event("update", "kitchen"))
         self.kitchen_a.notify.assert_called_once_with()
         self.kitchen_b.notify.assert_called_once_with()
         self.bedroom.notify.assert_not_called()
         self.unregistered.notify.assert_not_called()
+        self.assertEqual(self.kitchen_a.room, "Kitchen")
+        self.assertEqual(self.kitchen_b.room, "Kitchen")
+        self.assertEqual(self.areas.created, ["Kitchen"])
+        self.assertEqual(self.devices.updates, [
+            ("reg-1", {"area_id": "kitchen_2"}),
+            ("reg-2", {"area_id": "kitchen_2"}),
+        ])
+        self.assertEqual(other.area_id, "kitchen")
+        self.assertEqual(self.areas.areas["kitchen"].name, "Lounge")
 
     def test_other_actions_are_ignored(self) -> None:
         for action in ("create", "remove", "reorder"):
@@ -444,24 +487,27 @@ class HelloRoomTests(unittest.TestCase):
         self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "game_room"})])
         self.manager.async_save.assert_awaited_once()
 
-    def test_unchanged_firmware_room_keeps_an_area_chosen_in_ha(self) -> None:
+    def test_reconnect_repairs_an_ha_override_even_if_firmware_room_is_unchanged(self) -> None:
         self.areas.add("bedroom", "Bedroom")
         self.devices.add("sat-1", "reg-1", "bedroom")
-        self.hello(room="Kitchen", firmware_version="1.2.3")
-        self.assertEqual(self.areas.requested, [])
-        self.assertEqual(self.devices.updates, [])
-        self.assertEqual(self.devices.lookups, [])
-        self.assertEqual(self.runtime.record["room"], "Kitchen")
-        self.assertEqual(self.runtime.record["firmware_version"], "1.2.3")
-        self.manager.async_save.assert_awaited_once()
+        self.hello(room="Kitchen")
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "kitchen"})])
+        self.assertEqual(self.runtime.room, "Kitchen")
+        self.manager.async_save.assert_not_awaited()
 
-    def test_empty_hello_room_changes_nothing(self) -> None:
+    def test_explicit_empty_firmware_room_clears_context_and_area(self) -> None:
         self.devices.add("sat-1", "reg-1", "bedroom")
         self.hello(room="  ")
+        self.assertEqual(self.runtime.room, "")
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": None})])
+        self.assertEqual(self.areas.requested, [])
+        self.manager.async_save.assert_awaited_once()
+
+    def test_missing_room_uses_last_firmware_metadata_and_repairs_area(self) -> None:
+        self.devices.add("sat-1", "reg-1", "bedroom")
         self.hello()
-        self.assertEqual(self.runtime.record["room"], "Kitchen")
-        self.assertEqual(self.devices.lookups, [])
-        self.assertEqual(self.devices.updates, [])
+        self.assertEqual(self.runtime.room, "Kitchen")
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "kitchen"})])
         self.manager.async_save.assert_not_awaited()
 
     def test_no_device_means_no_area_registry_call(self) -> None:
@@ -486,11 +532,11 @@ class HelloRoomTests(unittest.TestCase):
         self.hello(room="Office")
         self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "office"})])
 
-    def test_name_changes_do_not_touch_the_area(self) -> None:
+    def test_name_changes_still_match_the_firmware_room(self) -> None:
         self.devices.add("sat-1", "reg-1", "bedroom")
         self.hello(device_name="Kitchen Echo", room="Kitchen")
         self.assertEqual(self.runtime.record["name"], "Kitchen Echo")
-        self.assertEqual(self.devices.lookups, [])
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "kitchen"})])
         self.manager.async_save.assert_awaited_once()
 
     def test_registry_failure_does_not_break_the_hello(self) -> None:
@@ -523,21 +569,19 @@ class PairingRoomTests(unittest.TestCase):
         self.assertEqual(self.devices.updates, [])
         self.manager._add_runtime_entities.assert_called_once()
 
-    def test_repairing_leaves_an_existing_ha_area_alone(self) -> None:
-        # An area chosen in Home Assistant wins; pairing never moves a device.
+    def test_repairing_matches_the_device_to_its_firmware_room(self) -> None:
         self.areas.add("kitchen", "Kitchen")
         self.devices.add("sat-1", "reg-1", "kitchen")
         ok, _ = self.pair("Bedroom")
         self.assertTrue(ok)
-        self.assertEqual(self.devices.lookups, [])
-        self.assertEqual(self.areas.requested, [])
-        self.assertEqual(self.devices.updates, [])
+        self.assertEqual(self.areas.requested, ["Bedroom"])
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": "bedroom"})])
 
-    def test_pairing_without_a_room_skips_the_registry(self) -> None:
+    def test_pairing_without_a_room_leaves_the_satellite_unassigned(self) -> None:
         self.devices.add("sat-1", "reg-1", "kitchen")
         self.pair("")
-        self.assertEqual(self.devices.lookups, [])
-        self.assertEqual(self.devices.updates, [])
+        self.assertEqual(self.areas.requested, [])
+        self.assertEqual(self.devices.updates, [("reg-1", {"area_id": None})])
 
 
 class ManagerImportTests(unittest.TestCase):
@@ -572,6 +616,28 @@ class ManagerImportTests(unittest.TestCase):
 
 
 class SetupSubscriptionTests(unittest.TestCase):
+    def test_setup_repairs_stored_ha_overrides_before_a_satellite_reconnects(self) -> None:
+        cls = next(node for node in MANAGER_TREE.body if isinstance(node, ast.ClassDef)
+                   and node.name == "TaterSatelliteManager")
+        setup = next(node for node in cls.body if isinstance(node, ast.AsyncFunctionDef)
+                     and node.name == "async_setup")
+        restore = next(node for node in setup.body if isinstance(node, ast.For)
+                       and "SatelliteRuntime" in ast.unparse(node))
+        function = ast.parse("def restore(self):\n    pass").body[0]
+        function.body = [restore]
+        scope = {"SatelliteRuntime": fake_runtime, "text": text,
+                 "_safe_device_id": lambda value: value}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                     "<restore satellites>", "exec"), scope)
+        manager, devices, areas = build_manager()
+        areas.add("bedroom", "Bedroom")
+        devices.add("sat-1", "reg-1", "bedroom")
+        manager.data = {"devices": {"sat-1": {"name": "Office sat", "room": "Office"}}}
+        scope["restore"](manager)
+        self.assertEqual(manager.runtimes["sat-1"].room, "Office")
+        self.assertEqual(devices.updates, [("reg-1", {"area_id": "office"})])
+        manager.async_save.assert_not_awaited()
+
     def test_setup_listens_for_device_and_area_updates(self) -> None:
         cls = next(
             node

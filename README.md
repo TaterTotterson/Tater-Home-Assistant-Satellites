@@ -25,8 +25,8 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
-Latest changes: [1.4.12 release notes](RELEASE_NOTES.md), improving satellite
-device cleanup, Home Assistant area synchronization, and Mini-Tater room context.
+Latest changes: [1.4.13 release notes](RELEASE_NOTES.md), making the firmware room
+authoritative for the bridge, Home Assistant area matching, and Mini-Tater context.
 
 ## Install with HACS
 
@@ -137,11 +137,18 @@ three heads share the Base language model. Enable **Beast Mode** to keep any
 role on Base or give it a dedicated OpenAI-compatible endpoint, model, and API
 key.
 
-Mini-Tater supplies the asking satellite's name and current room to every Hydra
-head and the plan review, using the same default-room rule as Tater. Requests
+Mini-Tater supplies the asking satellite's name and firmware-configured room to
+every Hydra head and the plan review, using the same default-room rule as Tater. Requests
 such as "turn on the lights" use that room unless the user names another room
 or a specific device. Each turn reads the room again; management chat has no
 assumed room, and an unassigned satellite never supplies a guessed location.
+
+The satellite firmware is the source of truth for its room. The bridge matches
+that room to a Home Assistant area, creating the area if needed. Home Assistant
+area edits do not override the satellite's room: the bridge restores the matching
+area on startup, pairing, reconnects, or area changes. If firmware reports no room,
+the satellite remains unassigned. Room matching never changes the room saved in
+the satellite firmware or moves other Home Assistant devices.
 
 Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses

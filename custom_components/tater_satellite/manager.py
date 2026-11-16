@@ -371,16 +371,7 @@ class SatelliteRuntime:
 
     @property
     def room(self) -> str:
-        """Return the Home Assistant area name, else the firmware-reported room."""
-        manager = self.manager
-        area_name_for = getattr(manager, "area_name_for", None)
-        if callable(area_name_for) and getattr(manager, "hass", None) is not None:
-            # The device registry is authoritative once HA has an area for the
-            # satellite; the record keeps the room the firmware last reported.
-            with contextlib.suppress(Exception):
-                area = area_name_for(self.device_id)
-                if isinstance(area, str) and area:
-                    return area
+        """Return the firmware-reported room; HA area edits cannot override it."""
         return text(self.record.get("room"))
 
     @property
@@ -1022,6 +1013,7 @@ class TaterSatelliteManager:
             if not safe_id:
                 continue
             self.runtimes[safe_id] = SatelliteRuntime(self, safe_id, record)
+            self._sync_firmware_room(self.runtimes[safe_id], text(record.get("room")))
         self.entry.async_on_unload(
             async_track_time_interval(
                 self.hass,
@@ -1186,6 +1178,7 @@ class TaterSatelliteManager:
         self._pairing_retry_device_token = new_token
         self._pairing_retry_expires = time.time() + PAIRING_RETRY_GRACE_SECONDS
         await self.async_save()
+        self._sync_firmware_room(runtime, runtime.room)
         self._add_runtime_entities(runtime)
         return True, new_token
 
@@ -1241,23 +1234,16 @@ class TaterSatelliteManager:
             return by_identifier(identifier, self.entry.entry_id)
         return dev_reg.async_get_device(identifiers={identifier})
 
-    def area_name_for(self, device_id: str) -> str:
-        """Return the name of the satellite's Home Assistant area, if any."""
-        device = self._registry_device(device_id)
-        if not device or not device.area_id:
-            return ""
-        area = ar.async_get(self.hass).async_get_area(device.area_id)
-        return text(area.name) if area else ""
-
     @callback
     def _async_device_registry_updated(
         self, event: Event[dr.EventDeviceRegistryUpdatedData]
     ) -> None:
-        """Refresh a satellite whose Home Assistant area was changed."""
+        """Keep the satellite's HA area matched to its firmware room."""
         data = event.data
-        if data.get("action") != "update":
+        action = data.get("action")
+        if action not in {"create", "update"}:
             return
-        if "area_id" not in (data.get("changes") or {}):
+        if action == "update" and "area_id" not in (data.get("changes") or {}):
             return
         registry_id = text(data.get("device_id"))
         if not registry_id:
@@ -1266,6 +1252,7 @@ class TaterSatelliteManager:
             for runtime in list(self.runtimes.values()):
                 device = self._registry_device(runtime.device_id)
                 if device and device.id == registry_id:
+                    self._sync_firmware_room(runtime, runtime.room)
                     runtime.notify()
                     return
         except Exception:  # noqa: BLE001
@@ -1275,7 +1262,7 @@ class TaterSatelliteManager:
     def _async_area_registry_updated(
         self, event: Event[ar.EventAreaRegistryUpdatedData]
     ) -> None:
-        """Refresh satellites whose Home Assistant area was renamed."""
+        """Rematch firmware rooms when their assigned HA area is renamed."""
         data = event.data
         # Removing an area clears area_id on its devices first, which fires
         # device registry updates, so only a rename needs handling here.
@@ -1288,6 +1275,7 @@ class TaterSatelliteManager:
             for runtime in list(self.runtimes.values()):
                 device = self._registry_device(runtime.device_id)
                 if device and device.area_id == area_id:
+                    self._sync_firmware_room(runtime, runtime.room)
                     runtime.notify()
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Could not refresh satellite areas", exc_info=True)
@@ -1298,9 +1286,11 @@ class TaterSatelliteManager:
         if not device:
             # A new device picks up the room through DeviceInfo.suggested_area.
             return
-        area = ar.async_get(self.hass).async_get_or_create(room)
-        if device.area_id != area.id:
-            dr.async_get(self.hass).async_update_device(device.id, area_id=area.id)
+        room = text(room)
+        area = ar.async_get(self.hass).async_get_or_create(room) if room else None
+        area_id = area.id if area else None
+        if device.area_id != area_id:
+            dr.async_get(self.hass).async_update_device(device.id, area_id=area_id)
 
     def _sync_firmware_room(self, runtime: SatelliteRuntime, room: str) -> None:
         """Apply a firmware-reported room to the HA device without raising."""
@@ -2699,17 +2689,22 @@ class TaterSatelliteManager:
         self, runtime: SatelliteRuntime, payload: dict[str, Any]
     ) -> None:
         changed = False
-        previous_room = text(runtime.record.get("room"))
         for key, source in (
             ("name", "device_name"),
             ("board", "board"),
             ("firmware_target", "firmware_target"),
             ("firmware_version", "firmware_version"),
-            ("room", "room"),
         ):
             value = text(payload.get(source))
             if value and runtime.record.get(key) != value:
                 runtime.record[key] = value
+                changed = True
+        # An explicitly cleared firmware room is unknown, never an HA override.
+        # Missing room metadata preserves the last room reported by firmware.
+        if "room" in payload:
+            room = text(payload["room"])
+            if runtime.record.get("room") != room:
+                runtime.record["room"] = room
                 changed = True
         capabilities = payload.get("capabilities")
         if isinstance(capabilities, dict) and capabilities != runtime.record.get(
@@ -2719,11 +2714,9 @@ class TaterSatelliteManager:
             changed = True
         if changed:
             await self.async_save()
-        room = text(payload.get("room"))
-        if room and room != previous_room:
-            # Only a firmware room change moves the HA device, so an area
-            # chosen in Home Assistant wins until the firmware room changes.
-            self._sync_firmware_room(runtime, room)
+        # Reconnects also repair older HA area overrides, even if the firmware
+        # room itself has not changed. The firmware is the source of truth.
+        self._sync_firmware_room(runtime, runtime.room)
 
     async def _handle_text_message(
         self, runtime: SatelliteRuntime, message: dict[str, Any]

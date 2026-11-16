@@ -1,30 +1,23 @@
-# Tater Satellite 1.4.12
+# Tater Satellite 1.4.13
 
-- **Clean up forgotten devices.** Forgetting an offline satellite now removes its
-  Home Assistant device and entities. Home Assistant can also delete offline or
-  orphaned satellite devices, with protections for connected satellites, saved
-  stereo pairs, and unrelated devices.
-- **Keep rooms in sync.** Bridge features use the satellite's assigned Home
-  Assistant area, falling back to its firmware room when no area is assigned.
-  Area changes and renames refresh the room context. Ordinary reconnects preserve
-  manual area assignments; a changed firmware room updates the Home Assistant area.
-- **Give Mini-Tater room context.** Hydra receives the asking satellite's name
-  and resolved room throughout planning, execution, and the final reply. Requests
-  such as "turn on the lights" can use that room, while explicitly named rooms
-  and devices take precedence. Management chat does not assume a room.
-- **Preserve Home Assistant compatibility.** Supports the device-registry APIs
-  in Home Assistant 2026.6 and newer.
+- **Use the room configured in satellite firmware.** The bridge and Mini-Tater
+  always use the satellite's firmware room. An HA area assignment cannot override
+  the room used for requests such as "turn on the lights". This corrects the room
+  precedence introduced in 1.4.12.
+- **Match Home Assistant to that room.** The satellite's HA device is assigned to
+  the matching area, creating the area if needed. Startup, pairing, reconnects,
+  and HA area edits or renames restore that match, including existing mismatched
+  assignments from 1.4.12. Other devices keep their assignments, and no room
+  changes are sent to the satellite firmware.
+- **Keep unknown rooms unassigned.** An explicitly empty firmware room clears the
+  satellite's room context and HA area. Missing room metadata preserves the last
+  firmware-reported room. Mini-Tater does not infer a room from an HA override.
+- **Preserve the other improvements.** Offline device cleanup and Mini-Tater's
+  room-aware planning, execution, and responses remain included.
 
-Update the integration through HACS or your usual installation method, then
-restart Home Assistant. No satellite firmware update is required for these changes.
+Update the integration and restart Home Assistant. No satellite firmware update
+or reset is required for this correction.
 
-## Contributor
-
-Thanks to [Andrew Loe (@loe)](https://github.com/loe) for contributing the device
-cleanup and room/area synchronization fixes:
-
-- [#23 — Remove the HA device when forgetting a satellite](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/23)
-- [#26 — Sync satellite areas and give Mini-Tater room context](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/26)
-
-Resolves bridge issues [#21](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/issues/21)
-and [#25](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/issues/25).
+Contributor: @loe (Andrew Loe) — device cleanup and initial room/area integration
+([#23](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/23),
+[#26](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/26)).

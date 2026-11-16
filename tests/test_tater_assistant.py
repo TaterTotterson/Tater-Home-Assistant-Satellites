@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import base64
 import importlib.util
 import io
@@ -9,7 +10,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import wave
 
 
@@ -713,9 +714,21 @@ class MiniHydraRoomContextTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def runtime(room="Kitchen"):
         manager = _Manager()
+        # Use the real runtime room getter, with a conflicting HA assignment.
+        tree = ast.parse((MODULE_PATH.parent / "manager.py").read_text())
+        satellite = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                         and node.name == "SatelliteRuntime")
+        getter = next(node for node in satellite.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "room")
+        getter.decorator_list = []
+        scope = {"text": tater._text}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[getter], type_ignores=[])),
+                     "<satellite room>", "exec"), scope)
+        satellite_type = type("Satellite", (SimpleNamespace,), {"room": property(scope["room"])})
+        manager.area_name_for = Mock(return_value="Bedroom")
         manager.runtimes = {
-            "sat-1": SimpleNamespace(
-                name="Kitchen satellite", room=room, record={"room": "Bedroom"}
+            "sat-1": satellite_type(
+                manager=manager, device_id="sat-1", name="Kitchen satellite", record={"room": room}
             )
         }
         runtime = tater.MiniTaterRuntime(manager)
@@ -829,7 +842,7 @@ class MiniHydraRoomContextTests(unittest.IsolatedAsyncioTestCase):
 
         runtime._chat = chat
         await runtime.async_process_text("Hello", conversation_id="shared", device_id="sat-1")
-        manager.runtimes["sat-1"].room = "Office"
+        manager.runtimes["sat-1"].record["room"] = "Office"
         await runtime.async_process_text("Hello again", conversation_id="shared", device_id="sat-1")
         await runtime.async_process_text("Hello", conversation_id="shared", device_id="management-panel")
 

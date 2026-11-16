@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.13
+
+- Correct the room precedence introduced in 1.4.12. The firmware-configured room
+  is authoritative for bridge features and every Mini-Tater Hydra head; a Home
+  Assistant area assignment cannot override it.
+- Match the satellite's HA area to its firmware room on startup, pairing,
+  reconnects, and area edits or renames. Reuse the matching area or create it when
+  absent, and repair existing HA overrides without changing firmware settings or
+  moving unrelated devices.
+- Treat an explicitly empty firmware room as unassigned. Missing room metadata
+  preserves the last firmware-reported room; neither case adopts an HA override.
+- Preserve the offline device cleanup from PR #23 and Mini-Tater's room-aware
+  planning, tool execution, and responses from PR #26.
+
 ## 1.4.12
 
 - Remove the matching Home Assistant device and its entities when an offline
@@ -16,8 +30,8 @@
   retries, and the Hydra ledger without assuming a room for management chat.
 - Keep compatibility with Home Assistant 2026.6 and newer. No satellite firmware
   update is required; restart Home Assistant after updating the integration.
-- Thanks to [Andrew Loe (@loe)](https://github.com/loe) for contributing the device
-  cleanup and room/area synchronization fixes in PRs #23 and #26.
+- Contributor: [Andrew Loe (@loe)](https://github.com/loe), device cleanup and
+  room/area synchronization in PRs #23 and #26.
 
 ## 1.4.11
 

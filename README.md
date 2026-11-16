@@ -25,8 +25,8 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
-Latest changes: [1.4.11 release notes](RELEASE_NOTES.md), fixing spoken satellite
-identification with the configured Home Assistant or Mini-Tater voice.
+Latest changes: [1.4.12 release notes](RELEASE_NOTES.md), improving satellite
+device cleanup, Home Assistant area synchronization, and Mini-Tater room context.
 
 ## Install with HACS
 

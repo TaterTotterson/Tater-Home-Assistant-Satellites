@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.12
+
+- Remove the matching Home Assistant device and its entities when an offline
+  satellite is forgotten. Allow deletion of offline or orphaned satellite devices
+  from Home Assistant while protecting connected satellites, saved stereo pairs,
+  and unrelated devices. ([#23](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/23))
+- Use the satellite's assigned Home Assistant area as its effective room, with
+  firmware-room fallback. Refresh room context after area changes or renames,
+  preserve manual area assignments on ordinary reconnects, and follow changed
+  firmware rooms. ([#26](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/pull/26))
+- Give Mini-Tater's Hydra heads the asking satellite's name and resolved room so
+  requests such as "turn on the lights" can use the current room, while explicit
+  room and device names remain authoritative. Include this context in plan checks,
+  retries, and the Hydra ledger without assuming a room for management chat.
+- Keep compatibility with Home Assistant 2026.6 and newer. No satellite firmware
+  update is required; restart Home Assistant after updating the integration.
+- Thanks to [Andrew Loe (@loe)](https://github.com/loe) for contributing the device
+  cleanup and room/area synchronization fixes in PRs #23 and #26.
+
 ## 1.4.11
 
 - Fix silent Identify buttons in the bridge panel and Home Assistant device

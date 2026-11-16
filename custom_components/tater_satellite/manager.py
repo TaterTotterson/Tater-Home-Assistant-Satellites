@@ -1210,6 +1210,17 @@ class TaterSatelliteManager:
         finally:
             self._settings_cache = None
 
+    def _registry_device(self, device_id: str) -> dr.DeviceEntry | None:
+        """Return the Home Assistant device registry entry for a satellite."""
+        dev_reg = dr.async_get(self.hass)
+        identifier = (DOMAIN, device_id)
+        # HA 2026.11 deprecates async_get_device and reports usage on every call;
+        # its per-config-entry lookup is a plain index read. Older HA lacks it.
+        by_identifier = getattr(dev_reg, "async_get_device_by_identifier", None)
+        if callable(by_identifier):
+            return by_identifier(identifier, self.entry.entry_id)
+        return dev_reg.async_get_device(identifiers={identifier})
+
     def attach_entity(self, runtime: SatelliteRuntime, entity: Any) -> None:
         """Track an entity for state updates."""
         runtime._entities.append(entity)
@@ -2183,10 +2194,9 @@ class TaterSatelliteManager:
         await self.async_save()
         # Only the integration-owned name changes; a name the user set in
         # Home Assistant (name_by_user) still wins for display.
-        dev_reg = dr.async_get(self.hass)
-        device = dev_reg.async_get_device(identifiers={(DOMAIN, device_id)})
+        device = self._registry_device(device_id)
         if device is not None and device.name != clean:
-            dev_reg.async_update_device(device.id, name=clean)
+            dr.async_get(self.hass).async_update_device(device.id, name=clean)
         runtime.notify()
         return runtime.public_snapshot()
 

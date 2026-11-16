@@ -108,8 +108,16 @@ class RenameDeviceTests(unittest.TestCase):
         )
         self.manager = SimpleNamespace(
             hass=self.hass,
+            entry=SimpleNamespace(entry_id="entry-1"),
             runtimes={"kitchen": self.runtime},
             async_save=AsyncMock(),
+        )
+        registry_device = load_method(
+            "manager.py", "TaterSatelliteManager", "_registry_device",
+            dr=self.dr, DOMAIN=DOMAIN,
+        )
+        self.manager._registry_device = (
+            lambda device_id: registry_device(self.manager, device_id)
         )
 
     def run_rename(self, name, device_id="kitchen"):
@@ -130,8 +138,10 @@ class RenameDeviceTests(unittest.TestCase):
 
     def test_updates_registry_name_but_never_name_by_user(self):
         self.run_rename("Living Room")
-        self.dr.async_get.assert_called_once_with(self.hass)
-        self.assertEqual(self.registry.lookups, [{(DOMAIN, "kitchen")}])
+        for call in self.dr.async_get.call_args_list:
+            self.assertEqual(call.args, (self.hass,))
+        if not hasattr(self.registry, "async_get_device_by_identifier"):
+            self.assertEqual(self.registry.lookups, [{(DOMAIN, "kitchen")}])
         self.registry.async_update_device.assert_called_once_with(
             "reg-1", name="Living Room"
         )
@@ -196,6 +206,39 @@ class RenameDeviceTests(unittest.TestCase):
         self.run_rename("Garage")
         self.assertEqual(self.runtime.record["name"], "Garage")
 
+
+
+class PerEntryDeviceRegistry(FakeDeviceRegistry):
+    """HA 2026.11 shape: per-entry lookup, deprecated async_get_device."""
+
+    def __init__(self, devices=None):
+        super().__init__(devices)
+        self.entry_lookups = []
+
+    def async_get_device_by_identifier(self, identifier, config_entry_id):
+        self.entry_lookups.append((identifier, config_entry_id))
+        return self.devices.get(identifier)
+
+    def async_get_device(self, *, identifiers):
+        raise AssertionError("deprecated async_get_device was called")
+
+
+class RenameRegistryCompatibilityTests(RenameDeviceTests):
+    """Rerun the rename against an HA 2026.11-shaped registry."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry = PerEntryDeviceRegistry(self.registry.devices)
+        self.dr.async_get.return_value = self.registry
+
+    def test_lookup_uses_the_config_entry(self):
+        self.run_rename("Kitchen Speaker")
+        self.assertEqual(
+            self.registry.entry_lookups, [((DOMAIN, "kitchen"), "entry-1")]
+        )
+        self.registry.async_update_device.assert_called_once_with(
+            "reg-1", name="Kitchen Speaker"
+        )
 
 class HelloKeepsUserNameTests(unittest.TestCase):
     def setUp(self):

@@ -11,6 +11,7 @@ from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.loader import async_get_integration
 
 from .const import (
@@ -101,4 +102,47 @@ async def async_unload_entry(hass: HomeAssistant, entry: TaterConfigEntry) -> bo
         hass.data[DOMAIN].pop(DATA_MANAGER, None)
     frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
     hass.data.get(DOMAIN, {}).pop(DATA_PANEL_REGISTERED, None)
+    return True
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: TaterConfigEntry, device_entry: DeviceEntry
+) -> bool:
+    """Allow deleting an offline or stale Tater satellite device from HA.
+
+    Returning True lets HA remove the device (and its entities). Connected
+    satellites, saved stereo pairs, and devices without a Tater identifier
+    are rejected. An offline satellite is forgotten first so its credential
+    cannot bring the device back.
+    """
+    manager = getattr(config_entry, "runtime_data", None)
+    if not isinstance(manager, TaterSatelliteManager):
+        # Without a loaded manager the stored credential cannot be removed.
+        return False
+    device_ids = [
+        identifier
+        for domain, identifier in device_entry.identifiers
+        if domain == DOMAIN
+    ]
+    if not device_ids:
+        return False
+    pairs = manager.data.get("stereo_pairs")
+    pair_targets = {
+        pair.get("target")
+        for pair in (pairs.values() if isinstance(pairs, dict) else ())
+        if isinstance(pair, dict)
+    }
+    if any(device_id in pair_targets for device_id in device_ids):
+        # Stereo pairs are managed from the panel; HA would recreate the device.
+        return False
+    runtimes = [
+        manager.runtimes[device_id]
+        for device_id in device_ids
+        if device_id in manager.runtimes
+    ]
+    if any(runtime.connected for runtime in runtimes):
+        return False
+    for device_id in device_ids:
+        if device_id in manager.runtimes:
+            await manager.async_forget(device_id)
     return True

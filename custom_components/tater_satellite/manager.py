@@ -26,6 +26,7 @@ from homeassistant.components.assist_pipeline.error import PipelineNotFound
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.network import get_url
@@ -33,6 +34,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    DOMAIN,
     MAX_AUDIO_QUEUE_CHUNKS,
     MAX_TEXT_MESSAGE_BYTES,
     PAIRING_CODE_TTL_SECONDS,
@@ -2292,7 +2294,12 @@ class TaterSatelliteManager:
         return path, content_type
 
     async def async_forget(self, device_id: str) -> None:
-        """Forget an offline satellite and its credential."""
+        """Forget an offline satellite, its credential, and its HA device.
+
+        Only the registry device identified by ``(DOMAIN, device_id)`` is
+        removed; HA drops that device's entities with it. Stereo pair and
+        Bluetooth devices are never touched here.
+        """
         runtime = self.runtimes.get(device_id)
         if runtime is None:
             raise KeyError("Satellite not found")
@@ -2301,6 +2308,10 @@ class TaterSatelliteManager:
         self.runtimes.pop(device_id, None)
         self.data["devices"].pop(device_id, None)
         await self.async_save()
+        device_registry = dr.async_get(self.hass)
+        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
+        if device is not None:
+            device_registry.async_remove_device(device.id)
 
     async def async_install_firmware(self, device_id: str) -> dict[str, Any]:
         """Prepare and command a board-matched OTA update."""

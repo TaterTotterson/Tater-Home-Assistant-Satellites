@@ -617,7 +617,7 @@ class IdentifyView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
-        """Play the identify tone."""
+        """Speak the identify message."""
         try:
             await _manager(request).async_identify(device_id)
         except (KeyError, RuntimeError) as err:

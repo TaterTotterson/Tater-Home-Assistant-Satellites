@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.11
+
+- Fix silent Identify buttons in the bridge panel and Home Assistant device
+  controls. Identify now speaks a short message instead of sending an unsupported
+  tone-synthesis request without an audio URL.
+- Use the satellite's selected Assist pipeline TTS voice in Home Assistant mode,
+  or the configured Mini-Tater TTS provider and voice in Mini-Tater mode.
+- Wait for normal announcement playback and surface synthesis, connection and
+  playback failures rather than reporting a silent success. No satellite firmware
+  update is required for this fix.
+
 ## 1.4.10
 
 - Block the Echo hardware-platform OTA until its one-time full USB upgrade is

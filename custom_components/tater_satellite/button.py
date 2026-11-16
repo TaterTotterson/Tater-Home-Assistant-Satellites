@@ -25,7 +25,7 @@ async def async_setup_entry(
 
 
 class TaterIdentifyButton(TaterSatelliteEntity, ButtonEntity):
-    """Play a short tone on a satellite."""
+    """Speak an identification on a satellite."""
 
     _attr_name = "Identify"
     _attr_icon = "mdi:map-marker-radius"

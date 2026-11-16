@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientError, WSMsgType, web
 from homeassistant.components.assist_pipeline import (
     async_get_pipeline,
     async_get_pipelines,
@@ -25,6 +25,7 @@ from homeassistant.components.assist_pipeline import (
 from homeassistant.components.assist_pipeline.error import PipelineNotFound
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.network import get_url
@@ -101,6 +102,10 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_MODEL_BYTES = 512 * 1024
 _MAX_SOUND_BYTES = 512 * 1024
 _MAX_DEVICE_TEXT_FRAME_BYTES = 1000
+_IDENTIFY_SATELLITE_TEXT = (
+    "Hey, over here. This is the satellite you're looking for. "
+    "Yeah, over here. Can you hear me?"
+)
 _UNIFIED_WAKE_SETTINGS_MIGRATION_KEY = "unified_wake_settings_v1"
 _GLOBAL_WAKE_VERIFIER_KEYS = {
     "wake_verifier_mode",
@@ -2386,14 +2391,36 @@ class TaterSatelliteManager:
             runtime.notify()
 
     async def async_identify(self, device_id: str) -> None:
-        """Play a short local tone to identify a satellite."""
+        """Speak an identification using the configured assistant's TTS voice."""
         runtime = self.runtimes.get(device_id)
         if runtime is None or not runtime.connected:
             raise RuntimeError("Satellite is offline")
-        await runtime.async_send(
-            "play.tone",
-            {"frequency_hz": 1040, "duration_ms": 350, "volume_percent": 55},
-        )
+        if runtime.assist_entity is None:
+            raise RuntimeError("Satellite voice assistant is not ready")
+
+        try:
+            media_id = None
+            if self.tater_assistant.settings().get("assistant_mode") == "tater":
+                content_type, audio = await self.tater_assistant.async_synthesize(
+                    _IDENTIFY_SATELLITE_TEXT
+                )
+                if not audio:
+                    raise RuntimeError("TTS returned no audio")
+                clip_id = self.tater_assistant.store_clip(content_type, audio)
+                base_url = runtime.server_base_url or self.public_base_url()
+                media_id = f"{base_url}/api/tater/satellite/v1/tater/audio/{clip_id}"
+
+            # With no media ID, Home Assistant synthesizes the message using
+            # this satellite's selected pipeline, voice and WAV output options.
+            # Mini-Tater supplies its own generated clip instead. Both routes
+            # use normal URL playback and wait for the satellite's result.
+            await runtime.assist_entity.async_internal_announce(
+                message=_IDENTIFY_SATELLITE_TEXT,
+                media_id=media_id,
+                preannounce=False,
+            )
+        except (HomeAssistantError, ClientError, OSError) as err:
+            raise RuntimeError(f"Unable to identify {runtime.name}: {err}") from err
 
     def pipelines_snapshot(self) -> list[dict[str, str]]:
         """Return Assist pipeline ids and names."""

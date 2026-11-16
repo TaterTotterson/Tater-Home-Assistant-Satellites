@@ -1,20 +1,15 @@
-# Tater Satellite 1.4.10
+# Tater Satellite 1.4.11
 
-- Add Mini-Tater's built-in Timer tool: create named timers, check remaining
-  time, cancel, silence and snooze using natural language. Satellites keep
-  owning countdowns and alerts, including while disconnected.
-- Add per-satellite Smooth/Matrix conversation text styles for supported Echo
-  GPU UIs, and recognize Cronos when offering Echo display settings.
-- Negotiate balanced hardware H.264 Sat Chat between compatible Shows/Rook,
-  preserving JPEG for older or mixed peers. Bounded audio-priority media queues
-  keep slow destinations from blocking the source receive loop.
-- Explain and enforce Echo 5's one-time full USB installation, including
-  keep-settings guidance. An app-only update cannot replace the kernel/platform.
-- After migration, perform verified system-first/application-second OTA when
-  needed; refuse the final app if Linux rolls back or reconnects with the wrong
-  system version. Native ESP firmware updates are unchanged.
+- Fix silent **Identify** buttons in the bridge panel and Home Assistant device
+  controls. The satellite now speaks an identification message, like the Tater
+  app, instead of receiving a tone request with no playable audio URL.
+- Use the satellite's selected Assist pipeline TTS voice in Home Assistant mode,
+  or Mini-Tater's configured TTS provider and voice in Mini-Tater mode.
+- Wait for announcement playback and report TTS, connection and playback errors
+  instead of silently succeeding.
 
-Hardware-video availability depends on the satellites' advertised capabilities;
-this bridge update does not install Echo firmware or enable unqualified hardware.
+No satellite firmware update is required for this fix. Configure a working TTS
+voice for the selected assistant, update the integration, and restart Home
+Assistant.
 
-Restart Home Assistant after updating the integration.
+Fixes [Tater Echo firmware issue #14](https://github.com/TaterTotterson/Tater-Echo-Firmware/issues/14).

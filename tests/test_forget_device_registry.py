@@ -85,15 +85,36 @@ forget = load_method(
     "manager.py", "TaterSatelliteManager", "async_forget",
     dr=FAKE_DR, DOMAIN=DOMAIN,
 )
+registry_device = load_method(
+    "manager.py", "TaterSatelliteManager", "_registry_device",
+    dr=FAKE_DR, DOMAIN=DOMAIN,
+)
+
+
+class PerEntryDeviceRegistry(FakeDeviceRegistry):
+    """HA 2026.11 shape: per-entry lookup, deprecated async_get_device."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lookups: list[tuple[tuple[str, str], str]] = []
+
+    def async_get_device_by_identifier(self, identifier, config_entry_id):
+        self.lookups.append((identifier, config_entry_id))
+        return super().async_get_device(identifiers={identifier})
+
+    def async_get_device(self, *, identifiers):
+        raise AssertionError("deprecated async_get_device was called")
 
 
 class TaterSatelliteManager:
     """isinstance-compatible stand-in that runs the production async_forget."""
 
     async_forget = forget
+    _registry_device = registry_device
 
     def __init__(self, registry: FakeDeviceRegistry) -> None:
         self.hass = SimpleNamespace()
+        self.entry = SimpleNamespace(entry_id="entry-1")
         self.runtimes: dict[str, SimpleNamespace] = {}
         self.data: dict = {"devices": {}, "stereo_pairs": {}}
         self.async_save = AsyncMock()
@@ -163,6 +184,27 @@ class ForgetRemovesRegistryDeviceTests(unittest.TestCase):
         self.assertIn("Satellite not found", str(caught.exception))
         self.assertEqual(self.registry.removed, [])
         self.manager.async_save.assert_not_awaited()
+
+
+class RegistryLookupCompatibilityTests(unittest.TestCase):
+    def test_per_entry_lookup_is_used_when_available(self) -> None:
+        registry = PerEntryDeviceRegistry()
+        manager = TaterSatelliteManager(registry)
+        manager.add_satellite("kitchen")
+        registry.add("reg-kitchen", (DOMAIN, "kitchen"))
+        registry.add("reg-sat-1", (DOMAIN, "sat-1"))
+        asyncio.run(forget(manager, "kitchen"))
+        self.assertEqual(registry.removed, ["reg-kitchen"])
+        self.assertEqual(registry.lookups, [((DOMAIN, "kitchen"), "entry-1")])
+
+    def test_older_registry_falls_back_to_async_get_device(self) -> None:
+        registry = FakeDeviceRegistry()
+        self.assertFalse(hasattr(registry, "async_get_device_by_identifier"))
+        manager = TaterSatelliteManager(registry)
+        manager.add_satellite("kitchen")
+        registry.add("reg-kitchen", (DOMAIN, "kitchen"))
+        asyncio.run(forget(manager, "kitchen"))
+        self.assertEqual(registry.removed, ["reg-kitchen"])
 
 
 class RemoveConfigEntryDeviceTests(unittest.TestCase):

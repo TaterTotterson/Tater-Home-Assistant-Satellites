@@ -1208,6 +1208,17 @@ class TaterSatelliteManager:
         finally:
             self._settings_cache = None
 
+    def _registry_device(self, device_id: str) -> dr.DeviceEntry | None:
+        """Return the Home Assistant device registry entry for a satellite."""
+        dev_reg = dr.async_get(self.hass)
+        identifier = (DOMAIN, device_id)
+        # HA 2026.11 deprecates async_get_device and reports usage on every call;
+        # its per-config-entry lookup is a plain index read. Older HA lacks it.
+        by_identifier = getattr(dev_reg, "async_get_device_by_identifier", None)
+        if callable(by_identifier):
+            return by_identifier(identifier, self.entry.entry_id)
+        return dev_reg.async_get_device(identifiers={identifier})
+
     def attach_entity(self, runtime: SatelliteRuntime, entity: Any) -> None:
         """Track an entity for state updates."""
         runtime._entities.append(entity)
@@ -2308,10 +2319,9 @@ class TaterSatelliteManager:
         self.runtimes.pop(device_id, None)
         self.data["devices"].pop(device_id, None)
         await self.async_save()
-        device_registry = dr.async_get(self.hass)
-        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
+        device = self._registry_device(device_id)
         if device is not None:
-            device_registry.async_remove_device(device.id)
+            dr.async_get(self.hass).async_remove_device(device.id)
 
     async def async_install_firmware(self, device_id: str) -> dict[str, Any]:
         """Prepare and command a board-matched OTA update."""

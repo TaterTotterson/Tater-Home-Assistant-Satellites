@@ -389,3 +389,46 @@ test('an asset upload preserves device edits even when switching away and back',
     assert.equal(panel._deviceDraft.wake_sound, 'custom');
   } finally { globalThis.document = previousDocument; globalThis.prompt = previousPrompt; }
 });
+
+test('satellite rename starts from the device name and posts the trimmed draft', async () => {
+  const panel = fixture();
+  panel._data.devices[0].name = 'Kitchen & <Echo>';
+  panel.prepareDeviceDraft('one');
+  assert.equal(panel._nameDraft, 'Kitchen & <Echo>');
+  const overview = panel.renderDeviceOverview(panel._data.devices[0]);
+  assert.match(overview, /data-device-name maxlength="80"[^>]*value="Kitchen &amp; &lt;Echo&gt;"/);
+  assert.match(overview, /data-action="rename-device" disabled/);
+
+  panel._nameDraft = '   ';
+  assert.equal(panel.canRenameDevice(panel._data.devices[0]), false);
+
+  const rename = {}, input = {};
+  controls(panel, { '[data-action="rename-device"]': rename, '[data-device-name]': input });
+  panel._loading = true;
+  input.listeners.input({ target: { value: '  Living Room  ' } });
+  assert.equal(rename.disabled, false, 'a background poll must not leave Rename disabled');
+  panel._loading = false;
+  let request;
+  panel.api = async (...args) => { request = args; return { ok: true, device: { name: 'Living Room' } }; };
+  panel.run = async action => action();
+  await rename.listeners.click();
+  assert.deepEqual(request, ['POST', 'device/one/name', { name: 'Living Room' }]);
+  assert.equal(panel._nameDraft, 'Living Room');
+});
+
+test('offline satellites can be renamed and an in-progress name survives polling', () => {
+  const panel = fixture();
+  panel._data.devices[1].connected = false;
+  panel.prepareDeviceDraft('two');
+  panel._nameDraft = 'Garage';
+  assert.doesNotMatch(panel.renderDeviceOverview(panel._data.devices[1]), /data-action="rename-device" disabled/);
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._nameDraft, 'Garage');
+  panel._nameDraft = 'two';
+  panel.syncDrafts(panel._data);
+  panel._data.devices[1].name = 'Renamed elsewhere';
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._nameDraft, 'Renamed elsewhere');
+  panel.prepareDeviceDraft('one');
+  assert.equal(panel._nameDraft, 'one');
+});

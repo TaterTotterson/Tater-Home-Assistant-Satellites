@@ -183,6 +183,9 @@ class TaterSatellitePanel extends HTMLElement {
     this._deviceDraft = null;
     this._deviceOriginal = null;
     this._pipelineDraft = "";
+    this._nameDraft = "";
+    this._nameOriginal = "";
+    this._nameDraftDeviceId = "";
     this._dirty = false;
     this._loading = false;
     this._recovery = null;
@@ -305,6 +308,22 @@ class TaterSatellitePanel extends HTMLElement {
     }
     if (!this.isTaterModeSelected() && TATER_ONLY_PAGE_IDS.has(this._tab)) this._tab = "assistant";
     if (this._selectedDeviceId && !this.isScopeDirty("device")) this.prepareDeviceDraft(this._selectedDeviceId, false);
+    this.syncNameDraft();
+  }
+
+  syncNameDraft() {
+    const device = (this._data?.devices || []).find((row) => row.device_id === this._selectedDeviceId);
+    if (!device) return;
+    const name = String(device.name || "");
+    // Follow the saved name unless the field holds an unsaved edit for this satellite.
+    if (this._nameDraftDeviceId !== device.device_id || this._nameDraft === this._nameOriginal) this._nameDraft = name;
+    this._nameDraftDeviceId = device.device_id;
+    this._nameOriginal = name;
+  }
+
+  canRenameDevice(device) {
+    const name = String(this._nameDraft || "").trim();
+    return Boolean(device && name && name !== String(device.name || ""));
   }
 
   isTaterModeSelected() {
@@ -1916,6 +1935,7 @@ class TaterSatellitePanel extends HTMLElement {
     if (!device) return;
     if (deviceId !== this._selectedDeviceId) this.rememberDeviceDraft();
     this._selectedDeviceId = deviceId;
+    this.syncNameDraft();
     const saved = this._deviceDrafts.get(deviceId);
     if (saved && this.isScopeDirty("device")) {
       this._deviceDraft = clone(saved.draft);
@@ -1987,6 +2007,10 @@ class TaterSatellitePanel extends HTMLElement {
   renderDeviceOverview(device) {
     const firmware = device.firmware || {};
     return `<section class="card section-card"><h3>At a glance</h3><p class="muted">This satellite uses your shared voice defaults unless you override a setting.</p>
+      <div class="settings-grid">
+        <label class="field"><span>Satellite name</span><input data-device-name maxlength="80" autocomplete="off" value="${escapeHtml(this._nameDraft)}"></label>
+      </div>
+      <div class="row-actions"><button type="button" data-action="rename-device" ${this._loading || !this.canRenameDevice(device) ? "disabled" : ""}>Rename</button></div>
       <div class="facts">
         <div class="fact"><label>Hardware</label><span>${escapeHtml(firmware.label || device.board)}</span></div>
         <div class="fact"><label>Firmware</label><span>${escapeHtml(device.firmware_version || "Unknown")}</span></div>
@@ -3345,6 +3369,31 @@ class TaterSatellitePanel extends HTMLElement {
         }
       });
     });
+    const renameButton = root.querySelector('[data-action="rename-device"]');
+    const deviceNameInput = root.querySelector("[data-device-name]");
+    const selectedDevice = () => (this._data?.devices || []).find((row) => row.device_id === this._selectedDeviceId);
+    deviceNameInput?.addEventListener("input", (event) => {
+      this._nameDraft = event.target.value;
+      if (renameButton) renameButton.disabled = !this.canRenameDevice(selectedDevice());
+    });
+    const renameDevice = () => {
+      const id = this._selectedDeviceId;
+      if (!id || !this.canRenameDevice(selectedDevice())) return;
+      const name = String(this._nameDraft).trim();
+      return this.run(async () => {
+        const result = await this.api("POST", `device/${encodeURIComponent(id)}/name`, { name });
+        if (this._nameDraftDeviceId === id) {
+          this._nameDraft = String(result?.device?.name || name);
+          this._nameOriginal = this._nameDraft;
+        }
+      }, "Satellite renamed.");
+    };
+    deviceNameInput?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      return renameDevice();
+    });
+    renameButton?.addEventListener("click", () => renameDevice());
     root.querySelector('[data-special="pipeline"]')?.addEventListener("change", (event) => {
       this._pipelineDraft = event.target.value;
       this.markDirty("device");

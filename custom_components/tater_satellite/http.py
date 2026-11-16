@@ -679,6 +679,25 @@ class StereoPairDeleteView(HomeAssistantView):
         return self.json({"ok": True})
 
 
+class DeviceRenameView(HomeAssistantView):
+    """Rename one satellite, whether or not it is connected."""
+
+    url = f"{API_BASE_PATH}/device/{{device_id}}/name"
+    name = "api:tater_satellite:device_rename"
+    requires_auth = True
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        """Save a new friendly name for a satellite."""
+        body = await _json_body(request)
+        try:
+            device = await _manager(request).async_rename_device(
+                device_id, body.get("name")
+            )
+        except (KeyError, ValueError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "device": device})
+
+
 class ForgetView(HomeAssistantView):
     """Forget an offline satellite."""
 
@@ -732,5 +751,6 @@ VIEWS = (
     SettingsResyncView,
     StereoPairView,
     StereoPairDeleteView,
+    DeviceRenameView,
     ForgetView,
 )

@@ -11,6 +11,7 @@ import json
 import logging
 import secrets
 import time
+import unicodedata
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -26,6 +27,7 @@ from homeassistant.components.assist_pipeline.error import PipelineNotFound
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.network import get_url
@@ -33,6 +35,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    DOMAIN,
     MAX_AUDIO_QUEUE_CHUNKS,
     MAX_TEXT_MESSAGE_BYTES,
     PAIRING_CODE_TTL_SECONDS,
@@ -102,6 +105,7 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_MODEL_BYTES = 512 * 1024
 _MAX_SOUND_BYTES = 512 * 1024
 _MAX_DEVICE_TEXT_FRAME_BYTES = 1000
+_MAX_DEVICE_NAME_LENGTH = 80
 _IDENTIFY_SATELLITE_TEXT = (
     "Hey, over here. This is the satellite you're looking for. "
     "Yeah, over here. Can you hear me?"
@@ -2158,6 +2162,34 @@ class TaterSatelliteManager:
         runtime.notify()
         return runtime.public_snapshot()
 
+    async def async_rename_device(self, device_id: str, name: Any) -> dict[str, Any]:
+        """Rename a satellite and keep the name across firmware reconnects."""
+        runtime = self.runtimes.get(device_id)
+        if runtime is None:
+            raise KeyError("Satellite not found")
+        if not isinstance(name, str):
+            raise ValueError("Enter a satellite name.")
+        clean = text(name)
+        if not clean:
+            raise ValueError("Enter a satellite name.")
+        if len(clean) > _MAX_DEVICE_NAME_LENGTH:
+            raise ValueError(
+                f"Satellite names can be at most {_MAX_DEVICE_NAME_LENGTH} characters."
+            )
+        if any(unicodedata.category(char) == "Cc" for char in clean):
+            raise ValueError("Satellite names can't contain control characters.")
+        runtime.record["name"] = clean
+        runtime.record["name_source"] = "user"
+        await self.async_save()
+        # Only the integration-owned name changes; a name the user set in
+        # Home Assistant (name_by_user) still wins for display.
+        dev_reg = dr.async_get(self.hass)
+        device = dev_reg.async_get_device(identifiers={(DOMAIN, device_id)})
+        if device is not None and device.name != clean:
+            dev_reg.async_update_device(device.id, name=clean)
+        runtime.notify()
+        return runtime.public_snapshot()
+
     async def async_reset_device_settings(self, device_id: str) -> dict[str, Any]:
         """Remove all firmware setting overrides for one satellite."""
         runtime = self.runtimes.get(device_id)
@@ -2586,6 +2618,7 @@ class TaterSatelliteManager:
         self, runtime: SatelliteRuntime, payload: dict[str, Any]
     ) -> None:
         changed = False
+        user_named = runtime.record.get("name_source") == "user"
         for key, source in (
             ("name", "device_name"),
             ("board", "board"),
@@ -2593,6 +2626,9 @@ class TaterSatelliteManager:
             ("firmware_version", "firmware_version"),
             ("room", "room"),
         ):
+            if key == "name" and user_named:
+                # A name chosen in the panel outlives the firmware's own name.
+                continue
             value = text(payload.get(source))
             if value and runtime.record.get(key) != value:
                 runtime.record[key] = value

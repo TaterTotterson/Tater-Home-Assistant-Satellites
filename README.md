@@ -25,8 +25,8 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
-Latest changes: [1.4.13 release notes](RELEASE_NOTES.md), making the firmware room
-authoritative for the bridge, Home Assistant area matching, and Mini-Tater context.
+Latest changes: [1.4.14 release notes](RELEASE_NOTES.md), adding Awareness camera
+alerts and shared Vision settings in both Home Assistant and Mini-Tater mode.
 
 ## Install with HACS
 
@@ -58,6 +58,8 @@ integration from **Devices & services**.
   H.264 on updated Echo Shows/Spot and JPEG fallback for other pairs
 - Echo screen Climate and Cameras panels, including continuous Home Assistant
   camera streams with automatic snapshot fallback
+- Awareness camera monitors in HA and Mini-Tater mode, with shared Vision
+  settings and image-and-description alerts to Echo screens and HA phones
 - Native Home Assistant media-player entities with URL and media-source music
   playback, seek, stop, mute, volume, and dynamic grouping
 - Saved left/right stereo-pair media players plus Sendspin-synchronized
@@ -89,7 +91,7 @@ integration from **Devices & services**.
 ## Bridge workspace
 
 The **Tater Satellites** panel groups its navigation into **Tater assistant**,
-**Your home** (Satellites, Tater Audio, and Bluetooth), **Voice & wake** (Voice
+**Your home** (Satellites, Awareness, Vision, Tater Audio, and Bluetooth), **Voice & wake** (Voice
 defaults, STT wake check, and Wake Word Trainer), and **Maintenance** (Firmware &
 recovery).
 
@@ -167,7 +169,7 @@ Tater's Device Control Verba.
 Tater Vision mirrors the Tater Shop Verba for current visual questions. It can
 resolve a named Home Assistant camera, room, outdoor area, or the asking
 satellite's assigned room, capture fresh ephemeral stills, and use the existing
-Vision setting from **Models & speech**. **Same as Base** uses the Base endpoint,
+Vision setting from the shared **Vision** workspace. **Same as Base** uses the Base endpoint,
 model, and key; the dedicated option uses the existing separate Vision endpoint,
 model, and key. Raw camera images are not stored in conversation history or the
 Hydra ledger. Mini Tater does not load Cores, Portals, Shop items, downloaded
@@ -191,6 +193,46 @@ live state and does not restore or reset timers on reconnect. Start durations
 are capped at two hours, matching the Verba default. Voice requests use the
 asking satellite; in management chat, name the destination satellite or room.
 When a room or timer selection is ambiguous, Mini-Tater asks which one to use.
+
+## Awareness camera alerts
+
+**Awareness** and **Vision** remain available in both Home Assistant and
+Mini-Tater mode. Camera alerts call the shared Vision model directly; they do not
+run Hydra, change the active conversation agent, or require Tater speech setup.
+Under **Vision**, reuse an image-capable Base model or choose **Different
+endpoint** and enter a Vision URL, model, and optional API key. Existing Vision
+settings are preserved and are shared with Mini-Tater camera questions and chat.
+
+In **Awareness**, select **Add monitor**, then choose:
+
+1. A Home Assistant camera.
+2. A binary sensor, doorbell/event entity, or toggle helper and its trigger.
+   Entities attached to the camera's HA device are suggested first. Only event
+   types supplied by that entity are offered, along with **Any event**.
+3. One or more connected or saved Echo screens with notification support and/or
+   Home Assistant Companion phone notification destinations.
+
+Save the monitor, then use **Test monitor** to send an actual alert. Optional
+settings provide a cooldown (60 seconds by default) and a short instruction
+about what Vision should focus on. Pause a monitor by clearing **Enabled**.
+Camera selection is explicit and independent of conversational Assist exposure.
+
+When the trigger fires, the bridge captures a fresh image before waiting for a
+model slot, obtains a concise description, and delivers that same image and
+description to each destination. Screen delivery uses the existing authenticated
+satellite connection. Phones use HA's authenticated local media attachments;
+the `media_source` integration is loaded automatically. Phone image delivery
+requires a configured HA media directory and the phone's normal remote access
+to Home Assistant. A failed or offline destination does not block the others.
+
+**Recent activity** shows the last 50 runs, including tests, descriptions, and
+individual delivery errors. Snapshots expire after one hour and are also removed
+when their activity falls out of history. Thumbnails use short-lived signed HA
+URLs. Raw image data is not saved in conversation history or the Hydra ledger.
+Work is bounded to eight pending monitors and two simultaneous Vision calls;
+repeated triggers for a busy monitor are coalesced. Restarting HA preserves saved
+monitors, recent activity, and the last-run cooldown. Editing, pausing, or deleting
+a monitor cancels any pending alert for that monitor.
 
 ## Pair a satellite
 

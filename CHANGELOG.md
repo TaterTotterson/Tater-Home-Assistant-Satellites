@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.4.14
+
+- Add the Awareness workspace in both Home Assistant and Mini-Tater mode. Create
+  monitors by choosing a camera, a binary sensor/event/toggle trigger, and Echo
+  screen or HA Companion phone notification destinations. Suggest trigger
+  entities belonging to the camera's HA device.
+- Capture a fresh image at trigger time, obtain a short Vision description, and
+  deliver that same image and description to each selected destination. Use the
+  paired satellite connection for screen alerts and authenticated HA local media
+  for phone images, loading `media_source` automatically.
+- Move the existing Vision model settings into a shared workspace available in
+  either mode. Preserve Base/dedicated endpoint settings and saved credentials.
+  HA-mode Awareness does not require Mini-Tater language or speech setup and
+  does not run a Hydra conversation turn.
+- Add monitor enable/pause controls, a default 60-second cooldown, optional
+  description instructions, and real test alerts. Keep the last 50 runs with
+  per-destination delivery status and errors. Retain snapshots for up to one
+  hour and remove images pruned from recent history.
+- Bound pending work and simultaneous Vision calls, coalesce repeated busy
+  triggers, and time out failed providers or destinations independently. Ignore
+  startup/restored sensor states while recognizing repeated doorbell events.
+  Cancel pending work when a monitor is edited, paused, deleted, or unloaded.
+- Match the bridge's dark/light workspace theme and responsive layout. Preserve
+  monitor and Vision drafts during navigation and refresh, and save shared
+  Vision independently from other assistant settings.
+
 ## 1.4.13
 
 - Correct the room precedence introduced in 1.4.12. The firmware-configured room

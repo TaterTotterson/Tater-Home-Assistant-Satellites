@@ -2153,17 +2153,17 @@ class MiniTaterRuntime:
         if settings["tts_provider"] == "wyoming" and not settings["tts_wyoming_host"]:
             missing.append("TTS Wyoming host")
         vision_missing: list[str] = []
-        if settings["vision_provider"] == "openai_compatible":
-            if not settings["vision_base_url"]:
-                vision_missing.append("Vision API base URL")
-            if not settings["vision_model"]:
-                vision_missing.append("Vision model")
-            if (
-                settings["vision_base_url"]
-                and _provider_needs_key(settings["vision_base_url"])
-                and not settings["vision_api_key"]
-            ):
-                vision_missing.append("Vision API key")
+        vision_model = self._vision_model_settings()
+        if not vision_model["base_url"]:
+            vision_missing.append("Vision API base URL")
+        if not vision_model["model"]:
+            vision_missing.append("Vision model")
+        if (
+            vision_model["base_url"]
+            and _provider_needs_key(vision_model["base_url"])
+            and not vision_model["api_key"]
+        ):
+            vision_missing.append("Vision API key")
         return {
             "ok": not missing,
             "missing": missing,

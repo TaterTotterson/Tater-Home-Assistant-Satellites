@@ -911,6 +911,31 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(runtime._clips), tater.MAX_STORED_SPEECH_CLIPS)
 
+    def test_ha_mode_can_configure_vision_without_language_or_speech_models(self) -> None:
+        manager = _Manager()
+        manager.data["tater_settings"].update({
+            "assistant_mode": "home_assistant", "llm_model": "", "llm_api_key": "",
+            "vision_provider": "openai_compatible", "vision_base_url": "http://vision.local/v1",
+            "vision_model": "image-model", "vision_api_key": "",
+        })
+        runtime = tater.MiniTaterRuntime(manager)
+        ready = runtime.ready_status()
+        self.assertFalse(ready["ok"])
+        self.assertFalse(ready["enabled"])
+        self.assertTrue(ready["vision"]["ok"])
+        self.assertEqual(runtime._vision_model_settings()["model"], "image-model")
+
+    def test_shared_base_vision_reports_missing_model_and_key(self) -> None:
+        manager = _Manager()
+        manager.data["tater_settings"].update({
+            "vision_provider": "base", "llm_base_url": "https://api.openai.com/v1",
+            "llm_model": "", "llm_api_key": "",
+        })
+        ready = tater.MiniTaterRuntime(manager).ready_status()["vision"]
+        self.assertFalse(ready["ok"])
+        self.assertIn("Vision model", ready["missing"])
+        self.assertIn("Vision API key", ready["missing"])
+
     def test_local_openai_compatible_endpoints_can_run_without_keys(self) -> None:
         manager = _Manager()
         manager.data["tater_settings"].update(

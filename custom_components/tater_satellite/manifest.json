@@ -1,7 +1,7 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "1.4.13",
+  "version": "1.4.14",
   "codeowners": [
     "@TaterTotterson"
   ],
@@ -12,6 +12,7 @@
     "bluetooth",
     "ffmpeg",
     "intent",
+    "media_source",
     "panel_custom",
     "stt",
     "wyoming"

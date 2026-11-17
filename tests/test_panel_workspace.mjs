@@ -26,9 +26,9 @@ function fixture() {
   panel.render = () => {};
   return panel;
 }
-function controls(panel, selectors) {
-  panel.shadowRoot = { querySelectorAll: () => [], querySelector: selector => selectors[selector] || null };
-  for (const control of Object.values(selectors)) {
+function controls(panel, selectors, collections = {}) {
+  panel.shadowRoot = { querySelectorAll: selector => collections[selector] || [], querySelector: selector => selectors[selector] || null };
+  for (const control of [...Object.values(selectors), ...Object.values(collections).flat()]) {
     control.listeners = {};
     control.addEventListener = (type, fn) => { control.listeners[type] = fn; };
   }
@@ -39,7 +39,7 @@ test('all bridge and Tater workspaces plus fallback settings remain reachable', 
   const panel = fixture();
   panel._taterDraft.assistant_mode = 'tater';
   const nav = panel.renderNavigation();
-  for (const id of ['assistant', 'models', 'home-control', 'hydra', 'satellites', 'audio', 'bluetooth', 'defaults', 'verifier', 'trainer', 'firmware']) assert.match(nav, new RegExp(`data-tab="${id}"`));
+  for (const id of ['assistant', 'models', 'home-control', 'hydra', 'satellites', 'awareness', 'vision', 'audio', 'bluetooth', 'defaults', 'verifier', 'trainer', 'firmware']) assert.match(nav, new RegExp(`data-tab="${id}"`));
   panel._data.settings_schema.push({ section: 'future-section', title: 'Future settings', fields: [{ key: 'future-option', label: 'Future option', type: 'boolean' }] });
   for (const board of ['biscuit', 'crown', 'checkers', 'voice-pe', 'satellite1', 's3-box-3', 'thirdreality-s420']) {
     for (const mode of ['mww', 'oww', 'nww', 'mww_oww', 'mww_nww']) {
@@ -64,6 +64,8 @@ test('Home Assistant is default and hides Tater-only navigation until selected',
   const panel = fixture();
   let nav = panel.renderNavigation();
   assert.match(nav, /data-tab="assistant"/);
+  assert.match(nav, /data-tab="awareness"/);
+  assert.match(nav, /data-tab="vision"/);
   for (const id of ['models', 'home-control', 'hydra']) assert.doesNotMatch(nav, new RegExp(`data-tab="${id}"`));
   panel.navigate('models');
   assert.equal(panel._tab, 'satellites');
@@ -88,7 +90,7 @@ test('mini Tater pages retain the complete pipeline, all three tools, and Hydra 
   assert.match(assistant, /Talk to Mini-Tater/);
   assert.doesNotMatch(assistant, /data-tater-test-message[^>]*disabled/);
   const models = panel.renderModelsAndSpeech();
-  assert.match(models, /Language model[\s\S]*Image understanding[\s\S]*Same as Base[\s\S]*Different endpoint[\s\S]*Beast Mode[\s\S]*Astraeus[\s\S]*Thanatos[\s\S]*Hermes[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
+  assert.match(models, /Language model[\s\S]*Image understanding[\s\S]*Open Vision[\s\S]*Beast Mode[\s\S]*Astraeus[\s\S]*Thanatos[\s\S]*Hermes[\s\S]*Speech-to-text[\s\S]*Text-to-speech/);
   assert.doesNotMatch(models, /data-tater-vad|WebRTC/);
   panel.prepareDeviceDraft('one');
   panel._deviceSection = 'voice';
@@ -101,16 +103,92 @@ test('mini Tater pages retain the complete pipeline, all three tools, and Hydra 
 test('vision can follow Base or reveal a dedicated compatible endpoint', () => {
   const panel = fixture();
   panel._taterDraft.assistant_mode = 'tater';
-  panel._taterDraft.vision_provider = 'base';
-  let models = panel.renderModelsAndSpeech();
+  panel._visionDraft.vision_provider = 'base';
+  let models = panel.renderVision();
   assert.match(models, /Reuse the Base model/);
-  assert.doesNotMatch(models, /data-tater-setting="vision_base_url"/);
+  assert.doesNotMatch(models, /data-vision-setting="vision_base_url"/);
 
-  panel._taterDraft.vision_provider = 'openai_compatible';
+  panel._visionDraft.vision_provider = 'openai_compatible';
   panel._data.tater_assistant.ready.vision = { ok: false, missing: ['Vision model'] };
-  models = panel.renderModelsAndSpeech();
-  assert.match(models, /data-tater-setting="vision_base_url"[\s\S]*data-tater-setting="vision_model"[\s\S]*data-tater-setting="vision_api_key"/);
+  models = panel.renderVision();
+  assert.match(models, /data-vision-setting="vision_base_url"[\s\S]*data-vision-setting="vision_model"[\s\S]*data-vision-setting="vision_api_key"/);
   assert.match(models, /Finish Vision setup[\s\S]*Vision model/);
+});
+
+test('shared Vision drafts survive polling and cannot overwrite other assistant edits', async () => {
+  const panel = fixture();
+  panel._taterDraft.llm_model = 'unsaved-conversation-model';
+  panel.markDirty('tater');
+  Object.assign(panel._visionDraft, { vision_provider: 'openai_compatible', vision_model: 'image-model', vision_base_url: 'http://vision.local/v1', vision_api_key: 'vision-secret' });
+  panel.markDirty('vision');
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._visionDraft.vision_model, 'image-model');
+  const save = {};
+  controls(panel, { '[data-action="save-vision"]': save });
+  let request;
+  panel.api = async (...args) => {
+    request = args;
+    return { settings: { ...panel._data.tater_assistant.settings, vision_provider: 'openai_compatible', vision_model: 'image-model', vision_base_url: 'http://vision.local/v1', vision_api_key_set: true } };
+  };
+  panel.run = async action => action();
+  await save.listeners.click();
+  assert.equal(request[1], 'vision/settings');
+  assert.deepEqual(Object.keys(request[2].settings).sort(), ['vision_api_key', 'vision_base_url', 'vision_model', 'vision_provider']);
+  assert.equal(panel._taterDraft.llm_model, 'unsaved-conversation-model');
+  assert.equal(panel._taterDraft.vision_model, 'image-model');
+  assert.equal(panel.isScopeDirty('tater'), true);
+});
+
+test('Awareness keeps simple camera trigger destination fields and monitor drafts in HA mode', () => {
+  const panel = fixture();
+  panel.openAwarenessMonitor();
+  panel._awarenessDraft.name = 'Unsaved front door';
+  panel.markDirty('awareness');
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._awarenessDraft.name, 'Unsaved front door');
+  const html = panel.renderAwareness();
+  for (const text of ['Choose a camera', 'When should we look?', 'Where should it go?', 'Optional settings', 'Save monitor', 'Recent activity']) assert.ok(html.includes(text));
+  assert.match(html, /data-awareness-setting="camera_entity"/);
+  assert.match(html, /data-awareness-setting="trigger_entity"/);
+  assert.match(html, /data-tab="vision"/);
+  panel._tab = 'vision';
+  assert.match(panel.renderBody(), /configure Vision without setting up Mini-Tater/);
+});
+
+test('Awareness save and test use the saved monitor identity', async () => {
+  const panel = fixture();
+  panel.openAwarenessMonitor();
+  Object.assign(panel._awarenessDraft, { name: 'Door', camera_entity: 'camera.door', trigger_entity: 'event.door', trigger_value: 'event:ring', destinations: ['satellite:one'] });
+  const save = {};
+  controls(panel, { '[data-action="save-awareness"]': save });
+  let request;
+  panel.api = async (...args) => { request = args; return { monitor: { ...args[2]?.monitor, id: 'saved-id' } }; };
+  panel.run = async action => action();
+  await save.listeners.click();
+  assert.equal(request[1], 'awareness/monitors');
+  assert.equal(request[2].monitor.camera_entity, 'camera.door');
+  assert.equal(panel._awarenessDraft.id, 'saved-id');
+  const button = { dataset: { awarenessTest: 'saved-id' } };
+  controls(panel, {}, { '[data-awareness-test]': [button] });
+  await button.listeners.click();
+  assert.equal(request[1], 'awareness/monitors/saved-id/test');
+  assert.equal(panel._awarenessSection, 'activity');
+  panel.markDirty('awareness');
+  request = null;
+  await button.listeners.click();
+  assert.equal(request, null);
+  assert.match(panel._error, /Save this monitor/);
+});
+
+test('Awareness shows per-destination failures and escapes descriptions', () => {
+  const panel = fixture();
+  panel._awarenessSection = 'activity';
+  panel._data.awareness = { history: [{ id: 'event', name: 'Door', camera_name: 'Camera', created_at: 1, description: '<script>bad()</script>', status: 'partial', deliveries: [{ destination: 'satellite:offline', status: 'failed', error: 'Screen offline' }, { destination: 'mobile_app:mobile_app_phone', status: 'sent' }] }] };
+  const html = panel.renderAwareness();
+  assert.match(html, /Partly delivered/);
+  assert.match(html, /Screen offline/);
+  assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
 });
 
 test('Wyoming model and voice names are blank provider-specific fields', () => {
@@ -146,6 +224,7 @@ test('saving Tater settings never posts public key-state flags', async () => {
   assert.equal(request[1], 'tater/settings');
   assert.equal(request[2].settings.llm_api_key, 'new-secret');
   assert.equal('llm_api_key_set' in request[2].settings, false);
+  assert.equal(Object.keys(request[2].settings).some(key => key.startsWith('vision_')), false);
 });
 
 test('pressing Enter sends the mini Tater chat message', async () => {

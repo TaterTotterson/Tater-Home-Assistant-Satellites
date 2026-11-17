@@ -32,10 +32,12 @@ const WAKE_VERIFIER_SETTING_KEYS = new Set([
 ]);
 const WORKSPACE_PAGES = [
   { id: "assistant", label: "Assistant", icon: "robot-outline", group: "Tater assistant", description: "Choose who owns each voice turn: Home Assistant Assist or the complete Tater pipeline." },
-  { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, vision, speech-to-text, and text-to-speech providers." },
+  { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, speech-to-text, and text-to-speech providers." },
   { id: "home-control", label: "Home tools", icon: "home-automation", group: "Tater assistant", description: "Review Mini-Tater's built-in device control, camera vision, and satellite timers." },
   { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every built-in tool decision." },
   { id: "satellites", label: "Satellites", icon: "access-point", group: "Your home", description: "Voice around your home, connected directly to Home Assistant." },
+  { id: "awareness", label: "Awareness", icon: "camera-iris", group: "Your home", description: "Turn camera events into a picture and a useful description, wherever you want to see them." },
+  { id: "vision", label: "Vision", icon: "eye-outline", group: "Your home", description: "One shared image-understanding model for Awareness and Mini-Tater." },
   { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
   { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Echo scanners and the nearby devices they connect to Home Assistant." },
   { id: "defaults", label: "Voice defaults", icon: "microphone", group: "Voice & wake", description: "One shared wake profile, with clear defaults for every satellite." },
@@ -44,6 +46,7 @@ const WORKSPACE_PAGES = [
   { id: "firmware", label: "Firmware & recovery", icon: "package-variant-closed-check", group: "Maintenance", description: "Update wirelessly or prepare a board-specific USB installer." },
 ];
 const TATER_ONLY_PAGE_IDS = new Set(["models", "home-control", "hydra"]);
+const VISION_SETTING_KEYS = new Set(["vision_provider", "vision_base_url", "vision_model", "vision_api_key", "vision_api_key_set"]);
 const DEVICE_SETTING_GROUPS = [
   { id: "voice", label: "Voice", sections: ["audio"] },
   { id: "wake", label: "Wake", sections: ["wake", "wake_sound", "feedback", "verifier"] },
@@ -174,6 +177,9 @@ class TaterSatellitePanel extends HTMLElement {
     this._tab = "satellites";
     this._selectedDeviceId = "";
     this._taterDraft = null;
+    this._visionDraft = null;
+    this._awarenessDraft = null;
+    this._awarenessSection = "monitors";
     this._hydraSection = "ledger";
     this._testMessage = "";
     this._testImages = [];
@@ -302,6 +308,9 @@ class TaterSatellitePanel extends HTMLElement {
     }
     if (!this._taterDraft || !this.isScopeDirty("tater")) {
       this._taterDraft = clone(data.tater_assistant?.settings || {});
+    }
+    if (!this._visionDraft || !this.isScopeDirty("vision")) {
+      this._visionDraft = pickSettings(data.tater_assistant?.settings || {}, VISION_SETTING_KEYS);
     }
     if (!this.isTaterModeSelected() && TATER_ONLY_PAGE_IDS.has(this._tab)) this._tab = "assistant";
     if (this._selectedDeviceId && !this.isScopeDirty("device")) this.prepareDeviceDraft(this._selectedDeviceId, false);
@@ -663,6 +672,50 @@ class TaterSatellitePanel extends HTMLElement {
       .workspace-section-nav { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 22px; }
       .workspace-section-nav button { color: var(--workspace-muted); }
       .workspace-section-nav button[aria-current] { background: var(--tater-accent-soft); border-color: var(--tater-accent); color: var(--tater-accent); }
+      .awareness-monitor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(310px, 100%), 1fr)); gap: 16px; }
+      .awareness-monitor { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+      .awareness-monitor header, .awareness-monitor footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .awareness-camera-icon, .awareness-step-number { display: grid; place-items: center; color: var(--tater-accent); background: var(--tater-accent-soft); border-radius: 10px; width: 36px; height: 36px; }
+      .awareness-monitor dl { display: grid; gap: 12px; margin: 12px 0; }
+      .awareness-monitor dl div { display: grid; grid-template-columns: 47px minmax(0, 1fr); gap: 8px; font-size: 12px; }
+      .awareness-monitor dt, .awareness-last-run { color: var(--workspace-muted); font-size: 11px; }
+      .awareness-monitor dd { margin: 0; overflow-wrap: anywhere; }
+      .awareness-monitor footer { margin-top: auto; border-top: 1px solid var(--workspace-line); padding-top: 14px; }
+      .awareness-monitor footer .danger { margin-left: auto; }
+      .awareness-empty { grid-column: 1 / -1; display: grid; justify-items: center; text-align: center; gap: 13px; padding: 42px 24px; }
+      .awareness-empty > ha-icon { --mdc-icon-size: 36px; width: 36px; height: 36px; color: var(--tater-accent); }
+      .awareness-empty p { max-width: 420px; }
+      .awareness-flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; color: var(--workspace-muted); font-size: 12px; margin: 10px 0; }
+      .awareness-setup, .awareness-setup > div { display: flex; align-items: center; gap: 14px; }
+      .awareness-setup { justify-content: space-between; flex-wrap: wrap; border-left: 3px solid var(--tater-accent); }
+      .awareness-setup p { font-size: 12px; }
+      .awareness-editor > .field { max-width: 480px; margin-bottom: 22px; }
+      .awareness-enabled { display: flex; flex: none; align-items: center; gap: 7px; font-size: 12px; white-space: nowrap; }
+      .awareness-enabled input, .awareness-destination input { width: 18px; min-width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; flex: none; }
+      .awareness-step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 15px; padding: 22px 0; border-top: 1px solid var(--workspace-line); }
+      .awareness-step-number { width: 28px; height: 28px; border-radius: 50%; font-size: 12px; }
+      .awareness-step h3 { font-size: 15px; margin: 1px 0 3px; }
+      .awareness-step p { font-size: 12px; margin-bottom: 14px; }
+      .awareness-step .field { max-width: 520px; }
+      .awareness-destinations { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 9px; }
+      .awareness-destination { display: flex; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--workspace-line); border-radius: 9px; cursor: pointer; }
+      .awareness-destination.selected { border-color: var(--tater-accent); background: var(--tater-accent-soft); }
+      .awareness-destination strong, .awareness-destination small { display: block; }
+      .awareness-destination strong { font-size: 12px; }
+      .awareness-destination small { color: var(--workspace-muted); font-size: 11px; }
+      .awareness-options { border-top: 1px solid var(--workspace-line); padding-top: 16px; }
+      .awareness-options summary { cursor: pointer; font-size: 12px; color: var(--workspace-muted); }
+      .awareness-options .settings-grid { margin-top: 16px; }
+      .awareness-editor-note { font-size: 11px; margin-top: 18px; }
+      .awareness-event { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 20px; padding: 22px 0; border-top: 1px solid var(--workspace-line); }
+      .awareness-event-image { aspect-ratio: 16 / 10; border-radius: 9px; overflow: hidden; background: var(--workspace-field); display: grid; place-items: center; color: var(--workspace-muted); }
+      .awareness-event-image img { width: 100%; height: 100%; object-fit: contain; }
+      .awareness-event p { font-size: 13px; line-height: 1.6; margin-top: 10px; }
+      .awareness-deliveries { list-style: none; padding: 0; margin: 10px 0 0; font-size: 11px; display: grid; gap: 5px; color: var(--workspace-muted); }
+      .awareness-deliveries ha-icon { --mdc-icon-size: 14px; height: 14px; width: 14px; }
+      .awareness-error { color: var(--error-color); }
+      .awareness-explainer { display: grid; gap: 10px; justify-items: start; }
+      @media (max-width: 650px) { .awareness-event { grid-template-columns: minmax(0, 1fr); gap: 12px; } .awareness-event-image { max-height: 240px; } .awareness-step { gap: 10px; } .awareness-editor .workspace-section-heading { flex-wrap: wrap; } }
       .workspace-back { margin-bottom: 18px; padding-left: 0; border-color: transparent; background: transparent; color: var(--workspace-muted); }
       .workspace-editor-head h2 { font-size: 23px; letter-spacing: -.4px; margin: 3px 0 5px; }
       .workspace-editor-head p { font-size: 12px; }
@@ -1361,6 +1414,8 @@ class TaterSatellitePanel extends HTMLElement {
     return `
       ${this._tab === "assistant" ? this.renderAssistantChoice() : ""}
       ${this._tab === "models" ? this.renderModelsAndSpeech() : ""}
+      ${this._tab === "vision" ? this.renderVision() : ""}
+      ${this._tab === "awareness" ? this.renderAwareness() : ""}
       ${this._tab === "home-control" ? this.renderHomeControl() : ""}
       ${this._tab === "hydra" ? this.renderHydra() : ""}
       ${this._tab === "defaults" ? this.renderVoiceDefaults() : ""}
@@ -1445,7 +1500,7 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   taterField(key, label, options = {}) {
-    const settings = this._taterDraft || {};
+    const settings = (options.scope === "vision" ? this._visionDraft : this._taterDraft) || {};
     const type = options.type || "text";
     const value = settings[key] ?? options.fallback ?? "";
     const saved = Boolean(settings[`${key}_set`]);
@@ -1457,7 +1512,7 @@ class TaterSatellitePanel extends HTMLElement {
       options.autocomplete ? `autocomplete="${escapeHtml(options.autocomplete)}"` : "",
       options.disabled ? "disabled" : "",
     ].filter(Boolean).join(" ");
-    return `<label class="field"><span>${escapeHtml(label)}</span><input data-tater-setting="${escapeHtml(key)}" type="${escapeHtml(type)}" value="${type === "password" ? "" : escapeHtml(value)}" ${attributes}>${options.help ? `<small>${escapeHtml(options.help)}${type === "password" && saved ? " A key is saved." : ""}</small>` : type === "password" && saved ? '<small>A key is saved. Leave this blank to keep it.</small>' : ""}</label>`;
+    return `<label class="field"><span>${escapeHtml(label)}</span><input data-${options.scope === "vision" ? "vision" : "tater"}-setting="${escapeHtml(key)}" type="${escapeHtml(type)}" value="${type === "password" ? "" : escapeHtml(value)}" ${attributes}>${options.help ? `<small>${escapeHtml(options.help)}${type === "password" && saved ? " A key is saved." : ""}</small>` : type === "password" && saved ? '<small>A key is saved. Leave this blank to keep it.</small>' : ""}</label>`;
   }
 
   taterSelect(key, label, options, config = {}) {
@@ -1485,12 +1540,90 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  renderVision() {
+    const settings = this._visionDraft || {};
+    const provider = settings.vision_provider || "base";
+    const ready = this._data.tater_assistant?.ready?.vision || { ok: false, missing: ["Vision model"] };
+    const dirty = this.isScopeDirty("vision");
+    const base = this._data.tater_assistant?.settings || {};
+    return `<section class="card provider-card">
+      <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Shared visual intelligence</span><h2>Image understanding</h2><p class="muted">Describe Awareness snapshots, answer camera questions, and understand chat images with one model. Works in Home Assistant and Mini-Tater mode.</p></div><span class="badge ${!dirty && ready.ok ? "online" : "update"}">${dirty ? "Unsaved changes" : ready.ok ? "Configured" : "Setup needed"}</span></div>
+      <div class="provider-choice" role="group" aria-label="Vision model source"><button type="button" data-tater-vision-provider="base" ${provider === "base" ? 'aria-current="true"' : ""}>Same as Base</button><button type="button" data-tater-vision-provider="openai_compatible" ${provider === "openai_compatible" ? 'aria-current="true"' : ""}>Different endpoint</button></div>
+      ${provider === "base" ? `<div class="verifier-note"><strong>Reuse the Base model</strong><p>Uses Mini-Tater’s saved Base endpoint, model, and key. The model must support image input.</p><p>${base.llm_model ? `${escapeHtml(base.llm_model)} · ${escapeHtml(base.llm_base_url || "")}` : 'Using Home Assistant mode? Choose <b>Different endpoint</b> to configure Vision without setting up Mini-Tater.'}</p></div>` : `
+        <div class="settings-grid">
+          ${this.taterField("vision_base_url", "Vision API base URL", { scope: "vision", placeholder: "https://api.openai.com/v1" })}
+          ${this.taterField("vision_model", "Vision model", { scope: "vision", placeholder: "Enter an image-capable model" })}
+          ${this.taterField("vision_api_key", "Vision API key", { scope: "vision", type: "password", autocomplete: "new-password", help: "Use the key for this endpoint. Local endpoints can leave it blank." })}
+        </div><p class="muted">Connect an OpenAI-compatible Vision endpoint. Mini-Tater’s language and speech settings are optional.</p>`}
+      ${!dirty && !ready.ok ? `<div class="verifier-note"><strong>Finish Vision setup</strong><p>${escapeHtml((ready.missing || []).join(" · "))}</p></div>` : ""}
+    </section>
+    <section class="card awareness-explainer"><span class="workspace-eyebrow">One snapshot, one description</span><h2>A useful picture of what happened</h2><p class="muted">Awareness captures the scene when a trigger fires, asks this model for a short description, and sends that same picture with the result.</p><button type="button" data-tab="awareness">Open Awareness ${this.renderIcon("arrow-right")}</button></section>
+    ${this.renderDraftFooter("vision", `<button type="button" data-action="reset-vision-draft">Discard</button><button type="button" class="primary" data-action="save-vision" ${this._loading ? "disabled" : ""}>Save Vision</button>`)}`;
+  }
+
+  openAwarenessMonitor(id = "") {
+    const open = () => {
+      const monitor = (this._data.awareness?.monitors || []).find((row) => row.id === id);
+      this._awarenessDraft = monitor ? clone(monitor) : { id: "", name: "", camera_entity: "", trigger_entity: "", trigger_value: "", destinations: [], enabled: true, cooldown_seconds: 60, instructions: "" };
+      this._awarenessSection = "monitors";
+      this.clearDirty("awareness");
+      this.render();
+    };
+    if (this.isScopeDirty("awareness")) this.confirmAction("Discard monitor changes?", "Open another monitor and discard the changes to this one?", "Discard changes", open);
+    else open();
+  }
+
+  awarenessSelect(key, label, rows, placeholder) {
+    const value = this._awarenessDraft?.[key] || "";
+    const missing = value && !rows.some((row) => row.id === value);
+    return `<label class="field"><span>${escapeHtml(label)}</span><select data-awareness-setting="${key}"><option value="">${escapeHtml(placeholder)}</option>${missing ? `<option value="${escapeHtml(value)}" selected>${escapeHtml(value)} · Unavailable</option>` : ""}${rows.map((row) => `<option value="${escapeHtml(row.id)}" ${value === row.id ? "selected" : ""}>${escapeHtml(row.name)}${row.available === false ? " · Unavailable" : ""}</option>`).join("")}</select></label>`;
+  }
+
+  renderAwarenessEditor() {
+    const draft = this._awarenessDraft;
+    if (!draft) return "";
+    const catalog = this._data.awareness?.catalog || {};
+    const triggers = [...(catalog.triggers || [])].sort((a, b) => Number((b.suggested_for || []).includes(draft.camera_entity)) - Number((a.suggested_for || []).includes(draft.camera_entity)));
+    const selected = triggers.find((row) => row.id === draft.trigger_entity);
+    const options = (selected?.options || []).map((row) => ({ id: row.value, name: row.label }));
+    const destinations = [...(catalog.destinations || [])];
+    for (const id of draft.destinations) if (!destinations.some((row) => row.id === id)) destinations.push({ id, name: id.split(":").slice(1).join(":"), kind: id.startsWith("satellite:") ? "screen" : "phone", available: false });
+    return `<section class="card awareness-editor">
+      <div class="workspace-section-heading"><div><span class="workspace-eyebrow">${draft.id ? "Edit monitor" : "New monitor"}</span><h2>${escapeHtml(draft.name || "Watch a camera")}</h2><p class="muted">Choose what to watch, when to look, and where to send the result.</p></div><label class="awareness-enabled"><input type="checkbox" data-awareness-setting="enabled" ${draft.enabled ? "checked" : ""}> Enabled</label></div>
+      <label class="field"><span>Monitor name</span><input data-awareness-setting="name" value="${escapeHtml(draft.name)}" placeholder="Front door activity" maxlength="100"></label>
+      <div class="awareness-step"><span class="awareness-step-number">1</span><div><h3>Choose a camera</h3><p class="muted">Capture one fresh image when something happens.</p>${this.awarenessSelect("camera_entity", "Camera", catalog.cameras || [], "Choose a camera")}${!(catalog.cameras || []).length ? '<p class="muted">Add a camera integration to Home Assistant to get started.</p>' : ""}</div></div>
+      <div class="awareness-step"><span class="awareness-step-number">2</span><div><h3>When should we look?</h3><p class="muted">Use the camera’s detection sensor or a separate sensor, doorbell event, or toggle helper.</p><div class="settings-grid">${this.awarenessSelect("trigger_entity", "Trigger source", triggers.map((row) => ({ ...row, name: `${(row.suggested_for || []).includes(draft.camera_entity) ? "Camera · " : ""}${row.name}` })), "Choose a trigger")}${this.awarenessSelect("trigger_value", "When", options, "Choose an event")}</div></div></div>
+      <div class="awareness-step"><span class="awareness-step-number">3</span><div><h3>Where should it go?</h3><p class="muted">Screens and phones receive the picture and a short description.</p><div class="awareness-destinations">${destinations.map((row) => `<label class="awareness-destination ${draft.destinations.includes(row.id) ? "selected" : ""}"><input type="checkbox" data-awareness-destination="${escapeHtml(row.id)}" ${draft.destinations.includes(row.id) ? "checked" : ""}>${this.renderIcon(row.kind === "screen" ? "monitor" : "cellphone")}<span><strong>${escapeHtml(row.name)}</strong><small>${row.kind === "screen" ? "Echo screen" : "HA phone notification"}${row.available === false ? " · Unavailable" : ""}</small></span></label>`).join("") || '<p class="muted">Connect a compatible Echo screen or register a phone with the Home Assistant companion app.</p>'}</div></div></div>
+      <details class="awareness-options"><summary>Optional settings</summary><div class="settings-grid"><label class="field"><span>Cooldown (seconds)</span><input data-awareness-setting="cooldown_seconds" type="number" min="0" max="86400" value="${draft.cooldown_seconds}"><small>Wait between alerts from this monitor. Default: 60 seconds.</small></label><label class="field workspace-wide"><span>What should Vision focus on?</span><textarea data-awareness-setting="instructions" maxlength="1000" rows="3" placeholder="Optional, for example: focus on packages near the door.">${escapeHtml(draft.instructions)}</textarea></label></div></details>
+      <p class="muted awareness-editor-note">Tests send a real alert to your selected destinations. Save changes before testing.</p>
+    </section>${this.renderDraftFooter("awareness", `<button type="button" data-action="discard-awareness">Close editor</button>${draft.id ? `<button type="button" data-awareness-test="${escapeHtml(draft.id)}" ${this._loading || this.isScopeDirty("awareness") ? "disabled" : ""}>Test monitor</button>` : ""}<button type="button" class="primary" data-action="save-awareness" ${this._loading ? "disabled" : ""}>Save monitor</button>`)}`;
+  }
+
+  renderAwareness() {
+    const awareness = this._data.awareness || {};
+    const monitors = awareness.monitors || [];
+    const history = awareness.history || [];
+    const catalog = awareness.catalog || {};
+    const ready = this._data.tater_assistant?.ready?.vision?.ok;
+    const label = (id) => (catalog.destinations || []).find((row) => row.id === id)?.name || id.split(":").slice(1).join(":");
+    const status = (value) => ({ sent: "Delivered", partial: "Partly delivered", failed: "Failed" }[value] || value);
+    const stamp = (value) => new Date(Number(value) * 1000).toLocaleString();
+    return `<div class="workspace-toolbar"><div class="workspace-summary"><span>${monitors.filter((row) => row.enabled).length} active monitor${monitors.filter((row) => row.enabled).length === 1 ? "" : "s"}</span><span>Works with HA and Mini-Tater</span></div><button type="button" class="primary" data-action="new-awareness">${this.renderIcon("plus")} Add monitor</button></div>
+      <nav class="workspace-section-nav" aria-label="Awareness views"><button type="button" data-awareness-section="monitors" ${this._awarenessSection === "monitors" ? 'aria-current="page"' : ""}>Monitors <span>${monitors.length}</span></button><button type="button" data-awareness-section="activity" ${this._awarenessSection === "activity" ? 'aria-current="page"' : ""}>Recent activity <span>${history.length}</span></button></nav>
+      ${!ready ? `<section class="card awareness-setup"><div>${this.renderIcon("eye-outline")}<div><strong>Connect your Vision model</strong><p class="muted">Awareness needs an image-capable model. You can keep using Home Assistant for conversations.</p></div></div><button type="button" data-tab="vision">Open Vision ${this.renderIcon("arrow-right")}</button></section>` : ""}
+      ${this._awarenessSection === "activity" ? `<section class="card awareness-activity"><div class="workspace-section-heading"><div><span class="workspace-eyebrow">Camera alerts</span><h2>Recent activity</h2><p class="muted">Last 50 runs, with delivery details. Images expire after one hour.</p></div></div>${history.map((row) => `<article class="awareness-event"><div class="awareness-event-image">${row.image_url ? `<img src="${escapeHtml(row.image_url)}" alt="Snapshot from ${escapeHtml(row.camera_name || "camera")}" loading="lazy">` : this.renderIcon("camera-outline")}</div><div><div class="workspace-device-name"><h3>${escapeHtml(row.name)}</h3><span class="badge ${row.status === "sent" ? "online" : "update"}">${status(row.status)}</span>${row.test ? '<span class="badge">Test</span>' : ""}</div><small class="muted">${escapeHtml(row.camera_name)} · ${escapeHtml(stamp(row.created_at))}</small><p>${escapeHtml(row.description || row.error || "No description available.")}</p>${row.description && row.error ? `<p class="awareness-error">${escapeHtml(row.error)}</p>` : ""}${row.image_error ? '<p class="awareness-error">The snapshot could not be saved for phone delivery or history.</p>' : ""}<ul class="awareness-deliveries">${(row.deliveries || []).map((delivery) => `<li class="${delivery.status === "failed" ? "awareness-error" : ""}">${this.renderIcon(delivery.status === "sent" ? "check-circle-outline" : "alert-circle-outline")} ${escapeHtml(label(delivery.destination))} · ${delivery.status === "sent" ? "Sent" : escapeHtml(delivery.error || "Delivery failed")}</li>`).join("")}</ul></div></article>`).join("") || `<div class="awareness-empty">${this.renderIcon("image-multiple-outline")}<h3>Your camera alerts will appear here</h3><p class="muted">Run a monitor test or wait for its selected trigger.</p></div>`}</section>` : `${this.renderAwarenessEditor()}<div class="awareness-monitor-grid" ${this._awarenessDraft ? "hidden" : ""}>${monitors.map((row) => {
+        const last = history.find((event) => event.monitor_id === row.id);
+        const camera = (catalog.cameras || []).find((camera) => camera.id === row.camera_entity);
+        const trigger = (catalog.triggers || []).find((trigger) => trigger.id === row.trigger_entity);
+        const running = (awareness.running || []).includes(row.id);
+        return `<article class="card awareness-monitor"><header><span class="awareness-camera-icon">${this.renderIcon("camera-outline")}</span><span class="badge ${row.enabled ? "online" : ""}">${running ? "Processing" : row.enabled ? "Enabled" : "Paused"}</span></header><h3>${escapeHtml(row.name)}</h3><p class="muted">${escapeHtml(camera?.name || row.camera_entity)}</p><dl><div><dt>When</dt><dd>${escapeHtml(trigger?.name || row.trigger_entity)} · ${escapeHtml(trigger?.options?.find((option) => option.value === row.trigger_value)?.label || row.trigger_value)}</dd></div><div><dt>Notify</dt><dd>${escapeHtml(row.destinations.map(label).join(", "))}</dd></div></dl><div class="awareness-last-run">${last ? `${status(last.status)} · ${escapeHtml(stamp(last.created_at))}` : "Waiting for its first event"}</div><footer><button type="button" data-awareness-edit="${escapeHtml(row.id)}">Edit monitor</button><button type="button" data-awareness-test="${escapeHtml(row.id)}" ${this._loading || running || !ready ? "disabled" : ""}>Test</button><button type="button" class="danger" data-awareness-delete="${escapeHtml(row.id)}" aria-label="Delete ${escapeHtml(row.name)}">${this.renderIcon("delete-outline")}</button></footer></article>`;
+      }).join("") || (!this._awarenessDraft ? `<section class="card awareness-empty">${this.renderIcon("camera-iris")}<h2>A little more awareness</h2><p class="muted">Choose a camera, connect a trigger, and let a picture tell you what happened.</p><div class="awareness-flow"><span>Camera</span>${this.renderIcon("arrow-right")}<span>Vision</span>${this.renderIcon("arrow-right")}<span>Your screens & phones</span></div><button type="button" class="primary" data-action="new-awareness">Create your first monitor</button></section>` : "")}</div>`}`;
+  }
+
   renderModelsAndSpeech() {
     const settings = this._taterDraft || {};
     const sttProvider = settings.stt_provider || "openai";
     const ttsProvider = settings.tts_provider || "openai";
-    const visionProvider = settings.vision_provider || "base";
-    const visionReady = this._data.tater_assistant?.ready?.vision || { ok: true, missing: [] };
     return `
       <section class="card provider-card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Hydra model</span><h2>Language model</h2><p class="muted">OpenAI or any compatible Chat Completions endpoint with function tools.</p></div><span class="provider-status">${settings.llm_api_key_set ? this.renderIcon("check-circle-outline") + " Key saved" : this.renderIcon("key-outline") + " Key not set"}</span></div>
@@ -1504,18 +1637,7 @@ class TaterSatellitePanel extends HTMLElement {
         </div>
       </section>
 
-      <section class="card provider-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Visual intelligence</span><h2>Image understanding</h2><p class="muted">Understand images attached in chat and fresh camera stills requested through Tater Vision.</p></div><span class="badge ${visionReady.ok ? "online" : "update"}">${visionProvider === "base" ? "Same as Base" : visionReady.ok ? "Dedicated model" : "Setup needed"}</span></div>
-        <div class="provider-choice" role="group" aria-label="Vision model source"><button type="button" data-tater-vision-provider="base" ${visionProvider === "base" ? 'aria-current="true"' : ""}>Same as Base</button><button type="button" data-tater-vision-provider="openai_compatible" ${visionProvider === "openai_compatible" ? 'aria-current="true"' : ""}>Different endpoint</button></div>
-        ${visionProvider === "base" ? `<div class="verifier-note"><strong>Reuse the Base model</strong><p>Image requests use the Base URL, model, and API key above. The selected Base model must support image input.</p></div>` : `
-          <div class="settings-grid">
-            ${this.taterField("vision_base_url", "Vision API base URL", { placeholder: "https://api.openai.com/v1" })}
-            ${this.taterField("vision_model", "Vision model", { placeholder: "Enter a multimodal model" })}
-            ${this.taterField("vision_api_key", "Vision API key", { type: "password", autocomplete: "new-password", help: "Use the key for this endpoint. Local endpoints can leave it blank." })}
-          </div>
-          ${!visionReady.ok ? `<div class="verifier-note"><strong>Finish Vision setup</strong><p>${escapeHtml((visionReady.missing || []).join(" · "))}</p></div>` : ""}
-        `}
-      </section>
+      <section class="card provider-card"><div class="workspace-section-heading"><div><span class="workspace-eyebrow">Shared with Awareness</span><h2>Image understanding</h2><p class="muted">Camera descriptions and chat images use the shared Vision settings.</p></div><button type="button" data-tab="vision">Open Vision ${this.renderIcon("arrow-top-right")}</button></div></section>
 
       <section class="card provider-card beast-mode-card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Advanced routing</span><h2>Beast Mode</h2><p class="muted">Give planning, execution, and the final response their own models. When disabled, all three heads use the Base model above.</p></div><span class="badge ${settings.hydra_beast_mode_enabled ? "online" : ""}">${settings.hydra_beast_mode_enabled ? "Enabled" : "Base model"}</span></div>
@@ -2854,8 +2976,89 @@ class TaterSatellitePanel extends HTMLElement {
     }
   }
 
+  bindAwarenessEvents(root) {
+    root.querySelectorAll('[data-action="new-awareness"]').forEach((button) => button.addEventListener("click", () => this.openAwarenessMonitor()));
+    root.querySelectorAll("[data-awareness-edit]").forEach((button) => button.addEventListener("click", () => this.openAwarenessMonitor(button.dataset.awarenessEdit)));
+    root.querySelectorAll("[data-awareness-section]").forEach((button) => button.addEventListener("click", () => {
+      this._awarenessSection = button.dataset.awarenessSection;
+      this.render();
+    }));
+    root.querySelectorAll("[data-awareness-setting]").forEach((input) => {
+      input.addEventListener(input.type === "text" || input.tagName === "TEXTAREA" ? "input" : "change", () => {
+        const key = input.dataset.awarenessSetting;
+        this._awarenessDraft[key] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value;
+        this.markDirty("awareness");
+        if (key === "camera_entity" || key === "trigger_entity") {
+          const triggers = this._data.awareness?.catalog?.triggers || [];
+          if (key === "camera_entity" && !this._awarenessDraft.trigger_entity) {
+            const suggested = triggers.filter((row) => (row.suggested_for || []).includes(input.value));
+            if (suggested.length === 1) this._awarenessDraft.trigger_entity = suggested[0].id;
+          }
+          const selected = triggers.find((row) => row.id === this._awarenessDraft.trigger_entity);
+          if (!(selected?.options || []).some((row) => row.value === this._awarenessDraft.trigger_value)) this._awarenessDraft.trigger_value = selected?.options?.[0]?.value || "";
+          this.render();
+        }
+      });
+    });
+    root.querySelectorAll("[data-awareness-destination]").forEach((input) => input.addEventListener("change", () => {
+      const selected = new Set(this._awarenessDraft.destinations);
+      if (input.checked) selected.add(input.dataset.awarenessDestination);
+      else selected.delete(input.dataset.awarenessDestination);
+      this._awarenessDraft.destinations = [...selected];
+      this.markDirty("awareness");
+      this.render();
+    }));
+    root.querySelector('[data-action="save-awareness"]')?.addEventListener("click", () => {
+      const draft = clone(this._awarenessDraft);
+      this.run(async () => {
+        const result = await this.api("POST", "awareness/monitors", { id: draft.id, monitor: draft });
+        this._awarenessDraft = clone(result.monitor);
+      }, "Awareness monitor saved.", ["awareness"]);
+    });
+    root.querySelector('[data-action="discard-awareness"]')?.addEventListener("click", () => {
+      const close = () => { this._awarenessDraft = null; this.clearDirty("awareness"); this.render(); };
+      if (this.isScopeDirty("awareness")) this.confirmAction("Discard monitor changes?", "Close the editor and discard this monitor’s unsaved changes?", "Discard changes", close);
+      else close();
+    });
+    root.querySelectorAll("[data-awareness-test]").forEach((button) => button.addEventListener("click", () => {
+      if (this.isScopeDirty("awareness") && this._awarenessDraft?.id === button.dataset.awarenessTest) {
+        this._error = "Save this monitor’s changes before testing.";
+        this.render();
+        return;
+      }
+      return this.run(async () => {
+      await this.api("POST", `awareness/monitors/${encodeURIComponent(button.dataset.awarenessTest)}/test`, {});
+      this._awarenessSection = "activity";
+      }, "Test finished. Review the description and delivery results below.");
+    }));
+    root.querySelectorAll("[data-awareness-delete]").forEach((button) => button.addEventListener("click", () => {
+      const id = button.dataset.awarenessDelete;
+      this.confirmAction("Delete this monitor?", "Stop watching its trigger and remove the saved monitor. Recent activity remains available.", "Delete monitor", () => this.run(async () => {
+        await this.api("DELETE", `awareness/monitors/${encodeURIComponent(id)}`);
+        if (this._awarenessDraft?.id === id) { this._awarenessDraft = null; this.clearDirty("awareness"); }
+      }, "Awareness monitor removed."));
+    }));
+    root.querySelectorAll("[data-vision-setting]").forEach((input) => input.addEventListener("input", () => {
+      this._visionDraft[input.dataset.visionSetting] = input.value;
+      this.markDirty("vision");
+    }));
+    root.querySelector('[data-action="save-vision"]')?.addEventListener("click", () => this.run(async () => {
+      const settings = pickSettings(this._visionDraft, new Set([...VISION_SETTING_KEYS].filter((key) => !key.endsWith("_set"))));
+      const result = await this.api("POST", "vision/settings", { settings });
+      this._data.tater_assistant.settings = result.settings;
+      this._visionDraft = pickSettings(result.settings, VISION_SETTING_KEYS);
+      Object.assign(this._taterDraft, this._visionDraft);
+    }, "Shared Vision settings saved.", ["vision"]));
+    root.querySelector('[data-action="reset-vision-draft"]')?.addEventListener("click", () => {
+      this._visionDraft = pickSettings(this._data.tater_assistant?.settings || {}, VISION_SETTING_KEYS);
+      this.clearDirty("vision");
+      this.render();
+    });
+  }
+
   bindEvents() {
     const root = this.shadowRoot;
+    this.bindAwarenessEvents(root);
     root.querySelectorAll("[data-tab]").forEach((button) => {
       button.addEventListener("click", () => this.navigate(button.dataset.tab));
     });
@@ -2890,8 +3093,8 @@ class TaterSatellitePanel extends HTMLElement {
       this.render();
     }));
     root.querySelectorAll("[data-tater-vision-provider]").forEach((button) => button.addEventListener("click", () => {
-      this._taterDraft.vision_provider = button.dataset.taterVisionProvider === "openai_compatible" ? "openai_compatible" : "base";
-      this.markDirty("tater");
+      this._visionDraft.vision_provider = button.dataset.taterVisionProvider === "openai_compatible" ? "openai_compatible" : "base";
+      this.markDirty("vision");
       this.render();
     }));
     root.querySelectorAll("[data-entity-scope]").forEach((button) => button.addEventListener("click", () => {
@@ -2972,7 +3175,7 @@ class TaterSatellitePanel extends HTMLElement {
     });
     root.querySelector('[data-action="save-tater"]')?.addEventListener("click", () => {
       const settings = clone(this._taterDraft);
-      Object.keys(settings).filter((key) => key.endsWith("_set")).forEach((key) => delete settings[key]);
+      Object.keys(settings).filter((key) => key.endsWith("_set") || key.startsWith("vision_")).forEach((key) => delete settings[key]);
       this.run(async () => {
         const result = await this.api("POST", "tater/settings", { settings });
         this._data.tater_assistant.settings = result.settings;

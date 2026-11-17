@@ -155,6 +155,87 @@ class TaterAssistantSettingsView(HomeAssistantView):
         return self.json({"ok": True, "settings": saved})
 
 
+class VisionSettingsView(HomeAssistantView):
+    """Save the shared Vision model without changing the voice pipeline."""
+
+    url = f"{API_BASE_PATH}/vision/settings"
+    name = "api:tater_satellite:vision_settings"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        values = body.get("settings", body)
+        if not isinstance(values, dict):
+            raise web.HTTPBadRequest(text="Vision settings must be an object")
+        settings = {key: value for key, value in values.items() if key in {
+            "vision_provider", "vision_base_url", "vision_model", "vision_api_key",
+        }}
+        try:
+            saved = await _manager(request).tater_assistant.async_update_settings(settings)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "settings": saved})
+
+
+class AwarenessMonitorsView(HomeAssistantView):
+    """Create or update a camera monitor in either assistant mode."""
+
+    url = f"{API_BASE_PATH}/awareness/monitors"
+    name = "api:tater_satellite:awareness_monitors"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        try:
+            saved = await _manager(request).awareness.async_save_monitor(
+                body.get("monitor"), str(body.get("id") or "")
+            )
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "monitor": saved})
+
+
+class AwarenessMonitorView(HomeAssistantView):
+    url = f"{API_BASE_PATH}/awareness/monitors/{{monitor_id}}"
+    name = "api:tater_satellite:awareness_monitor"
+    requires_auth = True
+
+    async def delete(self, request: web.Request, monitor_id: str) -> web.Response:
+        try:
+            await _manager(request).awareness.async_delete_monitor(monitor_id)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True})
+
+
+class AwarenessTestView(HomeAssistantView):
+    url = f"{API_BASE_PATH}/awareness/monitors/{{monitor_id}}/test"
+    name = "api:tater_satellite:awareness_test"
+    requires_auth = True
+
+    async def post(self, request: web.Request, monitor_id: str) -> web.Response:
+        try:
+            result = await _manager(request).awareness.async_test(monitor_id)
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": result["status"] == "sent", "event": result})
+
+
+class AwarenessImageView(HomeAssistantView):
+    """Serve retained snapshots through authenticated or signed HA requests."""
+
+    url = f"{API_BASE_PATH}/awareness/images/{{event_id}}"
+    name = "api:tater_satellite:awareness_image"
+    requires_auth = True
+
+    async def get(self, request: web.Request, event_id: str) -> web.Response:
+        image = await _manager(request).awareness.async_image(event_id)
+        if image is None:
+            raise web.HTTPNotFound(text="This Awareness image has expired")
+        data, mime = image
+        return web.Response(body=data, content_type=mime, headers={"Cache-Control": "private, no-store"})
+
+
 class TaterAssistantTestView(HomeAssistantView):
     """Run one mini-Tater text or image conversation for setup testing."""
 
@@ -706,6 +787,11 @@ VIEWS = (
     BluetoothUnpairView,
     GlobalSettingsView,
     TaterAssistantSettingsView,
+    VisionSettingsView,
+    AwarenessMonitorsView,
+    AwarenessMonitorView,
+    AwarenessTestView,
+    AwarenessImageView,
     TaterAssistantTestView,
     TaterHydraClearView,
     TaterSpeechAudioView,

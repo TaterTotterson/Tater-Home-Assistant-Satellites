@@ -42,6 +42,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from .awareness import AwarenessCoordinator
 from .bluetooth_proxy import TaterBluetoothProxyManager
 from .display_clock import (
     DISPLAY_CLOCK_INTERVAL_SECONDS,
@@ -813,6 +814,7 @@ class TaterSatelliteManager:
         self.display_panels = TaterDisplayPanelCoordinator(self)
         self.bluetooth = TaterBluetoothProxyManager(self)
         self.tater_assistant = MiniTaterRuntime(self)
+        self.awareness = AwarenessCoordinator(self)
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
         self._pairing_expires = 0.0
@@ -1033,12 +1035,14 @@ class TaterSatelliteManager:
                 self._async_area_registry_updated,
             )
         )
+        await self.awareness.async_start()
         with contextlib.suppress(Exception):
             await self.firmware.async_refresh()
 
     async def async_shutdown(self) -> None:
         """Close all device connections."""
         self._shutting_down = True
+        await self.awareness.async_shutdown()
         await self.bluetooth.async_shutdown()
         await self.sat_chat.async_shutdown()
         await self.display_panels.async_shutdown()
@@ -2674,6 +2678,7 @@ class TaterSatelliteManager:
             "intercom": self.intercom.snapshot(),
             "sat_chat": self.sat_chat.snapshot(),
             "tater_assistant": self.tater_assistant.snapshot(),
+            "awareness": self.awareness.snapshot(),
             "bluetooth": self.bluetooth.snapshot(),
             "pipelines": self.pipelines_snapshot(),
             "firmware": self.firmware.snapshot(),

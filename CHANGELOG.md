@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.15
+
+- Separate **Send audio to trainer** from the optional **Auto-training link**.
+  Put the upload URL and capture controls first, and clarify that linking is
+  only needed to publish trained model updates, not to send satellite audio.
+- Add a separate 500–2000 ms verification audio window slider to STT Wake Check,
+  keeping the existing 1000 ms default. Save and push the buffered clip length
+  through the existing firmware setting, independently of the response wait.
+  Keep empty STT results, provider errors, and timeouts allowing listening.
+- Show each satellite's trainer audio delivery reports: pending/running uploads,
+  delivered clips, failures, deferred attempts, skipped clips, last error, and
+  available internal memory. Clarify that satellites upload directly to the
+  configured trainer and that pairing is only needed for model publishing.
+- Keep physical satellite volume changes in sync with the bridge panel and HA
+  volume control while full settings confirmation is pending. Save the new
+  per-satellite volume so reconnects and later settings pushes preserve it;
+  ignore stale unconfirmed status, failed reports, and invalid values.
+- Add a 500–2000 ms wake-check wait slider using the satellite's existing live
+  timeout setting. Validate and save it through the dedicated STT Wake Check
+  form, preserve drafts during refresh, and show the selected time in milliseconds.
+- Reserve time for the wake clip upload and result delivery so STT does not use
+  the satellite's entire response window. Keep immediate results and the existing
+  fallback that allows listening when STT is unavailable or times out.
+- Separate STT mismatches from the satellite's last reported outcome, including
+  timeouts that allowed listening. Report server totals independently from device
+  counters and exclude unavailable checks from successful STT matches.
+- Correct the Identify confirmation to describe spoken message playback.
+
 ## 1.4.14
 
 - Add the Awareness workspace in both Home Assistant and Mini-Tater mode. Create

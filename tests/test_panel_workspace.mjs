@@ -418,13 +418,31 @@ test('device save still posts only changed firmware settings plus pipeline', asy
   assert.deepEqual(request, ['POST', 'settings/device/one', { settings: { aec_enabled: true }, pipeline_id: 'selected' }]);
 });
 
+test('physical volume updates refresh the control without leaking stale volume into an editor save', async () => {
+  const panel = fixture();
+  panel.prepareDeviceDraft('one');
+  panel._deviceDraft.aec_enabled = true;
+  panel.markDirty('device');
+  panel._data.devices[0].settings.volume_percent = 35;
+  panel.syncDrafts(panel._data);
+  assert.match(panel.renderDeviceVolume(panel._data.devices[0]), /35%/);
+  const save = {};
+  controls(panel, { '[data-action="save-device"]': save });
+  let request;
+  panel.api = async (...args) => { request = args; };
+  panel.run = async action => action();
+  await save.listeners.click();
+  assert.equal(request[2].settings.aec_enabled, true);
+  assert.ok(!('volume_percent' in request[2].settings));
+});
+
 test('domain saves retain the existing API allowlists', async () => {
   const panel = fixture();
-  panel._globalDraft = { continued_chat: true, capture_wake_audio: true, wake_verifier_threshold: 0.9, wake_word_url: 'must-not-cross-boundaries' };
+  panel._globalDraft = { continued_chat: true, capture_wake_audio: true, wake_verifier_threshold: 0.9, wake_verifier_window_ms: 2000, wake_verifier_timeout_ms: 1200, wake_word_url: 'must-not-cross-boundaries' };
   const cases = [
     ['save-global', 'settings/global', { continued_chat: true }],
     ['save-trainer', 'settings/trainer', { capture_wake_audio: true }],
-    ['save-verifier', 'settings/verifier', { wake_verifier_threshold: 0.9 }],
+    ['save-verifier', 'settings/verifier', { wake_verifier_threshold: 0.9, wake_verifier_window_ms: 2000, wake_verifier_timeout_ms: 1200 }],
   ];
   for (const [action, endpoint, expected] of cases) {
     const control = {}; controls(panel, { [`[data-action="${action}"]`]: control });
@@ -432,6 +450,133 @@ test('domain saves retain the existing API allowlists', async () => {
     await control.listeners.click();
     assert.deepEqual(request, ['POST', endpoint, { settings: expected }]);
   }
+});
+
+test('wake-check wait slider shows milliseconds and saves a numeric live timeout', async () => {
+  const panel = fixture();
+  panel._globalDraft.wake_verifier_timeout_ms = 1200;
+  const html = panel.renderVerifier();
+  assert.match(html, /Wait for wake check[\s\S]*<output>1200 ms<\/output>/);
+  assert.match(html, /500 ms · shorter wait/);
+  assert.match(html, /2000 ms · more time to verify/);
+  assert.match(html, /Reset to 500 ms/);
+  assert.match(html, /type="range"[^>]*data-setting="wake_verifier_timeout_ms"[^>]*min="500"[^>]*max="2000"[^>]*step="100"/);
+  const output = {};
+  const slider = {
+    type: 'range', value: '1500', dataset: { setting: 'wake_verifier_timeout_ms', scope: 'global', rangeFormat: 'milliseconds' },
+    closest: () => ({ querySelector: () => output }),
+    setAttribute: (name, value) => { slider[name] = value; },
+  };
+  const save = {};
+  controls(panel, { '[data-action="save-verifier"]': save }, { '[data-setting]': [slider] });
+  slider.listeners.input();
+  assert.equal(output.textContent, '1500 ms');
+  assert.equal(slider['aria-valuetext'], '1500 ms');
+  slider.listeners.change();
+  assert.equal(panel._globalDraft.wake_verifier_timeout_ms, 1500);
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._globalDraft.wake_verifier_timeout_ms, 1500, 'polling must preserve the unsaved timeout');
+  let request;
+  panel.api = async (...args) => { request = args; };
+  panel.run = async action => action();
+  await save.listeners.click();
+  assert.equal(request[1], 'settings/verifier');
+  assert.equal(request[2].settings.wake_verifier_timeout_ms, 1500);
+});
+
+test('verification audio window keeps its own labels, draft, reset, and numeric save', async () => {
+  const panel = fixture();
+  let html = panel.renderVerifier();
+  assert.match(html, /Verification audio window[\s\S]*<output>1000 ms<\/output>/);
+  assert.match(html, /500 ms · shorter clip/);
+  assert.match(html, /2000 ms · more audio context/);
+  assert.match(html, /type="range"[^>]*data-setting="wake_verifier_window_ms"[^>]*min="500"[^>]*max="2000"[^>]*step="100"/);
+  const output = {};
+  const slider = {
+    type: 'range', value: '2000', dataset: { setting: 'wake_verifier_window_ms', scope: 'global', rangeFormat: 'milliseconds' },
+    closest: () => ({ querySelector: () => output }),
+    setAttribute: (name, value) => { slider[name] = value; },
+  };
+  const save = {};
+  controls(panel, { '[data-action="save-verifier"]': save }, { '[data-setting]': [slider] });
+  slider.listeners.input();
+  assert.equal(output.textContent, '2000 ms');
+  assert.equal(slider['aria-valuetext'], '2000 ms');
+  slider.listeners.change();
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._globalDraft.wake_verifier_window_ms, 2000, 'polling preserves the unsaved window');
+  assert.equal(panel._globalDraft.wake_verifier_timeout_ms, 500, 'clip length does not change the result wait');
+  assert.equal(panel.isScopeDirty('verifier'), true);
+  html = panel.renderVerifier();
+  assert.match(html, /Verification audio window[\s\S]*<output>2000 ms<\/output>/);
+  assert.match(html, /data-reset-setting="wake_verifier_window_ms"[^>]*data-reset-value="1000"/);
+  let request;
+  panel.api = async (...args) => { request = args; };
+  panel.run = async action => action();
+  await save.listeners.click();
+  assert.equal(request[1], 'settings/verifier');
+  assert.equal(request[2].settings.wake_verifier_window_ms, 2000);
+  assert.equal(request[2].settings.wake_verifier_timeout_ms, 500);
+  const reset = { dataset: { resetSetting: 'wake_verifier_window_ms', resetScope: 'global', resetValue: '1000' } };
+  controls(panel, {}, { '[data-reset-setting]': [reset] });
+  reset.listeners.click();
+  assert.equal(panel._globalDraft.wake_verifier_window_ms, 1000);
+  assert.equal(panel._globalDraft.wake_verifier_timeout_ms, 500);
+});
+
+test('STT mismatch and the satellite timeout outcome remain separate', () => {
+  const panel = fixture();
+  const device = panel._data.devices[0];
+  device.wake_verifier = {
+    mode: 'enforce', applied_mode: 'enforce', supported: true,
+    count: 99, accepted: 50, rejections: 49, fail_open: 10,
+    server: { count: 3, accepted: 0, rejections: 2, fail_open: 1 },
+    last: { reason: 'transcript_mismatch', accepted: false, available: true, score: 0.6, stt_ms: 400 },
+    device: { completed: 3, rejections: 2, fail_open: 1, last_reason: 'satellite_timeout_fail_open' },
+  };
+  let html = panel.renderVerifierDevice(device);
+  assert.match(html, /STT mismatch/);
+  assert.match(html, /3 STT checks/);
+  assert.match(html, /Last satellite report[\s\S]*Timed out — listening allowed/);
+  assert.doesNotMatch(html, /Wake blocked/);
+  device.wake_verifier.device.last_reason = 'transcript_mismatch';
+  html = panel.renderVerifierDevice(device);
+  assert.match(html, /Last satellite report[\s\S]*Wake blocked/);
+  device.wake_verifier.mode = 'observe';
+  html = panel.renderVerifierDevice(device);
+  assert.match(html, /Mismatch recorded — Observe mode/);
+  assert.doesNotMatch(html, /Wake blocked/);
+  device.wake_verifier.device = {};
+  assert.match(panel.renderVerifierDevice(device), /Not reported yet/);
+  device.wake_verifier.device = { pending: true };
+  assert.match(panel.renderVerifierDevice(device), /Waiting for result/);
+});
+
+test('trainer reports direct delivery separately from model pairing', () => {
+  const panel = fixture();
+  assert.match(panel.renderTrainer(), /Satellites send captures directly/);
+  assert.match(panel.renderTrainer(), /Waiting for satellite report/);
+  const device = panel._data.devices[0];
+  device.settings.capture_wake_audio = true;
+  device.trainer_capture = { reported: true, uploads: 2, upload_failures: 1, upload_pending: true, last_error: 'upload deferred during voice activity', free_internal_heap: 3100 };
+  assert.match(panel.renderTrainerCapture(device), /Queued for idle/);
+  device.trainer_capture.upload_running = true;
+  assert.match(panel.renderTrainerCapture(device), /Uploading/);
+  device.trainer_capture.upload_running = false;
+  device.trainer_capture.upload_pending = false;
+  device.trainer_capture.last_error = 'pending capture expired';
+  assert.match(panel.renderTrainerCapture(device), /Capture expired/);
+  device.trainer_capture.last_error = '<upload error>';
+  assert.match(panel.renderTrainerCapture(device), /&lt;upload error&gt;/);
+  device.trainer_capture.last_error = '';
+  assert.match(panel.renderTrainerCapture(device), /Uploaded<\/span>/);
+  device.connected = false;
+  assert.match(panel.renderTrainerCapture(device), /Offline — last report/);
+  assert.doesNotMatch(panel.renderTrainerCapture(device), /badge online/);
+  device.connected = true;
+  device.settings.capture_wake_audio = false;
+  device.settings.capture_close_misses = false;
+  assert.match(panel.renderTrainerCapture(device), /Capture disabled/);
 });
 
 test('catalog and sound selection retains every option and escapes labels', () => {

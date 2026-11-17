@@ -19,6 +19,7 @@ from .protocol import parse_wake_verifier_packet, text
 
 DEFAULT_MATCH_THRESHOLD = 0.85
 DEFAULT_TIMEOUT_MS = 500
+_TRANSPORT_ALLOWANCE_MS = 250
 _PCM_CHUNK_BYTES = 4096
 
 
@@ -177,11 +178,15 @@ async def async_verify_packet(
 
     threshold = max(0.5, min(1.0, float(threshold)))
     timeout_ms = max(100, min(2000, int(timeout_ms)))
+    # Firmware starts its deadline before uploading the PCM clip. Leave room
+    # for that upload and the return trip instead of giving STT the entire
+    # device wait and routinely delivering decisions after it has failed open.
+    stt_budget_ms = max(100, timeout_ms - _TRANSPORT_ALLOWANCE_MS)
     stt_started = time.perf_counter()
     try:
         transcript, used_pipeline_id, pipeline_name, engine_id = await asyncio.wait_for(
             _async_transcribe(hass, packet["pcm"], pipeline_id=pipeline_id),
-            timeout=timeout_ms / 1000,
+            timeout=stt_budget_ms / 1000,
         )
         stt_ms = (time.perf_counter() - stt_started) * 1000
         score = transcript_match_score(transcript, normalized_phrase)
@@ -194,7 +199,7 @@ async def async_verify_packet(
         pipeline_name = ""
         engine_id = ""
         score = 0.0
-        stt_ms = float(timeout_ms)
+        stt_ms = float(stt_budget_ms)
         accepted = True
         available = False
         reason = "server_timeout_fail_open"
@@ -229,6 +234,8 @@ async def async_verify_packet(
         "mode": mode,
         "phrase": normalized_phrase,
         "threshold": round(threshold, 3),
+        "timeout_ms": timeout_ms,
+        "stt_budget_ms": stt_budget_ms,
         "transcript": transcript,
         "score": round(score, 4),
         "stt_ms": round(stt_ms, 1),

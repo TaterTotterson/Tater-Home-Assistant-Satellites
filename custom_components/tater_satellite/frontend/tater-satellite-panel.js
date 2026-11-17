@@ -29,6 +29,8 @@ const TRAINER_SETTING_KEYS = new Set([
 const WAKE_VERIFIER_SETTING_KEYS = new Set([
   "wake_verifier_mode",
   "wake_verifier_threshold",
+  "wake_verifier_window_ms",
+  "wake_verifier_timeout_ms",
 ]);
 const WORKSPACE_PAGES = [
   { id: "assistant", label: "Assistant", icon: "robot-outline", group: "Tater assistant", description: "Choose who owns each voice turn: Home Assistant Assist or the complete Tater pipeline." },
@@ -2438,13 +2440,22 @@ class TaterSatellitePanel extends HTMLElement {
     const pairing = trainer.pairing || {};
     const linked = Boolean(trainer.linked);
     return `
+      ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["feedback"] })}
+      <section class="card section-card">
+        <h3>Audio delivery</h3>
+        <p class="muted">Uploads wait until the voice turn and playback finish. Counters reset when a satellite restarts.</p>
+      </section>
+      <div class="grid">
+        ${(this._data.devices || []).map((device) => this.renderTrainerCapture(device)).join("") || '<section class="card section-card muted">Pair a satellite to see its capture reports.</section>'}
+      </div>
       <section class="card section-card trainer-hero">
         <div class="trainer-head">
           <div class="trainer-identity">
             <div class="trainer-mark" aria-hidden="true">W</div>
             <div>
-              <h2>Wake Word Trainer</h2>
-              <div class="muted">Securely publish newly trained wake words to every paired satellite.</div>
+              <div class="muted">Optional · Auto-training</div>
+              <h2>Auto-training link</h2>
+              <div class="muted">Automatically apply newly trained wake models. Audio uploads do not need this link.</div>
             </div>
           </div>
           <span class="badge ${linked ? "online" : ""}">${linked ? "Linked" : "Not linked"}</span>
@@ -2454,7 +2465,7 @@ class TaterSatellitePanel extends HTMLElement {
             ? `
               <div class="facts trainer-status-grid">
                 <div class="fact"><label>Trainer</label><span>${escapeHtml(trainer.trainer_name || "Wake Word Trainer")}</span></div>
-                <div class="fact"><label>Address</label><span>${escapeHtml(trainer.trainer_url || "Not reported")}</span></div>
+                <div class="fact"><label>Model publisher URL</label><span>${escapeHtml(trainer.trainer_url || "Not reported")}</span></div>
                 <div class="fact"><label>Linked</label><span>${escapeHtml(formatDateTime(trainer.linked_at))}</span></div>
                 <div class="fact"><label>Last publish</label><span>${escapeHtml(trainer.last_publish_at ? `${trainer.last_wake_word || "Wake word"} · ${formatDateTime(trainer.last_publish_at)}` : "No wake word published yet")}</span></div>
               </div>
@@ -2464,8 +2475,8 @@ class TaterSatellitePanel extends HTMLElement {
               </div>
             `
             : `
-              <p class="muted" style="margin:18px 0">No trainer is linked. Generate a short-lived code here, then enter it in the trainer’s Auto tab.</p>
-              <button class="primary" data-action="trainer-pair">Link Trainer</button>
+              <p class="muted" style="margin:18px 0">Enter the pairing code in the trainer’s Auto tab to allow model updates.</p>
+              <button class="primary" data-action="trainer-pair">Link for auto-training</button>
             `
         }
       </section>
@@ -2473,7 +2484,7 @@ class TaterSatellitePanel extends HTMLElement {
         pairing.active
           ? `
             <section class="card section-card trainer-code-card">
-              <div class="muted">Trainer pairing code</div>
+              <div class="muted">Auto-training pairing code</div>
               <div class="trainer-code">${escapeHtml(pairing.display_code)}</div>
               <div class="row-actions">
                 <button data-copy-trainer-code="${escapeHtml(pairing.display_code)}">Copy code</button>
@@ -2488,11 +2499,43 @@ class TaterSatellitePanel extends HTMLElement {
           `
           : ""
       }
-      ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["feedback"] })}
       ${this.renderDraftFooter("trainer", `
         <button data-action="reset-draft">Discard changes</button>
-        <button class="primary" data-action="save-trainer" ${this._loading ? "disabled" : ""}>Save trainer settings</button>
+        <button class="primary" data-action="save-trainer" ${this._loading ? "disabled" : ""}>Save audio settings</button>
       `)}
+    `;
+  }
+
+  renderTrainerCapture(device) {
+    const capture = device.trainer_capture || {};
+    const enabled = device.settings?.capture_wake_audio || device.settings?.capture_close_misses;
+    const error = String(capture.last_error || "");
+    const status = !device.connected ? "Offline — last report"
+      : !capture.reported ? "Waiting for satellite report"
+      : !enabled ? "Capture disabled"
+      : capture.upload_running ? "Uploading"
+      : capture.upload_pending ? "Queued for idle"
+      : error === "pending capture expired" ? "Capture expired"
+      : error ? "Upload needs attention"
+      : Number(capture.uploads || 0) > 0 ? "Uploaded"
+      : "Waiting for a capture";
+    const count = (key) => capture.reported ? Number(capture[key] || 0) : "—";
+    return `
+      <article class="card verifier-device">
+        <div class="device-head">
+          <div><h3>${escapeHtml(device.name)}</h3><div class="muted">${escapeHtml(device.wake_model?.active_label || device.wake_model?.active || "Wake word not reported")}</div></div>
+          <span class="badge ${device.connected && status === "Uploaded" ? "online" : ""}">${escapeHtml(status)}</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><label>Uploaded clips</label><span>${count("uploads")}</span></div>
+          <div class="fact"><label>Failed uploads</label><span>${count("upload_failures")}</span></div>
+          <div class="fact"><label>Deferred attempts</label><span>${count("upload_deferred")}</span></div>
+          <div class="fact"><label>Skipped clips</label><span>${count("upload_skipped")}</span></div>
+          <div class="fact"><label>Last delivery detail</label><span>${escapeHtml(error || (capture.reported ? "No error reported" : "Not reported yet"))}</span></div>
+          ${capture.free_internal_heap == null ? "" : `<div class="fact"><label>Internal memory free</label><span>${Number(capture.free_internal_heap).toLocaleString()} bytes</span></div>`}
+        </div>
+        ${!device.connected ? '<p class="muted">Reconnect the satellite for current delivery status.</p>' : ""}
+      </article>
     `;
   }
 
@@ -2503,10 +2546,11 @@ class TaterSatellitePanel extends HTMLElement {
     const totals = devices.reduce(
       (summary, device) => {
         const verifier = device.wake_verifier || {};
-        summary.checks += Number(verifier.count || 0);
-        summary.accepted += Number(verifier.accepted || 0);
-        summary.rejected += Number(verifier.rejections || 0);
-        summary.failOpen += Number(verifier.fail_open || 0);
+        const counts = verifier.server || verifier;
+        summary.checks += Number(counts.count || 0);
+        summary.accepted += Number(counts.accepted || 0);
+        summary.rejected += Number(counts.rejections || 0);
+        summary.failOpen += Number(counts.fail_open || 0);
         return summary;
       },
       { checks: 0, accepted: 0, rejected: 0, failOpen: 0 },
@@ -2524,20 +2568,20 @@ class TaterSatellitePanel extends HTMLElement {
           <span class="badge ${mode !== "off" ? "online" : ""}">${escapeHtml(labels[mode] || "Disabled")}</span>
         </div>
         <div class="facts trainer-status-grid">
-          <div class="fact"><label>Checks</label><span>${totals.checks}</span></div>
-          <div class="fact"><label>Accepted</label><span>${totals.accepted}</span></div>
-          <div class="fact"><label>Rejected</label><span>${totals.rejected}</span></div>
-          <div class="fact"><label>Fail-open</label><span>${totals.failOpen}</span></div>
+          <div class="fact"><label>STT checks</label><span>${totals.checks}</span></div>
+          <div class="fact"><label>STT matches</label><span>${totals.accepted}</span></div>
+          <div class="fact"><label>STT mismatches</label><span>${totals.rejected}</span></div>
+          <div class="fact"><label>STT unavailable</label><span>${totals.failOpen}</span></div>
         </div>
         <div class="verifier-note">
-          <strong>Observe</strong> records results without blocking wakes. <strong>Enabled</strong> rejects transcript mismatches and blocks custom models whose phrase is unknown, but still opens listening for transient STT errors or a missed 500 ms deadline. The expected phrase follows the active wake word, a custom JSON manifest, or the latest trainer publish automatically.
+          <strong>Observe</strong> records results without blocking wakes. <strong>Enabled</strong> blocks mismatches when the result arrives within your selected wait, but allows listening after timeouts or STT errors. A mismatch is the STT decision; the last satellite report below shows whether the device blocked the wake or allowed listening. The expected phrase follows the active wake word, a custom JSON manifest, or the latest trainer publish automatically.
         </div>
       </section>
       ${this.renderSettingsSections(this._globalDraft || {}, "global", null, { include: ["verifier"] })}
       <div class="editor-head">
         <div>
           <h2>Results by Satellite</h2>
-          <div class="muted">Results refresh automatically. Counts reset when the satellite and Home Assistant runtime counters both restart.</div>
+          <div class="muted">STT counts reset when the bridge reloads. Satellite reports refresh with device status and may arrive after the STT decision.</div>
         </div>
       </div>
       ${
@@ -2554,6 +2598,8 @@ class TaterSatellitePanel extends HTMLElement {
 
   renderVerifierDevice(device) {
     const verifier = device.wake_verifier || {};
+    const counts = verifier.server || verifier;
+    const reported = verifier.device || {};
     const last = verifier.last || {};
     const pipeline = verifier.pipeline || {};
     const mode = String(verifier.mode || "off");
@@ -2562,7 +2608,7 @@ class TaterSatellitePanel extends HTMLElement {
     const failOpen = hasLast && last.available === false;
     const rejected = hasLast && last.available !== false && last.accepted === false;
     const lastLabel =
-      mode === "off" ? "Verification off" : !hasLast ? "No result" : failOpen ? "Fail-open" : rejected ? "Rejected" : "Accepted";
+      mode === "off" ? "Verification off" : !hasLast ? "No STT result" : failOpen ? "STT unavailable" : rejected ? "STT mismatch" : "STT match";
     const lastClass = mode === "off" ? "" : failOpen ? "fail-open" : rejected ? "rejected" : "online";
     const modePending = mode !== "off" && appliedMode !== mode;
     const status =
@@ -2576,6 +2622,16 @@ class TaterSatellitePanel extends HTMLElement {
               ? "Applying settings"
               : "Ready";
     const reason = String(last.reason || "—").replaceAll("_", " ");
+    const deviceReason = String(reported.last_reason || "");
+    const deviceOutcome = reported.pending || deviceReason === "pending"
+      ? "Waiting for result"
+      : !deviceReason ? "Not reported yet"
+      : deviceReason.includes("fail_open")
+        ? deviceReason.includes("timeout") ? "Timed out — listening allowed" : "Check unavailable — listening allowed"
+      : ["transcript_mismatch", "wake_phrase_unknown_blocked"].includes(deviceReason)
+        ? mode === "observe" ? "Mismatch recorded — Observe mode" : "Wake blocked"
+      : deviceReason === "matched" ? "Wake accepted"
+      : deviceReason.replaceAll("_", " ");
     return `
       <article class="card verifier-device ${failOpen ? "fail-open" : rejected ? "rejected" : ""}">
         <div class="device-head">
@@ -2587,17 +2643,18 @@ class TaterSatellitePanel extends HTMLElement {
         </div>
         <div class="badges">
           <span class="badge ${lastClass}">${escapeHtml(lastLabel)}</span>
-          <span class="badge">${Number(verifier.count || 0)} checks</span>
+          <span class="badge">${Number(counts.count || 0)} STT checks</span>
         </div>
         <div class="facts">
           <div class="fact"><label>Expected phrase</label><span>${escapeHtml(verifier.target_phrase || "Unknown — blocked when Enabled")}</span></div>
           <div class="fact"><label>STT engine</label><span>${escapeHtml(pipeline.stt_engine || "Not configured")}</span></div>
-          <div class="fact"><label>Accepted</label><span>${Number(verifier.accepted || 0)}</span></div>
-          <div class="fact"><label>Rejected</label><span>${Number(verifier.rejections || 0)}</span></div>
-          <div class="fact"><label>Fail-open</label><span>${Number(verifier.fail_open || 0)}</span></div>
+          <div class="fact"><label>STT matches</label><span>${Number(counts.accepted || 0)}</span></div>
+          <div class="fact"><label>STT mismatches</label><span>${Number(counts.rejections || 0)}</span></div>
+          <div class="fact"><label>STT unavailable</label><span>${Number(counts.fail_open || 0)}</span></div>
           <div class="fact"><label>Last match</label><span>${hasLast && last.available !== false ? `${Math.round(Number(last.score || 0) * 100)}% match · ${Math.round(Number(last.threshold ?? this._globalDraft?.wake_verifier_threshold ?? 0.85) * 100)}% required` : "—"}</span></div>
           <div class="fact"><label>STT latency</label><span>${hasLast ? `${Number(last.stt_ms || 0).toFixed(1)} ms` : "—"}</span></div>
-          <div class="fact"><label>Reason</label><span>${escapeHtml(reason)}</span></div>
+          <div class="fact"><label>STT reason</label><span>${escapeHtml(reason)}</span></div>
+          <div class="fact"><label>Last satellite report</label><span>${escapeHtml(deviceOutcome)}</span></div>
         </div>
         <div class="transcript">${escapeHtml(last.transcript ? `“${last.transcript}”` : "No transcript yet")}</div>
       </article>
@@ -2652,20 +2709,22 @@ class TaterSatellitePanel extends HTMLElement {
   renderField(field, values, scope, inPicker = false) {
     const value = values?.[field.key] ?? "";
     const common = `data-setting="${escapeHtml(field.key)}" data-scope="${scope}"`;
-    if (field.type === "percentage_range") {
-      const minimum = Number(field.min ?? 0.5);
-      const maximum = Number(field.max ?? 1);
-      const step = Number(field.step ?? 0.01);
-      const defaultValue = Number(field.default ?? 0.85);
+    if (field.type === "percentage_range" || field.type === "duration_range") {
+      const duration = field.type === "duration_range";
+      const minimum = Number(field.min ?? (duration ? 500 : 0.5));
+      const maximum = Number(field.max ?? (duration ? 2000 : 1));
+      const step = Number(field.step ?? (duration ? 100 : 0.01));
+      const defaultValue = Number(field.default ?? (duration ? 500 : 0.85));
       const numericValue = Math.max(minimum, Math.min(maximum, Number(value || defaultValue)));
+      const format = (number) => duration ? `${Math.round(number)} ms` : `${Math.round(number * 100)}%`;
       return `
         <div class="percentage-range-field">
-          <div class="percentage-range-head"><span>${escapeHtml(field.label)}</span><output>${Math.round(numericValue * 100)}%</output></div>
-          <input type="range" ${common} min="${minimum}" max="${maximum}" step="${step}" value="${numericValue}">
-          <div class="percentage-range-scale"><span>${Math.round(minimum * 100)}% · more tolerant</span><span>${Math.round(maximum * 100)}% · exact match</span></div>
+          <div class="percentage-range-head"><span>${escapeHtml(field.label)}</span><output>${format(numericValue)}</output></div>
+          <input type="range" ${common} aria-label="${escapeHtml(field.label)}" aria-valuetext="${format(numericValue)}" data-range-format="${duration ? "milliseconds" : "percent"}" min="${minimum}" max="${maximum}" step="${step}" value="${numericValue}">
+          <div class="percentage-range-scale"><span>${format(minimum)} · ${escapeHtml(field.min_label || (duration ? "shorter wait" : "more tolerant"))}</span><span>${format(maximum)} · ${escapeHtml(field.max_label || (duration ? "more time to verify" : "exact match"))}</span></div>
           <div class="percentage-range-footer">
             <small>${escapeHtml(field.description || "")}</small>
-            <button type="button" data-reset-setting="${escapeHtml(field.key)}" data-reset-scope="${scope}" data-reset-value="${defaultValue}" ${numericValue === defaultValue ? "disabled" : ""}>Reset to ${Math.round(defaultValue * 100)}%</button>
+            <button type="button" data-reset-setting="${escapeHtml(field.key)}" data-reset-scope="${scope}" data-reset-value="${defaultValue}" ${numericValue === defaultValue ? "disabled" : ""}>Reset to ${format(defaultValue)}</button>
           </div>
         </div>
       `;
@@ -3392,7 +3451,7 @@ class TaterSatellitePanel extends HTMLElement {
       button.addEventListener("click", () =>
         this.run(
           () => this.api("POST", `command/${button.dataset.identify}/identify`, {}),
-          "Identify tone sent.",
+          "Identification message played.",
         ),
       ),
     );
@@ -3465,6 +3524,16 @@ class TaterSatellitePanel extends HTMLElement {
       }),
     );
     root.querySelectorAll("[data-setting]").forEach((input) => {
+      if (input.type === "range") {
+        input.addEventListener("input", () => {
+          const output = input.closest(".percentage-range-field")?.querySelector("output");
+          const valueText = input.dataset.rangeFormat === "milliseconds"
+            ? `${Math.round(Number(input.value))} ms`
+            : `${Math.round(Number(input.value) * 100)}%`;
+          if (output) output.textContent = valueText;
+          input.setAttribute("aria-valuetext", valueText);
+        });
+      }
       input.addEventListener("change", () => {
         const target = {
           global: this._globalDraft,
@@ -3540,7 +3609,7 @@ class TaterSatellitePanel extends HTMLElement {
         );
         if (
           controlsConditionalFields ||
-          ["wake_word", "wake_detector_mode", "oww_wake_word", "oww_wake_word_catalog_url", "nww_architecture", "mww_tuning_override_enabled", "oww_tuning_override_enabled", "nww_tuning_override_enabled", "wake_sound", "aec_enabled", "wake_verifier_mode", "wake_verifier_threshold"].includes(
+          ["wake_word", "wake_detector_mode", "oww_wake_word", "oww_wake_word_catalog_url", "nww_architecture", "mww_tuning_override_enabled", "oww_tuning_override_enabled", "nww_tuning_override_enabled", "wake_sound", "aec_enabled", "wake_verifier_mode", "wake_verifier_threshold", "wake_verifier_window_ms", "wake_verifier_timeout_ms"].includes(
             input.dataset.setting,
           )
         ) {

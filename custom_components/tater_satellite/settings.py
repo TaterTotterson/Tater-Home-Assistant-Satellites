@@ -328,6 +328,8 @@ TRAINER_SETTING_KEYS = {
 WAKE_VERIFIER_SETTING_KEYS = {
     "wake_verifier_mode",
     "wake_verifier_threshold",
+    "wake_verifier_window_ms",
+    "wake_verifier_timeout_ms",
 }
 
 WAKE_SOUND_OPTIONS = [
@@ -723,6 +725,37 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                     "The on-device wake model remains the first check."
                 ),
             },
+            {
+                "key": "wake_verifier_window_ms",
+                "label": "Verification audio window",
+                "type": "duration_range",
+                "default": 1000,
+                "min": 500,
+                "max": 2000,
+                "step": 100,
+                "min_label": "shorter clip",
+                "max_label": "more audio context",
+                "description": (
+                    "How much buffered audio before wake detection is sent to STT. "
+                    "Try 2000 ms if short clips return no text. This changes the "
+                    "audio clip length, not how long the satellite waits for a result."
+                ),
+            },
+            {
+                "key": "wake_verifier_timeout_ms",
+                "label": "Wait for wake check",
+                "type": "duration_range",
+                "default": 500,
+                "min": 500,
+                "max": 2000,
+                "step": 100,
+                "description": (
+                    "Maximum time to wait for the wake check. Try 1000 ms if "
+                    "checks time out. Results are used as soon as they arrive; "
+                    "this does not add a fixed delay. If no result arrives, "
+                    "listening is allowed."
+                ),
+            },
         ],
     },
     {
@@ -757,8 +790,8 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "section": "feedback",
-        "title": "Trainer Feedback",
-        "description": "Choose what wake audio satellites send back to the trainer.",
+        "title": "Send audio to trainer",
+        "description": "Satellites send captures directly to this URL. No link required.",
         "fields": [
             {
                 "key": "capture_wake_audio",
@@ -780,7 +813,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
             },
             {
                 "key": "trainer_app_url",
-                "label": "Trainer URL",
+                "label": "Trainer URL for audio",
                 "type": "url",
                 "placeholder": "http://trainer.local:8789",
             },

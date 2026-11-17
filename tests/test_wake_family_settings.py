@@ -264,7 +264,10 @@ class WakeFamilySettingsTests(unittest.TestCase):
     def test_global_forms_have_disjoint_explicit_allowlists(self) -> None:
         self.assertEqual(
             settings.WAKE_VERIFIER_SETTING_KEYS,
-            {"wake_verifier_mode", "wake_verifier_threshold"},
+            {
+                "wake_verifier_mode", "wake_verifier_threshold",
+                "wake_verifier_window_ms", "wake_verifier_timeout_ms",
+            },
         )
         verifier_section = next(
             section
@@ -278,6 +281,22 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertEqual(threshold["type"], "percentage_range")
         self.assertEqual(threshold["default"], 0.85)
         self.assertEqual((threshold["min"], threshold["max"]), (0.5, 1.0))
+        timeout = verifier_fields["wake_verifier_timeout_ms"]
+        self.assertEqual(timeout["type"], "duration_range")
+        self.assertEqual((timeout["min"], timeout["max"], timeout["step"]), (500, 2000, 100))
+        self.assertEqual(timeout["default"], settings.DEFAULT_SETTINGS["wake_verifier_timeout_ms"])
+        self.assertEqual(
+            settings.firmware_payload({"wake_verifier_timeout_ms": 1200}, board="satellite1")["wake_verifier_timeout_ms"],
+            1200,
+        )
+        window = verifier_fields["wake_verifier_window_ms"]
+        self.assertEqual(window["type"], "duration_range")
+        self.assertEqual((window["min"], window["max"], window["step"]), (500, 2000, 100))
+        self.assertEqual(window["default"], 1000)
+        self.assertEqual(window["default"], settings.DEFAULT_SETTINGS["wake_verifier_window_ms"])
+        payload = settings.firmware_payload({"wake_verifier_window_ms": 2000}, board="satellite1")
+        self.assertEqual(payload["wake_verifier_window_ms"], 2000)
+        self.assertEqual(payload["wake_verifier_timeout_ms"], settings.DEFAULT_SETTINGS["wake_verifier_timeout_ms"])
         self.assertEqual(
             settings.TRAINER_SETTING_KEYS,
             {

@@ -293,6 +293,35 @@ def _as_int(value: Any) -> int:
         return 0
 
 
+def _trainer_capture_snapshot(status: dict[str, Any]) -> dict[str, Any]:
+    """Expose delivery diagnostics without forwarding arbitrary device status."""
+    wake = status.get("wake_engine")
+    capture = wake.get("capture") if isinstance(wake, dict) else None
+    if not isinstance(capture, dict) or not capture:
+        return {"reported": False}
+    return {
+        "reported": True,
+        "upload_running": bool(capture.get("upload_running")),
+        "upload_pending": bool(capture.get("upload_pending")),
+        **{
+            key: max(0, _as_int(capture.get(key)))
+            for key in (
+                "uploads",
+                "upload_failures",
+                "upload_deferred",
+                "upload_skipped",
+            )
+        },
+        "last_event_type": text(capture.get("last_event_type")),
+        "last_error": text(capture.get("last_error")),
+        "free_internal_heap": (
+            max(0, _as_int(status["free_internal_heap"]))
+            if "free_internal_heap" in status
+            else None
+        ),
+    }
+
+
 class SatelliteRuntime:
     """Live and persisted state for one satellite."""
 
@@ -759,6 +788,7 @@ class SatelliteRuntime:
             "audio_drops": self.audio_drops,
             "media_session": dict(self.media_session),
             "intercom": self.manager.intercom.device_snapshot(self),
+            "trainer_capture": _trainer_capture_snapshot(status),
             "wake_verifier": {
                 "supported": (
                     "wake_verifier_mode" in live
@@ -770,6 +800,17 @@ class SatelliteRuntime:
                 "rejections": verifier_rejections,
                 "fail_open": verifier_fail_open,
                 "last": dict(self.wake_verifier_last),
+                "server": {
+                    "count": self.wake_verifier_count,
+                    "accepted": max(
+                        0,
+                        self.wake_verifier_count
+                        - self.wake_verifier_rejections
+                        - self.wake_verifier_fail_open,
+                    ),
+                    "rejections": self.wake_verifier_rejections,
+                    "fail_open": self.wake_verifier_fail_open,
+                },
                 "device": dict(device_verifier),
                 "mode": text(desired_settings.get("wake_verifier_mode")) or "off",
                 "applied_mode": text(live.get("wake_verifier_mode")),
@@ -1348,16 +1389,31 @@ class TaterSatelliteManager:
         self, runtime: SatelliteRuntime, status: dict[str, Any]
     ) -> bool:
         """Keep physical satellite volume changes in Home Assistant."""
-        if runtime.settings_sync_state != "confirmed":
+        if status.get("error") or status.get("ok") is False:
+            return False
+        device_change = text(status.get("source")).lower() == "device"
+        # A physical control delta is authoritative even when compact firmware
+        # status cannot acknowledge the complete settings profile. Ordinary
+        # status still waits for confirmation so stale boot volume cannot
+        # overwrite a newer value being sent by Home Assistant.
+        if not device_change and runtime.settings_sync_state != "confirmed":
             return False
         live = status.get("live_settings")
         if not isinstance(live, dict):
             live = status.get("settings")
         if not isinstance(live, dict):
-            live = {}
+            live = status if device_change else {}
         if "volume_percent" not in live:
             return False
-        volume = max(0, min(100, _as_int(live.get("volume_percent"))))
+        try:
+            reported_volume = float(live["volume_percent"])
+            if isinstance(live["volume_percent"], bool) or not (
+                0 <= reported_volume <= 100 and reported_volume.is_integer()
+            ):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        volume = int(reported_volume)
         if volume == int(runtime.effective_settings().get("volume_percent") or 0):
             return False
         overrides = (
@@ -1367,6 +1423,8 @@ class TaterSatelliteManager:
         )
         overrides["volume_percent"] = volume
         runtime.record["overrides"] = overrides
+        if self._settings_cache is not None:
+            self._settings_cache.pop(runtime.device_id, None)
         self.store.async_delay_save(lambda: self.data, 1.0)
         return True
 
@@ -2022,6 +2080,23 @@ class TaterSatelliteManager:
                     "STT match threshold must be between 50% and 100%."
                 )
             patch["wake_verifier_threshold"] = threshold
+        for key, label in (
+            ("wake_verifier_window_ms", "Verification audio window"),
+            ("wake_verifier_timeout_ms", "Wake-check wait"),
+        ):
+            if key not in values:
+                continue
+            try:
+                duration = float(values[key])
+                if isinstance(values[key], bool) or not (
+                    500 <= duration <= 2000 and duration.is_integer()
+                ):
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError) as err:
+                raise ValueError(
+                    f"{label} must be a whole number between 500 and 2000 ms."
+                ) from err
+            patch[key] = int(duration)
         return await self._async_set_global_setting_group(
             patch,
             allowed_keys=WAKE_VERIFIER_SETTING_KEYS,

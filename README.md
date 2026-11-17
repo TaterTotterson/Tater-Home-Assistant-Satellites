@@ -25,8 +25,8 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
-Latest changes: [1.4.14 release notes](RELEASE_NOTES.md), adding Awareness camera
-alerts and shared Vision settings in both Home Assistant and Mini-Tater mode.
+Latest changes: [1.4.15 release notes](RELEASE_NOTES.md), adding adjustable STT
+wake-check timing, physical volume sync, and clearer trainer setup and upload reports.
 
 ## Install with HACS
 
@@ -422,11 +422,19 @@ still use **Hey Tater**, upload a model, or enter a custom model URL separately.
 
 ## Link the Wake Word Trainer
 
+Audio capture uploads do not require trainer pairing. Enable wake/close-miss
+capture and enter a trainer address reachable from the satellite. The satellite
+sends audio directly to that address after the voice turn and playback finish.
+The **Audio delivery** cards show the satellite's latest upload report, including
+queued uploads and errors. Reports are unavailable until supported firmware
+sends them; offline cards retain the last report. Counters reset on restart.
+
 The Apple Silicon and NVIDIA microWakeWord trainers can securely publish a newly
 trained wake word directly to every Home Assistant-connected Tater satellite:
 
 1. Open **Tater Satellites -> Wake Word Trainer**.
-2. Select **Link Trainer** to generate a temporary code.
+2. In the separate **Auto-training link** section, select
+   **Link for auto-training** to generate a temporary code.
 3. In the trainer, open **Auto -> Link Tater**.
 4. Enter the Home Assistant address shown in the Tater Satellites panel and the
    temporary code.
@@ -447,9 +455,28 @@ already selected in each satellite's Assist pipeline:
 - **Observe** transcribes and scores the wake clip but never delays or blocks
   listening. Use this first to review accuracy and latency.
 - **Enabled** opens listening only when the transcript matches. STT timeouts,
-  provider errors, and missing STT configuration fail open so transient service
-  problems do not disable the satellite. An unknown custom wake phrase is
-  blocked until it can be verified.
+  empty transcripts, provider errors, and missing STT configuration fail open so
+  transient service problems do not disable the satellite. An unknown custom
+  wake phrase is blocked until it can be verified.
+
+**Verification audio window** selects 500–2000 ms of buffered audio leading up
+to wake detection. The default stays at 1000 ms. Try 2000 ms if an STT provider
+returns empty text for short clips. This uses audio already in the satellite's
+buffer; it does not wait for more audio to be recorded. Longer clips may take
+more time to upload or transcribe.
+
+**Wait for wake check** separately adjusts the live satellite timeout from 500 to
+2000 ms. Try 1000 ms if short waits expire while the audio clip or result is
+still in transit. Apply the setting to send it to connected satellites; no
+firmware installation is needed. Replies are acted on immediately, without
+waiting for the slider's full duration. The bridge reserves part of that wait
+for audio upload and result delivery rather than using it all for STT.
+
+The page separates the **STT match/mismatch** from the **last satellite report**.
+For example, STT can report a mismatch after a satellite has already timed out
+and allowed listening. Device reports update with periodic status and may lag
+behind the STT decision. STT totals count server decisions, including unavailable
+checks separately from matches, and reset when the bridge reloads.
 
 The expected phrase follows the active built-in wake word or the latest secure
 trainer publish automatically. For manually entered microWakeWord URLs, Home

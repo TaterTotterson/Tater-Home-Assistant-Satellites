@@ -25,8 +25,8 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
-Latest changes: [1.4.16 release notes](RELEASE_NOTES.md), adding sound presets and
-per-device EQ synchronization.
+Latest changes: [1.4.17 release notes](RELEASE_NOTES.md), adding automated
+integration validation and updated Marketplace installation links and metadata.
 
 ## Installation
 

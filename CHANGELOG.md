@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.17
+
+- Add HACS and hassfest validation on pushes, pull requests, a daily schedule,
+  and manual runs, with all validation checks enabled.
+- Declare UI-only configuration using Home Assistant's config-entry schema,
+  resolving the hassfest configuration warning.
+- Add the voice-assistant Marketplace category and the official Marketplace
+  installation button. Document Marketplace installation and updates for Home
+  Assistant 2026.11 and newer while retaining HACS instructions for older versions.
+
 ## 1.4.16
 
 - Add Flat, Warm, Voice, and Manual sound presets to each satellite's Speaker

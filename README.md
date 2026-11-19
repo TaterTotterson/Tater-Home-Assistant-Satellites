@@ -28,18 +28,41 @@ not need to be installed or running.
 Latest changes: [1.4.15 release notes](RELEASE_NOTES.md), adding adjustable STT
 wake-check timing, physical volume sync, and clearer trainer setup and upload reports.
 
-## Install with HACS
+## Installation
+
+Home Assistant 2026.6.0 or newer is required.
+
+### Marketplace — Home Assistant 2026.11 and newer
+
+1. Open **Settings → Marketplace** and select **Add from link**.
+2. Enter `https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites`
+   and select **Add**. Connect GitHub when prompted. If asked for the content
+   type, select **Integration**.
+3. Open **Tater Native Satellites** and select **Install**.
+4. Restart Home Assistant.
+5. Open **Settings → Devices & services → Add integration**, search for
+   **Tater Satellite**, and add it.
+
+When upgrading to Home Assistant with Marketplace, existing HACS installations
+migrate automatically; the bridge does not need to be reinstalled. See the
+[Home Assistant Marketplace documentation](https://www.home-assistant.io/integrations/marketplace/).
+
+### HACS — older Home Assistant versions
+
+For Home Assistant 2026.6–2026.10, use HACS to add this repository as an
+**Integration**:
 
 [![Open your Home Assistant instance and add this repository to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=TaterTotterson&repository=Tater-Home-Assistant-Satellites&category=integration)
 
-After adding the repository:
+Install **Tater Native Satellites**, restart Home Assistant, then add
+**Tater Satellite** under **Settings → Devices & services → Add integration**.
 
-1. Install **Tater Native Satellites** in HACS.
-2. Restart Home Assistant.
-3. Open **Settings -> Devices & services -> Add integration**.
-4. Search for **Tater Satellite** and add it.
+### Updates
 
-Home Assistant 2026.6.0 or newer is required.
+Install bridge updates from **Settings → Updates**, then restart Home Assistant
+to apply them. On older Home Assistant versions, continue updating through HACS.
+
+### Manual installation
 
 For a manual install, copy `custom_components/tater_satellite` into
 `/config/custom_components/tater_satellite`, restart Home Assistant, and add the

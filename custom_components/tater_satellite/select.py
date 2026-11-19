@@ -26,6 +26,7 @@ from .settings import (
     board_supports_music_led_settings,
     supports_screen_clock_format,
     supports_screen_power_management,
+    supports_output_chain,
 )
 
 PREFERRED_PIPELINE = "preferred"
@@ -47,6 +48,9 @@ def _option_values(rows) -> tuple[str, ...]:
 
 
 DEFINITIONS = (
+    SelectDefinition(
+        "eq_preset", "Sound preset", ("flat", "warm", "voice", "manual"), "mdi:equalizer"
+    ),
     SelectDefinition(
         "screen_clock_format",
         "Clock format",
@@ -161,6 +165,10 @@ async def async_setup_entry(
                             )
                             and not board_is_s3_screen(runtime.board)
                         )
+                    )
+                    and (
+                        definition.key != "eq_preset"
+                        or supports_output_chain(runtime.capabilities)
                     )
                     and (
                         definition.key != "audio_output_mode"

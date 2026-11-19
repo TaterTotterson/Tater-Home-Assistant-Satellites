@@ -72,6 +72,7 @@ from .tater_assistant import MiniTaterRuntime
 from .settings import (
     DEFAULT_SETTINGS,
     ECHO_SCREEN_DEFAULTS,
+    EQUALIZER_SETTING_KEYS,
     SETTINGS_SCHEMA,
     SHARED_WAKE_MODEL_SETTING_KEYS,
     TRAINER_SETTING_KEYS,
@@ -85,6 +86,7 @@ from .settings import (
     merged_settings,
     normalize_settings,
     normalize_wake_family_settings,
+    reported_equalizer,
     speaker_defaults_for,
     supports_do_not_disturb,
     supports_screen_text_style,
@@ -1422,6 +1424,27 @@ class TaterSatelliteManager:
             else {}
         )
         overrides["volume_percent"] = volume
+        runtime.record["overrides"] = overrides
+        if self._settings_cache is not None:
+            self._settings_cache.pop(runtime.device_id, None)
+        self.store.async_delay_save(lambda: self.data, 1.0)
+        return True
+
+    def _adopt_reported_device_equalizer(
+        self, runtime: SatelliteRuntime, payload: dict[str, Any], *, only_if_missing: bool = False
+    ) -> bool:
+        """Keep accepted local EQ choices through reconnects and bridge restarts."""
+        if runtime.capabilities.get("eq_presets") is not True:
+            return False
+        if payload.get("error") or payload.get("ok") is False:
+            return False
+        overrides = dict(runtime.record.get("overrides") or {})
+        if only_if_missing and EQUALIZER_SETTING_KEYS & overrides.keys():
+            return False
+        values = reported_equalizer(payload.get("settings"), runtime.effective_settings())
+        if values is None or all(overrides.get(key) == value for key, value in values.items()):
+            return False
+        overrides.update(values)
         runtime.record["overrides"] = overrides
         if self._settings_cache is not None:
             self._settings_cache.pop(runtime.device_id, None)
@@ -2792,6 +2815,12 @@ class TaterSatelliteManager:
         ):
             runtime.record["capabilities"] = dict(capabilities)
             changed = True
+        # Firmware restores its saved EQ before hello. Adopt it before the
+        # initial settings push only when HA has no EQ override for this device.
+        if isinstance(payload.get("eq_settings"), dict) and self._adopt_reported_device_equalizer(
+            runtime, {"settings": payload.get("eq_settings")}, only_if_missing=True
+        ):
+            changed = True
         if changed:
             await self.async_save()
         # Reconnects also repair older HA area overrides, even if the firmware
@@ -2862,6 +2891,7 @@ class TaterSatelliteManager:
                 runtime.settings_last_confirmed = time.time()
             self._adopt_reported_device_volume(runtime, payload)
             self._adopt_reported_device_text_style(runtime, payload)
+            self._adopt_reported_device_equalizer(runtime, payload)
             runtime.notify()
             return
         if kind in {"log", "ota.status"}:

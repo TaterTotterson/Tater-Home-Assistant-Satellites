@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.16
+
+- Add Flat, Warm, Voice, and Manual sound presets to each satellite's Speaker
+  Equalizer and a capability-gated Home Assistant Sound preset select entity.
+- Default to Warm only when no EQ has been saved. Preserve existing curves,
+  including flat curves and partial legacy overrides, as Manual.
+- Apply all eight bands and disable Presence boost when selecting a named preset;
+  switch to Manual when a band or Presence boost is edited. Preserve unsaved EQ
+  edits during panel refresh and keep bass protection and limiter settings intact.
+- With Echo firmware 5.0.1, save accepted device EQ changes and adopt restored
+  device EQ before the first settings push when HA has no saved EQ override.
+  Validate reports and preserve existing bridge overrides on reconnect.
+- Keep older output-chain firmware compatible by sending the expanded curve and
+  only including preset metadata when the device advertises support.
+
 ## 1.4.15
 
 - Separate **Send audio to trainer** from the optional **Auto-training link**.

@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 from typing import Any
+
+EQ_PRESETS = {
+    "flat": [0.0] * 8,
+    "warm": [3.0, 3.0, -1.0, -3.0, -2.0, -1.0, -2.0, -3.0],
+    "voice": [-3.0, -2.0, -1.0, 0.0, 2.0, 1.0, 0.0, -1.0],
+}
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "wake_engine": "micro_wake_word",
@@ -81,14 +88,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "volume_percent": 80,
     "muted": False,
     "audio_output_mode": "auto",
-    "eq_band_125": 0.0,
-    "eq_band_250": 0.0,
-    "eq_band_500": 0.0,
-    "eq_band_1k": 0.0,
-    "eq_band_2k": 0.0,
-    "eq_band_3k5": 0.0,
-    "eq_band_5k5": 0.0,
-    "eq_band_8k": 0.0,
+    "eq_preset": "warm",
+    "eq_band_125": 3.0,
+    "eq_band_250": 3.0,
+    "eq_band_500": -1.0,
+    "eq_band_1k": -3.0,
+    "eq_band_2k": -2.0,
+    "eq_band_3k5": -1.0,
+    "eq_band_5k5": -2.0,
+    "eq_band_8k": -3.0,
     "eq_loudness": False,
     "bass_guard_enabled": True,
     "bass_guard_db": -30.0,
@@ -213,6 +221,7 @@ EQ_BANDS: tuple[tuple[str, str], ...] = (
     ("eq_band_8k", "8 kHz"),
 )
 OUTPUT_CHAIN_SETTING_KEYS = {key for key, _label in EQ_BANDS} | {
+    "eq_preset",
     "eq_loudness",
     "bass_guard_enabled",
     "bass_guard_db",
@@ -220,6 +229,7 @@ OUTPUT_CHAIN_SETTING_KEYS = {key for key, _label in EQ_BANDS} | {
     "limiter_threshold_db",
     "limiter_release_ms",
 }
+EQUALIZER_SETTING_KEYS = {key for key, _label in EQ_BANDS} | {"eq_preset", "eq_loudness"}
 # The firmware's -30 dB bass protection floor suits the small Dot, Show 5
 # and Spot drivers but makes music thin on the larger Echo and Show 8
 # speakers. These apply until a value is set for the satellite.
@@ -903,6 +913,21 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         "scopes": ["device"],
         "required_capability": "output_chain",
         "fields": [
+            {
+                "key": "eq_preset",
+                "label": "Sound preset",
+                "type": "select",
+                "options": [
+                    {"value": preset, "label": preset.title()}
+                    for preset in (*EQ_PRESETS, "manual")
+                ],
+                "presets": EQ_PRESETS,
+                "band_keys": [key for key, _label in EQ_BANDS],
+                "description": (
+                    "Warm adds gentle bass and softer highs. Voice emphasizes speech. "
+                    "Manual keeps your own curve. Selecting a preset resets Presence boost."
+                ),
+            },
             *(
                 {
                     "key": key,
@@ -1260,6 +1285,7 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
 ]
 
 _ALLOWED = {
+    "eq_preset": {*EQ_PRESETS, "manual"},
     "wake_engine": {"micro_wake_word", "button", "off"},
     "wake_detector_mode": WAKE_DETECTOR_MODES,
     "wake_word": {row["value"] for row in WAKE_WORD_OPTIONS},
@@ -1604,6 +1630,60 @@ def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -
     return round(max(minimum, min(maximum, result)), 3)
 
 
+def _equalizer_settings(source: dict[str, Any], base: dict[str, Any] | None) -> dict[str, Any]:
+    """Resolve a complete curve without relabeling a saved manual adjustment."""
+    edited = bool((EQUALIZER_SETTING_KEYS - {"eq_preset"}) & source.keys())
+    selected = "eq_preset" in source
+    current = {**(base or {}), **source}
+    preset = str(current.get("eq_preset") or "").strip().lower()
+    if edited and not selected:
+        preset = "manual"
+    elif not preset:
+        preset = "manual" if edited else "warm"
+    if preset not in EQ_PRESETS:
+        preset = "manual"
+    # Legacy saved bands had zero-valued defaults. Preserve those missing
+    # bands rather than filling an old manual curve with the new Warm curve.
+    fallback = base if base is not None else (
+        {key: 0.0 for key, _label in EQ_BANDS} if edited and not selected else DEFAULT_SETTINGS
+    )
+    candidate = source if selected and preset in EQ_PRESETS else current
+    bands = []
+    for index, (key, _label) in enumerate(EQ_BANDS):
+        default = EQ_PRESETS[preset][index] if preset in EQ_PRESETS else fallback.get(key, DEFAULT_SETTINGS[key])
+        level = _bounded_float(candidate.get(key, default), float(default), -12, 12)
+        bands.append(level)
+    loudness = _boolean(candidate.get("eq_loudness", False if preset in EQ_PRESETS else fallback.get("eq_loudness", False)), False)
+    if preset in EQ_PRESETS and (bands != EQ_PRESETS[preset] or loudness):
+        preset = "manual"
+    return {"eq_preset": preset, "eq_loudness": loudness, **{
+        key: bands[index] for index, (key, _label) in enumerate(EQ_BANDS)
+    }}
+
+
+def reported_equalizer(values: Any, base: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate a firmware EQ snapshot or local delta before adopting it."""
+    if not isinstance(values, dict) or values.get("eq_preset") not in (*EQ_PRESETS, "manual"):
+        return None
+    selected = {"eq_preset": values["eq_preset"]}
+    if "eq_bands" in values:
+        bands = values["eq_bands"]
+        if not isinstance(bands, list) or len(bands) != len(EQ_BANDS):
+            return None
+        if any(
+            isinstance(level, bool) or not isinstance(level, (int, float))
+            or not math.isfinite(level) or not -12 <= level <= 12
+            for level in bands
+        ):
+            return None
+        selected.update({key: bands[index] for index, (key, _label) in enumerate(EQ_BANDS)})
+    if "eq_loudness" in values and not isinstance(values["eq_loudness"], bool):
+        return None
+    if "eq_loudness" in values:
+        selected["eq_loudness"] = values["eq_loudness"]
+    return _equalizer_settings(selected, base)
+
+
 def normalize_settings(
     values: dict[str, Any] | None,
     *,
@@ -1649,6 +1729,9 @@ def normalize_settings(
             result[key] = _time_value(value, str(default))
         elif key in _TEXT_LIMITS:
             result[key] = str(value or "").strip()[: _TEXT_LIMITS[key]]
+
+    if not partial or EQUALIZER_SETTING_KEYS & source.keys():
+        result.update(_equalizer_settings(source, base))
 
     if not partial:
         if result.get("wake_word") != "custom_url":
@@ -1747,10 +1830,14 @@ def merged_settings(
         partial=True,
     )
     base_values = normalize_settings({**global_values, **family_values})
+    saved_overrides = dict(overrides or {})
+    if "eq_preset" not in saved_overrides and EQUALIZER_SETTING_KEYS & saved_overrides.keys():
+        # Migrate a legacy partial override as the original flat-based curve.
+        saved_overrides = {**_equalizer_settings(saved_overrides, None), **saved_overrides}
     override_values = normalize_settings(
         {
             key: value
-            for key, value in (overrides or {}).items()
+            for key, value in saved_overrides.items()
             if key not in SHARED_WAKE_MODEL_SETTING_KEYS
         },
         base=base_values,
@@ -1812,6 +1899,8 @@ def firmware_payload(
         for key in OUTPUT_CHAIN_SETTING_KEYS:
             if not key.startswith("eq_band_"):
                 payload[key] = normalized[key]
+        if (capabilities or {}).get("eq_presets") is not True:
+            payload.pop("eq_preset", None)
     if supports_do_not_disturb(capabilities):
         # Echo firmware keeps UTC and evaluates the DND window with this
         # offset, as Tater sends it with every settings snapshot.

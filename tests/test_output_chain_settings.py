@@ -23,7 +23,7 @@ class OutputChainSettingsTests(unittest.TestCase):
         payload = settings.firmware_payload(
             values, board="radar", capabilities=self.CAPABLE
         )
-        self.assertEqual(payload["eq_bands"], [0.0] * 8)
+        self.assertEqual(payload["eq_bands"], settings.EQ_PRESETS["warm"])
         self.assertIs(payload["eq_loudness"], False)
         self.assertIs(payload["bass_guard_enabled"], True)
         self.assertEqual(payload["bass_guard_db"], -30.0)

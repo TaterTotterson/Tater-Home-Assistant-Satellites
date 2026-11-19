@@ -613,3 +613,37 @@ test('an asset upload preserves device edits even when switching away and back',
     assert.equal(panel._deviceDraft.wake_sound, 'custom');
   } finally { globalThis.document = previousDocument; globalThis.prompt = previousPrompt; }
 });
+
+test('sound presets update the full curve, manual edits and refresh preserve unsaved tuning', () => {
+  const panel = fixture();
+  panel.prepareDeviceDraft('one');
+  panel._deviceDraft.eq_loudness = true;
+  const selector = { type: 'select-one', value: 'voice', dataset: { setting: 'eq_preset', scope: 'device' } };
+  controls(panel, {}, { '[data-setting]': [selector] });
+  selector.listeners.change();
+  const field = settings.schema.flatMap(section => section.fields).find(field => field.key === 'eq_preset');
+  assert.equal(panel._deviceDraft.eq_preset, 'voice');
+  assert.deepEqual(field.band_keys.map(key => panel._deviceDraft[key]), field.presets.voice);
+  assert.equal(panel._deviceDraft.eq_loudness, false);
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._deviceDraft.eq_preset, 'voice');
+  assert.deepEqual(field.band_keys.map(key => panel._deviceDraft[key]), field.presets.voice);
+  const slider = { type: 'number', value: '4', dataset: { setting: field.band_keys[0], scope: 'device' } };
+  controls(panel, {}, { '[data-setting]': [slider] });
+  slider.listeners.change();
+  assert.equal(panel._deviceDraft.eq_preset, 'manual');
+  assert.deepEqual(field.band_keys.map(key => panel._deviceDraft[key]), [4, ...field.presets.voice.slice(1)]);
+  selector.value = 'manual';
+  controls(panel, {}, { '[data-setting]': [selector] });
+  selector.listeners.change();
+  assert.equal(panel._deviceDraft[field.band_keys[0]], 4);
+  selector.value = 'flat';
+  selector.listeners.change();
+  assert.deepEqual(field.band_keys.map(key => panel._deviceDraft[key]), Array(8).fill(0));
+  const boost = { type: 'checkbox', checked: true, dataset: { setting: 'eq_loudness', scope: 'device' } };
+  controls(panel, {}, { '[data-setting]': [boost] });
+  boost.listeners.change();
+  assert.equal(panel._deviceDraft.eq_preset, 'manual');
+  assert.equal(panel._deviceDraft.eq_loudness, true);
+  assert.match(panel.renderField(field, panel._deviceDraft, 'device'), /<select[\s\S]*Warm[\s\S]*Voice[\s\S]*Manual/);
+});

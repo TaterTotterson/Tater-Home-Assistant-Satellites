@@ -3542,6 +3542,21 @@ class TaterSatellitePanel extends HTMLElement {
         let value = input.type === "checkbox" ? input.checked : input.value;
         if (input.type === "number" || input.type === "range") value = Number(value);
         target[input.dataset.setting] = value;
+        if (input.dataset.setting === "eq_preset") {
+          const field = (this._data.settings_schema || []).flatMap(section => section.fields || []).find(field => field.key === "eq_preset");
+          const bands = field?.presets?.[value];
+          if (Array.isArray(bands)) {
+            (field.band_keys || []).forEach((key, index) => {
+              target[key] = bands[index];
+              this.markDirty(input.dataset.scope, key);
+            });
+            target.eq_loudness = false;
+            this.markDirty(input.dataset.scope, "eq_loudness");
+          }
+        } else if (input.dataset.setting.startsWith("eq_band_") || input.dataset.setting === "eq_loudness") {
+          target.eq_preset = "manual";
+          this.markDirty(input.dataset.scope, "eq_preset");
+        }
         if (input.dataset.setting === "wake_word") {
           if (value === "catalog") {
             const catalogUrl =
@@ -3608,6 +3623,7 @@ class TaterSatellitePanel extends HTMLElement {
             ),
         );
         if (
+          input.dataset.setting.startsWith("eq_") ||
           controlsConditionalFields ||
           ["wake_word", "wake_detector_mode", "oww_wake_word", "oww_wake_word_catalog_url", "nww_architecture", "mww_tuning_override_enabled", "oww_tuning_override_enabled", "nww_tuning_override_enabled", "wake_sound", "aec_enabled", "wake_verifier_mode", "wake_verifier_threshold", "wake_verifier_window_ms", "wake_verifier_timeout_ms"].includes(
             input.dataset.setting,

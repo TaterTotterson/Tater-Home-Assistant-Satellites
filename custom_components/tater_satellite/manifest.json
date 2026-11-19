@@ -1,7 +1,9 @@
 {
   "domain": "tater_satellite",
   "name": "Tater Satellite",
-  "version": "1.4.16",
+  "categories": [
+    "ai_voice.voice_assistants"
+  ],
   "codeowners": [
     "@TaterTotterson"
   ],
@@ -22,5 +24,6 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/issues",
   "requirements": [],
-  "single_config_entry": true
+  "single_config_entry": true,
+  "version": "1.4.16"
 }

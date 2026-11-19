@@ -34,6 +34,8 @@ Home Assistant 2026.6.0 or newer is required.
 
 ### Marketplace — Home Assistant 2026.11 and newer
 
+[![Open this repository in Home Assistant Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=TaterTotterson&repository=Tater-Home-Assistant-Satellites&category=integration)
+
 1. Open **Settings → Marketplace** and select **Add from link**.
 2. Enter `https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites`
    and select **Add**. Connect GitHub when prompted. If asked for the content

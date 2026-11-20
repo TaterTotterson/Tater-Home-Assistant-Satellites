@@ -103,8 +103,14 @@ for hardware-specific steps.
 - [User guide](docs/user-guide.md) — detailed setup and feature instructions
 - [Release notes](RELEASE_NOTES.md) and [changelog](CHANGELOG.md)
 - [Report a problem](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/issues)
-- [Tater Assistant](https://github.com/TaterTotterson/Tater) and
-  [Home Assistant add-ons](https://github.com/TaterTotterson/hassio-addons-tater)
+
+## Related projects
+
+- [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
+- [Tater Echo Firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware)
+- [Tater ThirdReality Voice Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware)
+- [Tater Assistant](https://github.com/TaterTotterson/Tater)
+- [Tater Home Assistant Add-ons](https://github.com/TaterTotterson/hassio-addons-tater)
 
 Licensed under [GNU AGPL v3](LICENSE). The name and logo are covered by the
 [Tater Trademark Policy](TRADEMARKS.md).

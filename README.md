@@ -91,7 +91,7 @@ integration from **Devices & services**.
 - Saved left/right stereo-pair media players plus Sendspin-synchronized
   multi-room playback
 - Secure six-digit first pairing followed by a per-device credential
-- Native Home Assistant Bluetooth proxying through compatible Echo satellites,
+- Native Home Assistant Bluetooth proxying through compatible satellites,
   including active GATT connections and six-digit PIN pairing without storing
   the PIN
 - One shared wake profile with MWW, OWW, NWW, MWW + OWW, and MWW + NWW modes;
@@ -289,22 +289,27 @@ returned to setup mode
 using the physical setup-reset gesture documented in the
 [Tater Native firmware guide](https://github.com/TaterTotterson/Tater-Native-Firmware#physical-setup-reset).
 
-## Bluetooth through an Echo satellite
+## Bluetooth through a satellite
 
-Echo Dot 2nd Generation (Biscuit), Echo 2nd Generation (Radar), Echo Show 5 1st
-Generation (Checkers), Echo Show 8 1st Generation (Crown), Echo Show 8 2nd
-Generation (Athena), and Echo Spot 1st Generation (Rook) satellites running
-current Tater Echo Firmware can act as native Home Assistant Bluetooth
-scanners. Advertisements and active GATT traffic use the satellite's existing
-authenticated WebSocket; no separate Bluetooth bridge service or network
-listener is required.
+Updated Native ESP32, Echo, ThirdReality, and supported Linux satellites can
+provide Bluetooth discovery and active GATT over their existing authenticated
+WebSocket. Bluetooth stays off when unused; there is no automatic room presence
+scan. Install the matching updated firmware (including ThirdReality's system
+image for its BlueZ dependencies) to enable the on-demand controls.
 
-Open **Tater Satellites -> Bluetooth** to see connected Echo scanners and nearby
-devices. For a PIN-protected peripheral, choose the Echo that will hold the bond,
-enter the device's six-digit Bluetooth PIN, and select **Pair**. The PIN is sent
-only for that pairing attempt and is not saved. Home Assistant then uses the
-bonded Echo as the device's connectable Bluetooth path. Use **Unpair** to remove
-the saved bond from that Echo.
+Open **Tater Satellites -> Bluetooth**, then choose **Scan for devices**. Opening
+the page does not scan. Discovery runs for 15 seconds, pauses for voice activity,
+and stops automatically. **Stop scan** leaves existing connections intact.
+For a PIN-protected peripheral, choose the satellite that will hold the bond,
+enter its six-digit PIN, and select **Pair**. The PIN is used only for that
+attempt and is not saved. Home Assistant uses the bonded satellite as the
+device's connectable path. **Unpair** removes that satellite's bond; saved bonds
+are otherwise preserved across updates.
+
+An active device connection keeps Bluetooth enabled; after the final link and
+discovery end, it powers down following a short idle delay. A saved bond alone
+does not enable it. This mode does not continuously monitor broadcast-only
+Bluetooth sensors or provide Bluetooth speaker audio.
 
 ## Display brightness and night mode
 

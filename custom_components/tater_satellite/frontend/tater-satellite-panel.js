@@ -41,7 +41,7 @@ const WORKSPACE_PAGES = [
   { id: "awareness", label: "Awareness", icon: "camera-iris", group: "Your home", description: "Turn camera events into a picture and a useful description, wherever you want to see them." },
   { id: "vision", label: "Vision", icon: "eye-outline", group: "Your home", description: "One shared image-understanding model for Awareness and Mini-Tater." },
   { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
-  { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Echo scanners and the nearby devices they connect to Home Assistant." },
+  { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Discover and connect Bluetooth devices through a satellite." },
   { id: "defaults", label: "Voice defaults", icon: "microphone", group: "Voice & wake", description: "One shared wake profile, with clear defaults for every satellite." },
   { id: "verifier", label: "STT wake check", icon: "text-recognition", group: "Voice & wake", description: "Confirm wake words through each satellite’s Assist pipeline." },
   { id: "trainer", label: "Wake Word Trainer", icon: "school-outline", group: "Voice & wake", description: "Link your trainer and publish wake words to your satellites." },
@@ -1831,24 +1831,24 @@ class TaterSatellitePanel extends HTMLElement {
     const nearby = [...grouped.values()];
     const scannerBadges = scanners.length
       ? scanners.map((scanner) => {
-          const capacity = scanner.slots
+          const capacity = scanner.scanning ? `Scanning · ${scanner.remaining_s}s` : !scanner.on_demand ? "Firmware update needed" : scanner.slots
             ? `${scanner.free}/${scanner.slots} connections free`
             : "Bluetooth ready";
           return `<span class="badge online">${escapeHtml(scanner.satellite_name)} · ${escapeHtml(capacity)}</span>`;
         }).join("")
-      : `<span class="badge">No compatible Echo connected</span>`;
+      : `<span class="badge">No compatible satellite connected</span>`;
     const pairedCards = paired.length
       ? paired.map((device) => `
           <section class="card bluetooth-paired-row">
             <div class="bluetooth-paired-copy">
               <h3>${escapeHtml(device.name || device.address)}</h3>
               <div class="bluetooth-address">${escapeHtml(device.address)}</div>
-              <div class="muted" style="margin-top:6px">Bond stored on ${escapeHtml(device.satellite_name || device.satellite_id || "Echo satellite")}. The PIN is not stored.</div>
+              <div class="muted" style="margin-top:6px">Bond stored on ${escapeHtml(device.satellite_name || device.satellite_id || "Satellite")}. The PIN is not stored.</div>
             </div>
             <button class="danger" data-action="bluetooth-unpair" data-address="${escapeHtml(device.address)}" data-satellite-id="${escapeHtml(device.satellite_id || "")}" ${this._loading ? "disabled" : ""}>Unpair</button>
           </section>
         `).join("")
-      : `<section class="card empty"><h3>No paired Bluetooth devices</h3><p class="muted">Nearby devices appear below when a compatible Echo can hear them.</p></section>`;
+      : `<section class="card empty"><h3>No paired Bluetooth devices</h3><p class="muted">Nearby devices appear below when a satellite discovers them.</p></section>`;
     const nearbyCards = nearby.length
       ? nearby.map((device) => {
           const paths = [...device.paths].sort((a, b) => Number(b.rssi) - Number(a.rssi));
@@ -1860,25 +1860,25 @@ class TaterSatellitePanel extends HTMLElement {
                 <div class="bluetooth-signal">${escapeHtml(device.rssi)} dBm</div>
               </div>
               <div class="bluetooth-pair-grid">
-                <label class="field"><span>Echo satellite</span><select data-bluetooth-satellite>${options}</select></label>
+                <label class="field"><span>Satellite</span><select data-bluetooth-satellite>${options}</select></label>
                 <label class="field"><span>Six-digit PIN</span><input data-bluetooth-pin inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456"></label>
                 <button class="primary" data-action="bluetooth-pair" data-address="${escapeHtml(device.address)}" ${this._loading ? "disabled" : ""}>Pair</button>
               </div>
             </section>`;
         }).join("")
-      : `<section class="card empty"><h3>No nearby devices yet</h3><p class="muted">Keep this page open near the device, make sure it is advertising, then refresh.</p></section>`;
+      : `<section class="card empty"><h3>No nearby devices yet</h3><p class="muted">Put your device in pairing mode and start a scan. Discovery stops automatically.</p></section>`;
     return `
       <section class="card section-card bluetooth-hero">
         <div>
-          <h2>Echo Bluetooth Proxy</h2>
-          <p class="muted">Compatible Echo satellites now act as native Home Assistant Bluetooth scanners. Home Assistant automatically selects the best available path for normal Bluetooth integrations.</p>
+          <h2>Satellite Bluetooth Proxy</h2>
+          <p class="muted">Discover and connect devices through a compatible satellite. Bluetooth sleeps when unused; scans stop automatically, while active device connections stay open. Opening this page does not start a scan.</p>
           <div class="bluetooth-proxies">${scannerBadges}</div>
         </div>
         <div class="bluetooth-mark">ᛒ</div>
       </section>
-      <div class="device-head" style="margin:22px 0 10px"><div><h2>Paired devices</h2><div class="muted">PIN-protected bonds saved on an Echo satellite.</div></div></div>
+      <div class="device-head" style="margin:22px 0 10px"><div><h2>Paired devices</h2><div class="muted">PIN-protected bonds saved on a satellite.</div></div></div>
       <div class="grid">${pairedCards}</div>
-      <div class="device-head" style="margin:24px 0 10px"><div><h2>Nearby devices</h2><div class="muted">Choose a path or leave the strongest Echo selected.</div></div><button data-action="refresh" ${this._loading ? "disabled" : ""}>Refresh nearby</button></div>
+      <div class="device-head" style="margin:24px 0 10px"><div><h2>Nearby devices</h2><div class="muted">Choose the satellite that will hold this device’s bond.</div></div><button class="primary" data-action="bluetooth-scan" ${this._loading || !scanners.some(scanner => scanner.on_demand) ? "disabled" : ""}>Scan for devices · 15s</button><button data-action="bluetooth-stop" ${this._loading || !scanners.some(scanner => scanner.scanning) ? "disabled" : ""}>Stop scan</button></div>
       <div class="grid">${nearbyCards}</div>
     `;
   }
@@ -3348,13 +3348,19 @@ class TaterSatellitePanel extends HTMLElement {
             satellite_id: satelliteId,
             pin,
           }),
-          "Bluetooth pairing completed. Home Assistant can now use this Echo for the device.",
+          "Bluetooth pairing completed. Home Assistant can now use this satellite for the device.",
         );
       }),
     );
+    root.querySelector('[data-action="bluetooth-scan"]')?.addEventListener("click", () => this.run(
+      () => this.api("POST", "bluetooth/scan", { duration_s: 15 }), "Discovery started for 15 seconds.",
+    ));
+    root.querySelector('[data-action="bluetooth-stop"]')?.addEventListener("click", () => this.run(
+      () => this.api("POST", "bluetooth/scan", { stop: true }), "Discovery stopped. Active connections are preserved.",
+    ));
     root.querySelectorAll('[data-action="bluetooth-unpair"]').forEach((button) =>
       button.addEventListener("click", () => {
-        this.confirmAction("Unpair Bluetooth device?", `Remove ${button.dataset.address} from this Echo satellite?`, "Unpair device", () => this.run(
+        this.confirmAction("Unpair Bluetooth device?", `Remove ${button.dataset.address} from this satellite?`, "Unpair device", () => this.run(
           () => this.api("POST", "bluetooth/unpair", {
             address: button.dataset.address,
             satellite_id: button.dataset.satelliteId,

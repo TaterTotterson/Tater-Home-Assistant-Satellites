@@ -74,8 +74,25 @@ class PairingView(HomeAssistantView):
         return self.json(_manager(request).start_pairing())
 
 
+class BluetoothScanView(HomeAssistantView):
+    """Explicit time-limited satellite discovery; never started by reading state."""
+
+    url = f"{API_BASE_PATH}/bluetooth/scan"
+    name = "api:tater_satellite:bluetooth_scan"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        try:
+            return self.json(await _manager(request).bluetooth.async_scan(
+                str(body.get("satellite_id") or ""), body.get("duration_s", 15), stop=body.get("stop") is True,
+            ))
+        except (ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+
+
 class BluetoothPairView(HomeAssistantView):
-    """Pair a Bluetooth peripheral through an Echo satellite."""
+    """Pair a Bluetooth peripheral through a satellite."""
 
     url = f"{API_BASE_PATH}/bluetooth/pair"
     name = "api:tater_satellite:bluetooth_pair"
@@ -96,7 +113,7 @@ class BluetoothPairView(HomeAssistantView):
 
 
 class BluetoothUnpairView(HomeAssistantView):
-    """Remove a Bluetooth bond from an Echo satellite."""
+    """Remove a Bluetooth bond from a satellite."""
 
     url = f"{API_BASE_PATH}/bluetooth/unpair"
     name = "api:tater_satellite:bluetooth_unpair"
@@ -800,6 +817,7 @@ VIEWS = (
     SatelliteWebSocketView,
     ManageView,
     PairingView,
+    BluetoothScanView,
     BluetoothPairView,
     BluetoothUnpairView,
     GlobalSettingsView,

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.19
+
+- Add explicit 15-second Bluetooth discovery and Stop controls. Reading the panel
+  or status does not start a scan; discovery expires and pauses for voice activity.
+- Support the shared on-demand GATT proxy on updated Native ESP32, Echo,
+  ThirdReality, and Linux satellites. Retain active links when discovery stops
+  and power Bluetooth down when unused.
+- Accept BlueZ name, service UUID, manufacturer, and service-data advertisements.
+  Reject unsolicited batches outside a requested discovery window.
+- Preserve existing bonds and connections held by another consumer during PIN
+  pairing. Validate six ASCII digits without silently rewriting the PIN.
+- Add Bluetooth lifecycle, capability, failure, and bond-ownership regressions.
+
 ## 1.4.18
 
 - Save satellite names and rooms live from the bridge or Home Assistant's

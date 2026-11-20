@@ -1,4 +1,4 @@
-"""Home Assistant Bluetooth proxy backed by Tater Echo satellites."""
+"""Home Assistant Bluetooth proxy backed by Tater satellites."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import secrets
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from bleak.assigned_numbers import CHARACTERISTIC_PROPERTIES
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -71,7 +72,7 @@ def _uuid(value: Any) -> str:
 
 
 class TaterBluetoothScanner(BaseHaRemoteScanner):
-    """One connectable HA scanner supplied by an Echo satellite."""
+    """One connectable HA scanner supplied by a satellite."""
 
     def __init__(
         self,
@@ -133,7 +134,10 @@ class TaterBluetoothScanner(BaseHaRemoteScanner):
     def feed(self, payload: dict[str, Any]) -> None:
         """Feed a raw advertisement batch into Home Assistant Bluetooth."""
         now = time.monotonic()
-        for row in payload.get("adverts") or []:
+        adverts = payload.get("adverts")
+        if not isinstance(adverts, list):
+            return
+        for row in adverts[:100]:
             if not isinstance(row, dict):
                 continue
             address = normalize_address(row.get("address"))
@@ -141,7 +145,7 @@ class TaterBluetoothScanner(BaseHaRemoteScanner):
                 continue
             bonded_satellite = self.proxy.bonded_satellite(address)
             if bonded_satellite and bonded_satellite != self.runtime.device_id:
-                # A PIN is deliberately never retained centrally. Only the Echo
+                # A PIN is deliberately never retained centrally. Only the satellite
                 # holding this bond may advertise a connectable path for it.
                 continue
             try:
@@ -151,6 +155,35 @@ class TaterBluetoothScanner(BaseHaRemoteScanner):
                 age_ms = max(0, int(row.get("age_ms") or 0))
             except (TypeError, ValueError):
                 continue
+            if address_type not in (0, 1) or not -127 <= rssi <= 20:
+                continue
+            if not raw:
+                # Linux BlueZ reports decoded advertisements rather than HCI bytes.
+                name = str(row.get("name") or "").encode("utf-8")[:64]
+                fields = [bytes([len(name) + 1, 9]) + name] if name else []
+                services = row.get("service_uuids")
+                for service in services[:8] if isinstance(services, list) else []:
+                    try:
+                        data = UUID(str(service)).bytes[::-1]
+                        fields.append(bytes([17, 7]) + data)
+                    except (ValueError, TypeError):
+                        continue
+                for key, value in row.items():
+                    if key not in {"manufacturer_data", "service_data"} or not isinstance(value, dict):
+                        continue
+                    for identifier, encoded in list(value.items())[:16]:
+                        try:
+                            data = bytes.fromhex(str(encoded))
+                            if key == "manufacturer_data":
+                                data = int(identifier).to_bytes(2, "little") + data[:252]
+                                kind = 255
+                            else:
+                                data = UUID(str(identifier)).bytes[::-1] + data[:238]
+                                kind = 33
+                            fields.append(bytes([len(data) + 1, kind]) + data)
+                        except (ValueError, TypeError, OverflowError):
+                            continue
+                raw = b"".join(fields)
             if not raw:
                 continue
             seen = now - (age_ms / 1000)
@@ -228,7 +261,7 @@ class TaterBleakClient(BaseBleakClient):
         bonded_satellite = self._proxy.bonded_satellite(self.address)
         if bonded_satellite and bonded_satellite != runtime.device_id:
             raise BleakError(
-                "This Bluetooth bond is stored on a different Echo satellite"
+                "This Bluetooth bond is stored on a different satellite"
             )
         return runtime
 
@@ -479,7 +512,7 @@ class TaterBleakClient(BaseBleakClient):
 
 
 class TaterBluetoothProxyManager:
-    """Register Echo scanners and route their active GATT protocol."""
+    """Register satellite proxies and route their active GATT protocol."""
 
     def __init__(self, manager: TaterSatelliteManager) -> None:
         self.manager = manager
@@ -488,6 +521,8 @@ class TaterBluetoothProxyManager:
         self._clients: dict[tuple[str, str], TaterBleakClient] = {}
         self._nearby: dict[tuple[str, str], dict[str, Any]] = {}
         self._request_id = secrets.randbits(31) or 1
+        self._scan_until: dict[str, float] = {}
+        self._radio_status: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def supported(runtime: SatelliteRuntime) -> bool:
@@ -517,7 +552,7 @@ class TaterBluetoothProxyManager:
             self.manager.hass,
             scanner,
             source_domain=DOMAIN,
-            source_model=runtime.board or "Tater Echo",
+            source_model=runtime.board or "Tater satellite",
             source_config_entry_id=self.manager.entry.entry_id,
         )
         cancel_setup = scanner.async_setup()
@@ -540,6 +575,35 @@ class TaterBluetoothProxyManager:
                 {"t": "slots", "req": self.next_request_id()},
             )
 
+    async def async_scan(self, satellite_id: str = "", duration_s: int = 15, *, stop: bool = False) -> dict[str, Any]:
+        """Open a bounded discovery window without changing active connections."""
+        if not isinstance(duration_s, int) or isinstance(duration_s, bool) or not 5 <= duration_s <= 60:
+            raise ValueError("Discovery must last 5–60 seconds")
+        runtimes = [runtime for runtime in self.manager.runtimes.values()
+                    if runtime.connected and self.supported(runtime)
+                    and runtime.capabilities.get("ble_on_demand") is True
+                    and (not satellite_id or runtime.device_id == satellite_id)]
+        if not runtimes:
+            raise ValueError("Connect a satellite with updated on-demand Bluetooth firmware")
+        failures = []
+        for runtime in runtimes:
+            if not stop:
+                self._scan_until[runtime.device_id] = time.time() + duration_s
+                self._nearby = {key: value for key, value in self._nearby.items() if value["satellite_id"] != runtime.device_id}
+            try:
+                result = await runtime.async_request("ble.gatt", {"t": "stop_scan" if stop else "scan", "req": self.next_request_id(), "duration_s": duration_s}, timeout=12)
+                if result.get("ok") is not True:
+                    raise RuntimeError(str(result.get("error") or "Discovery failed"))
+                if stop:
+                    self._scan_until.pop(runtime.device_id, None)
+            except Exception as err:
+                if not stop:
+                    self._scan_until.pop(runtime.device_id, None)
+                failures.append(str(err))
+        if len(failures) == len(runtimes):
+            raise RuntimeError("; ".join(failures))
+        return {"ok": True, "warnings": failures, "bluetooth": self.snapshot()}
+
     def disconnect_runtime(self, runtime: SatelliteRuntime) -> None:
         """Unregister a scanner and disconnect its active HA clients."""
         source = scanner_source(runtime)
@@ -550,6 +614,8 @@ class TaterBluetoothProxyManager:
             with contextlib.suppress(Exception):
                 cancel()
         self._scanners.pop(source, None)
+        self._scan_until.pop(runtime.device_id, None)
+        self._radio_status.pop(runtime.device_id, None)
 
     async def async_shutdown(self) -> None:
         """Remove all scanners and client routes."""
@@ -565,13 +631,14 @@ class TaterBluetoothProxyManager:
         """Consume Bluetooth advertisement and GATT event messages."""
         scanner = self._scanners.get(scanner_source(runtime))
         if kind == "ble.advertisements":
-            if scanner is not None:
+            if scanner is not None and self._scan_until.get(runtime.device_id, 0) > time.time():
                 scanner.feed(payload)
             return True
         if kind != "ble.gatt.event":
             return False
         event_type = str(payload.get("t") or "")
-        if event_type == "slots":
+        if event_type in {"slots", "status"}:
+            self._radio_status[runtime.device_id] = {key: payload[key] for key in ("enabled", "scanning", "addrs") if key in payload}
             self._handle_slots(runtime, payload)
             return True
         address = normalize_address(payload.get("addr"))
@@ -619,6 +686,8 @@ class TaterBluetoothProxyManager:
         name: Any,
     ) -> None:
         """Keep a small panel-facing cache for manual pairing."""
+        if len(self._nearby) >= 500:
+            self._nearby.pop(min(self._nearby, key=lambda key: self._nearby[key]["last_seen"]))
         self._nearby[(scanner.source, address)] = {
             "address": address,
             "address_type": address_type,
@@ -664,12 +733,12 @@ class TaterBluetoothProxyManager:
         candidates.sort(key=lambda row: (row["rssi"], row["last_seen"]), reverse=True)
         if not candidates:
             raise ValueError(
-                "No connected Echo satellite can currently see this device"
+                "No connected satellite can currently see this device"
             )
         selected = candidates[0]
         runtime = self.manager.runtimes.get(selected["satellite_id"])
         if runtime is None or not runtime.connected:
-            raise RuntimeError("The selected Echo satellite is offline")
+            raise RuntimeError("The selected satellite is offline")
         return runtime, int(selected["address_type"])
 
     async def async_pair(
@@ -678,12 +747,12 @@ class TaterBluetoothProxyManager:
         pin_value: Any,
         satellite_id: str = "",
     ) -> dict[str, Any]:
-        """Pair a radio through the selected or strongest Echo."""
+        """Pair a radio through the selected or strongest satellite."""
         address = normalize_address(address_value)
-        pin = "".join(ch for ch in str(pin_value or "") if ch.isdigit())
+        pin = str(pin_value or "")
         if not address:
             raise ValueError("Choose a valid Bluetooth device")
-        if len(pin) != 6:
+        if len(pin) != 6 or not pin.isascii() or not pin.isdigit():
             raise ValueError("Bluetooth PIN must contain exactly six digits")
         runtime, address_type = self._choose_runtime(address, satellite_id)
         source = scanner_source(runtime)
@@ -709,6 +778,7 @@ class TaterBluetoothProxyManager:
                         "Bluetooth connection failed: "
                         f"{connect.get('error') or 'unknown error'}"
                     )
+                opened = connect.get("error") != "already_connected"
             result = await runtime.async_request(
                 "ble.gatt",
                 {
@@ -759,7 +829,7 @@ class TaterBluetoothProxyManager:
         address_value: Any,
         satellite_id: str = "",
     ) -> None:
-        """Remove a device bond from its Echo satellite."""
+        """Remove a device bond from its satellite."""
         address = normalize_address(address_value)
         if not address:
             raise ValueError("Choose a valid Bluetooth device")
@@ -806,6 +876,10 @@ class TaterBluetoothProxyManager:
                     "slots": scanner._slots,
                     "free": scanner._free,
                     "allocated": list(scanner._allocated),
+                    "on_demand": scanner.runtime.capabilities.get("ble_on_demand") is True,
+                    "scanning": self._scan_until.get(scanner.runtime.device_id, 0) > time.time(),
+                    "enabled": self._radio_status.get(scanner.runtime.device_id, {}).get("enabled", False),
+                    "remaining_s": max(0, int(self._scan_until.get(scanner.runtime.device_id, 0) - time.time())),
                 }
                 for scanner in self._scanners.values()
             ],

@@ -417,6 +417,23 @@ class DeviceSettingsView(HomeAssistantView):
         return self.json({"ok": True, "device": device})
 
 
+class DeviceIdentityView(HomeAssistantView):
+    """Save the name and room onto a connected satellite."""
+
+    url = f"{API_BASE_PATH}/settings/device/{{device_id}}/identity"
+    name = "api:tater_satellite:device_identity"
+    requires_auth = True
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        """Wait for persistent firmware confirmation before reporting success."""
+        body = await _json_body(request)
+        try:
+            device = await _manager(request).async_set_device_identity(device_id, body)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "device": device})
+
+
 class DeviceSettingsResetView(HomeAssistantView):
     """Reset per-satellite overrides."""
 
@@ -800,6 +817,7 @@ VIEWS = (
     SharedWakeSettingsView,
     WakeFamilySettingsView,
     DeviceSettingsView,
+    DeviceIdentityView,
     DeviceSettingsResetView,
     TrainerPairingView,
     TrainerAdminUnlinkView,

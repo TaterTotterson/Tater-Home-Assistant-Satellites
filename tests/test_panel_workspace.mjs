@@ -60,6 +60,34 @@ test('all bridge and Tater workspaces plus fallback settings remain reachable', 
   }
 });
 
+test('identity drafts survive refresh and device navigation and stay separate from overrides', async () => {
+  const panel = fixture();
+  panel._data.devices[0].capabilities.identity_update = true;
+  panel.prepareDeviceDraft('one');
+  const input = { dataset: { identity: 'device_name' }, value: 'Kitchen <Echo>' };
+  const save = {};
+  controls(panel, { '[data-save-identity]': save }, { '[data-identity]': [input] });
+  input.listeners.input();
+  assert.equal(panel.isScopeDirty('identity'), true);
+  assert.equal(panel.pageHasDraft('satellites'), true);
+  assert.equal(panel.isScopeDirty('device'), false);
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._identityDrafts.get('one').device_name, 'Kitchen <Echo>');
+  panel.prepareDeviceDraft('two');
+  panel.prepareDeviceDraft('one');
+  assert.match(panel.renderDeviceIdentity(panel._data.devices[0]), /Kitchen &lt;Echo&gt;/);
+  let request;
+  panel.api = async (...args) => { request = args; return { ok: true }; };
+  panel.run = async action => action();
+  save.listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(request[1], 'settings/device/one/identity');
+  assert.deepEqual(request[2], { device_name: 'Kitchen <Echo>', room: '' });
+  assert.match(panel.renderDeviceIdentity(panel._data.devices[1]), /Update this satellite’s firmware/);
+  panel._data.devices[0].connected = false;
+  assert.match(panel.renderDeviceIdentity(panel._data.devices[0]), /Connect this satellite before saving/);
+});
+
 test('Home Assistant is default and hides Tater-only navigation until selected', () => {
   const panel = fixture();
   let nav = panel.renderNavigation();

@@ -28,11 +28,13 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 from .const import (
     DOMAIN,
@@ -52,6 +54,7 @@ from .display_clock import (
 from .display_panels import TaterDisplayPanelCoordinator
 from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
 from .intercom import TaterIntercomCoordinator, is_intercom_request
+from .identity import identity_text
 from .media import TaterMediaCoordinator
 from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .pairing import (
@@ -356,6 +359,7 @@ class SatelliteRuntime:
         self._entities: list[Any] = []
         self.playback_waiters: deque[asyncio.Future[bool]] = deque()
         self.pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.identity_lock = asyncio.Lock()
         self.media_session: dict[str, Any] = {}
         self.intercom_session: dict[str, Any] = {}
         self.ota = OtaState()
@@ -403,7 +407,7 @@ class SatelliteRuntime:
 
     @property
     def room(self) -> str:
-        """Return the firmware-reported room; HA area edits cannot override it."""
+        """Return the room last confirmed by the satellite."""
         return text(self.record.get("room"))
 
     @property
@@ -1250,6 +1254,13 @@ class TaterSatelliteManager:
         entities = factory(runtime)
         runtime.created_platforms.add(platform)
         if entities:
+            # Supply a complete default ID: HA 2026.11 otherwise prepends the
+            # area to a device name which commonly already contains that room.
+            # Registry lookup by unique_id still preserves all existing IDs.
+            for entity in entities:
+                if not getattr(entity, "entity_id", None):
+                    key = str(entity.unique_id or "").removeprefix(f"{runtime.device_id}_")
+                    entity.entity_id = f"{platform}.{slugify(f'{runtime.name} {key}')}"
             add_entities(entities)
 
     def _add_runtime_entities(self, runtime: SatelliteRuntime) -> None:
@@ -1285,12 +1296,13 @@ class TaterSatelliteManager:
     def _async_device_registry_updated(
         self, event: Event[dr.EventDeviceRegistryUpdatedData]
     ) -> None:
-        """Keep the satellite's HA area matched to its firmware room."""
+        """Write explicit HA name/area edits onto capable satellites."""
         data = event.data
         action = data.get("action")
         if action not in {"create", "update"}:
             return
-        if action == "update" and "area_id" not in (data.get("changes") or {}):
+        changes = data.get("changes") or {}
+        if action == "update" and not {"area_id", "name_by_user"}.intersection(changes):
             return
         registry_id = text(data.get("device_id"))
         if not registry_id:
@@ -1299,6 +1311,17 @@ class TaterSatelliteManager:
             for runtime in list(self.runtimes.values()):
                 device = self._registry_device(runtime.device_id)
                 if device and device.id == registry_id:
+                    if action == "update" and runtime.record.get("capabilities", {}).get("identity_update") is True:
+                        name = device.name_by_user or runtime.name
+                        area = ar.async_get(self.hass).async_get_area(device.area_id) if device.area_id else None
+                        room = area.name if area else ""
+                        if room.casefold() == runtime.room.casefold():
+                            room = runtime.room
+                        if name != runtime.name or room != runtime.room:
+                            self.hass.async_create_task(self._async_registry_identity_change(runtime, name, room))
+                        return
+                    if action == "update" and "area_id" not in changes:
+                        return
                     self._sync_firmware_room(runtime, runtime.room)
                     runtime.notify()
                     return
@@ -1322,10 +1345,71 @@ class TaterSatelliteManager:
             for runtime in list(self.runtimes.values()):
                 device = self._registry_device(runtime.device_id)
                 if device and device.area_id == area_id:
+                    if runtime.record.get("capabilities", {}).get("identity_update") is True:
+                        area = ar.async_get(self.hass).async_get_area(area_id)
+                        if area and area.name != runtime.room:
+                            self.hass.async_create_task(self._async_registry_identity_change(runtime, runtime.name, area.name))
+                        continue
                     self._sync_firmware_room(runtime, runtime.room)
                     runtime.notify()
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Could not refresh satellite areas", exc_info=True)
+
+    async def _async_registry_identity_change(self, runtime: SatelliteRuntime, name: str, room: str) -> None:
+        """Confirm HA device edits on the hardware, rolling back failed edits."""
+        try:
+            await self.async_set_device_identity(runtime.device_id, {"device_name": name, "room": room})
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            runtime.last_error = f"Name and room were not confirmed: {err}"
+            runtime.add_log("warning", runtime.last_error)
+            ir.async_create_issue(
+                self.hass, DOMAIN, f"identity_{runtime.device_id}",
+                is_fixable=False, severity=ir.IssueSeverity.WARNING,
+                translation_key="identity_update_failed",
+                translation_placeholders={"name": runtime.name, "error": str(err)},
+            )
+            self._sync_confirmed_name(runtime)
+            self._sync_firmware_room(runtime, runtime.room)
+            runtime.notify()
+            _LOGGER.warning("Could not update satellite identity: %s", err)
+
+    def _sync_confirmed_name(self, runtime: SatelliteRuntime) -> None:
+        """Refresh the HA device label while preserving entity IDs."""
+        device = self._registry_device(runtime.device_id)
+        if not device:
+            return
+        changes = {}
+        if getattr(device, "name", runtime.name) != runtime.name:
+            changes["name"] = runtime.name
+        if getattr(device, "name_by_user", None) is not None and device.name_by_user != runtime.name:
+            changes["name_by_user"] = runtime.name
+        if changes:
+            dr.async_get(self.hass).async_update_device(device.id, **changes)
+
+    async def async_set_device_identity(self, device_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Persist name/room on the satellite before updating local metadata."""
+        name = identity_text(values.get("device_name"), required=True)
+        room = identity_text(values.get("room"), required=False)
+        runtime = self.runtimes[device_id]
+        if runtime.capabilities.get("identity_update") is not True:
+            raise ValueError("Update this satellite's firmware to change its name and room")
+        async with runtime.identity_lock:
+            if not runtime.connected:
+                raise RuntimeError("Connect this satellite before changing its name and room")
+            try:
+                result = await runtime.async_request("identity.set", {"device_name": name, "room": room}, timeout=10.0)
+            except TimeoutError as err:
+                raise RuntimeError("Satellite did not confirm saving its name and room; refresh before retrying") from err
+            if result.get("ok") is not True:
+                raise RuntimeError(text(result.get("error")) or "Satellite could not save its name and room")
+            confirmed_name = identity_text(result.get("device_name"), required=True)
+            confirmed_room = identity_text(result.get("room"), required=False)
+            await self._update_record_from_hello(runtime, {"device_name": confirmed_name, "room": confirmed_room})
+            if runtime.last_error.startswith("Name and room were not confirmed:"):
+                runtime.last_error = ""
+            ir.async_delete_issue(self.hass, DOMAIN, f"identity_{runtime.device_id}")
+            runtime.notify()
+            return runtime.public_snapshot()
 
     def _apply_firmware_room(self, device_id: str, room: str) -> None:
         """Move an existing satellite device to the room its firmware reports."""
@@ -2502,6 +2586,7 @@ class TaterSatelliteManager:
             raise RuntimeError("Disconnect the satellite before forgetting it")
         self.runtimes.pop(device_id, None)
         self.data["devices"].pop(device_id, None)
+        ir.async_delete_issue(self.hass, DOMAIN, f"identity_{device_id}")
         await self.async_save()
         device = self._registry_device(device_id)
         if device is not None:
@@ -2827,12 +2912,30 @@ class TaterSatelliteManager:
         # room itself has not changed. The firmware is the source of truth.
         self._sync_firmware_room(runtime, runtime.room)
 
+        if runtime.record.get("capabilities", {}).get("identity_update") is True:
+            self._sync_confirmed_name(runtime)
+
     async def _handle_text_message(
         self, runtime: SatelliteRuntime, message: dict[str, Any]
     ) -> None:
         kind = message_type(message)
         payload = message_payload(message)
         runtime.last_seen = time.time()
+        if kind == "identity.result":
+            if payload.get("ok") is True:
+                try:
+                    name = identity_text(payload.get("device_name"), required=True)
+                    room = identity_text(payload.get("room"), required=False)
+                except ValueError:
+                    pass
+                else:
+                    await self._update_record_from_hello(runtime, {"device_name": name, "room": room})
+                    if runtime.last_error.startswith("Name and room were not confirmed:"):
+                        runtime.last_error = ""
+                    ir.async_delete_issue(self.hass, DOMAIN, f"identity_{runtime.device_id}")
+                    runtime.notify()
+            runtime.resolve_request(payload)
+            return
         if kind.endswith(".result") and runtime.resolve_request(payload):
             return
         # Bluetooth proxy traffic (advertisements arrive several times a

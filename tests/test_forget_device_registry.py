@@ -7,7 +7,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +83,7 @@ FAKE_DR = SimpleNamespace(async_get=lambda _hass: REGISTRY_BOX["registry"])
 
 forget = load_method(
     "manager.py", "TaterSatelliteManager", "async_forget",
-    dr=FAKE_DR, DOMAIN=DOMAIN,
+    dr=FAKE_DR, DOMAIN=DOMAIN, ir=SimpleNamespace(async_delete_issue=Mock()),
 )
 registry_device = load_method(
     "manager.py", "TaterSatelliteManager", "_registry_device",

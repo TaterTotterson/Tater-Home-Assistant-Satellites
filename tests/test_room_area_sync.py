@@ -6,6 +6,7 @@ import ast
 import asyncio
 import contextlib
 import hmac
+import importlib.util
 from pathlib import Path
 import secrets
 import time
@@ -18,15 +19,23 @@ from unittest.mock import AsyncMock, Mock
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER_PATH = ROOT / "custom_components/tater_satellite/manager.py"
 MANAGER_TREE = ast.parse(MANAGER_PATH.read_text(encoding="utf-8"))
+IDENTITY_SPEC = importlib.util.spec_from_file_location("satellite_identity", ROOT / "custom_components/tater_satellite/identity.py")
+IDENTITY = importlib.util.module_from_spec(IDENTITY_SPEC)
+IDENTITY_SPEC.loader.exec_module(IDENTITY)
 DOMAIN = "tater_satellite"
 ENTRY_ID = "entry-1"
 
 MANAGER_METHODS = (
+    "_add_runtime_platform",
     "_registry_device",
     "_async_device_registry_updated",
     "_async_area_registry_updated",
     "_apply_firmware_room",
     "_sync_firmware_room",
+    "_sync_confirmed_name",
+    "_async_registry_identity_change",
+    "async_set_device_identity",
+    "_handle_text_message",
     "_update_record_from_hello",
     "_authenticate",
 )
@@ -95,8 +104,9 @@ class FakeDeviceRegistry:
     def async_update_device(self, device_id: str, **changes: Any) -> None:
         self.updates.append((device_id, changes))
         for entry in self.by_identifier.values():
-            if entry.id == device_id and "area_id" in changes:
-                entry.area_id = changes["area_id"]
+            if entry.id == device_id:
+                for key, value in changes.items():
+                    setattr(entry, key, value)
 
 
 class FakeEntryDeviceRegistry(FakeDeviceRegistry):
@@ -160,7 +170,7 @@ def build_manager(devices: FakeDeviceRegistry | None = None):
     """Return a fake manager running the production registry methods."""
     devices = devices or FakeDeviceRegistry()
     areas = FakeAreaRegistry()
-    hass = object()
+    hass = SimpleNamespace(async_create_task=asyncio.create_task)
 
     def registry_for(registry):
         def async_get(target):
@@ -170,6 +180,9 @@ def build_manager(devices: FakeDeviceRegistry | None = None):
         return async_get
 
     scope = {
+        "identity_text": IDENTITY.identity_text,
+        "slugify": lambda value: value.lower().replace(" ", "_"),
+        "ir": SimpleNamespace(async_create_issue=Mock(), async_delete_issue=Mock(), IssueSeverity=SimpleNamespace(WARNING="warning")),
         "dr": SimpleNamespace(async_get=registry_for(devices)),
         "ar": SimpleNamespace(async_get=registry_for(areas)),
         "DOMAIN": DOMAIN,
@@ -181,6 +194,7 @@ def build_manager(devices: FakeDeviceRegistry | None = None):
         "time": time,
         "_token_hash": lambda value: f"hash:{value}",
         "message_payload": lambda message: message.get("payload") or {},
+        "message_type": lambda message: message.get("type") or "",
         "normalize_hardware_id": text,
         "pairing_retry_token": Mock(return_value=""),
         "PAIRING_RETRY_GRACE_SECONDS": 60,
@@ -382,7 +396,7 @@ class DeviceRegistryEventTests(unittest.TestCase):
         )
         self.manager._async_device_registry_updated(device_event("update", "reg-1"))
         self.sat1.notify.assert_not_called()
-        self.assertEqual(self.devices.lookups, [])
+        self.assertEqual(len(self.devices.lookups), 1)
 
     def test_remove_is_ignored(self) -> None:
         self.manager._async_device_registry_updated(device_event("remove", "reg-1"))

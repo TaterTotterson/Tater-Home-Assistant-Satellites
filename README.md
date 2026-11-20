@@ -25,8 +25,9 @@ This custom integration is a protocol adapter. It does not modify Home
 Assistant, Tater, or the satellite firmware, and the Tater Assistant add-on does
 not need to be installed or running.
 
-Latest changes: [1.4.17 release notes](RELEASE_NOTES.md), adding automated
-integration validation and updated Marketplace installation links and metadata.
+Latest changes: [1.4.18 release notes](RELEASE_NOTES.md), adding live satellite
+name and room editing from the bridge and Home Assistant's device editor.
+Requires Native 0.6.6, Echo 5.0.2, or ThirdReality S420 0.2.26 firmware for live edits.
 
 ## Installation
 
@@ -127,6 +128,13 @@ Diagnostics sections; additional schema sections remain available under Other
 settings. Unsaved drafts stay available while moving between these workspaces.
 Save each section to apply it to the bridge.
 
+In a satellite's **Overview → Name & room**, edit the fields and select **Save
+name & room**. On updated Native, Echo, and ThirdReality firmware, changes are
+saved on the satellite and apply live without resetting or pairing again. You
+can also edit the device name and area in **Settings → Devices & services**;
+the bridge sends those edits to the satellite and waits for confirmation.
+Connect the satellite before editing; older firmware requires an update.
+
 On updated Echo GPU UIs, each satellite's **Display & Night → Conversation
 text** selects **Smooth** (the default) or **Matrix** for recognized speech
 and replies. Matrix cycles symbols before letters settle in a shuffled order.
@@ -170,12 +178,14 @@ such as "turn on the lights" use that room unless the user names another room
 or a specific device. Each turn reads the room again; management chat has no
 assumed room, and an unassigned satellite never supplies a guessed location.
 
-The satellite firmware is the source of truth for its room. The bridge matches
-that room to a Home Assistant area, creating the area if needed. Home Assistant
-area edits do not override the satellite's room: the bridge restores the matching
-area on startup, pairing, reconnects, or area changes. If firmware reports no room,
-the satellite remains unassigned. Room matching never changes the room saved in
-the satellite firmware or moves other Home Assistant devices.
+The satellite's confirmed saved room remains the source of truth. On updated
+firmware, an explicit HA area assignment or area rename is saved onto the
+satellite. If saving fails, the bridge restores the last confirmed assignment.
+Reconnects match the satellite's saved room to a Home Assistant area, creating
+the area if needed. A blank room leaves the satellite unassigned. Room matching
+does not move other Home Assistant devices, and existing entity IDs remain
+unchanged when a device is renamed. Older firmware retains room matching but
+cannot accept live name or room changes.
 
 Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses

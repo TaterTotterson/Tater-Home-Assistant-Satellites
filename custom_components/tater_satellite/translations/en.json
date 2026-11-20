@@ -1,5 +1,11 @@
 {
   "title": "Tater Satellite",
+  "issues": {
+    "identity_update_failed": {
+      "title": "Satellite name and room were not saved",
+      "description": "Could not save the name or room on {name}. The last confirmed values have been restored. Connect the satellite and retry from its Name & room settings in Tater Satellites. Error: {error}"
+    }
+  },
   "config": {
     "step": {
       "user": {

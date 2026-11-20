@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.18
+
+- Save satellite names and rooms live from the bridge or Home Assistant's
+  device editor, with persistent firmware confirmation and rollback after
+  rejected writes. Support HA area renames and clearing a room assignment.
+- Preserve device identity, pairing, existing entity IDs, and stereo membership.
+  Refresh registry names after another controller edits the satellite; require
+  supported firmware and an online connection before saving changes.
+- Give newly created entities explicit default IDs without a duplicated HA area
+  prefix; keep all existing entity IDs unchanged.
+
 ## 1.4.17
 
 - Add HACS and hassfest validation on pushes, pull requests, a daily schedule,

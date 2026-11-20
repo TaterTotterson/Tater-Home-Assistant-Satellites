@@ -213,6 +213,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._dialogFocus = null;
     this._dirtyScopes = new Set();
     this._deviceDrafts = new Map();
+    this._identityDrafts = new Map();
     this._stereoDraft = {};
     this.addEventListener?.("keydown", (event) => this.handleDialogKeydown(event));
   }
@@ -263,6 +264,7 @@ class TaterSatellitePanel extends HTMLElement {
 
   settingScope(scope, key = "") {
     if (scope === "device") return `device:${this._selectedDeviceId}`;
+    if (scope === "identity") return `identity:${this._selectedDeviceId}`;
     if (scope === "global") {
       if (TRAINER_SETTING_KEYS.has(key)) return "trainer";
       if (WAKE_VERIFIER_SETTING_KEYS.has(key)) return "verifier";
@@ -287,6 +289,7 @@ class TaterSatellitePanel extends HTMLElement {
       const key = this.settingScope(scope);
       this._dirtyScopes.delete(key);
       if (key.startsWith("device:")) this._deviceDrafts.delete(key.slice(7));
+      if (key.startsWith("identity:")) this._identityDrafts.delete(key.slice(9));
     });
     this._dirty = this._dirtyScopes.size > 0;
   }
@@ -535,7 +538,7 @@ class TaterSatellitePanel extends HTMLElement {
 
   pageHasDraft(tab) {
     if (["assistant", "models", "home-control", "hydra"].includes(tab)) return this.isScopeDirty("tater");
-    if (tab === "satellites") return [...this._dirtyScopes].some((scope) => scope.startsWith("device:"));
+    if (tab === "satellites") return [...this._dirtyScopes].some((scope) => scope.startsWith("device:") || scope.startsWith("identity:"));
     if (tab === "defaults") return this.isScopeDirty("wake") || this.isScopeDirty("global");
     return this.isScopeDirty(tab === "audio" ? "stereo" : tab);
   }
@@ -2040,6 +2043,7 @@ class TaterSatellitePanel extends HTMLElement {
     if (!device) return;
     if (deviceId !== this._selectedDeviceId) this.rememberDeviceDraft();
     this._selectedDeviceId = deviceId;
+    if (!this.isScopeDirty("identity")) this._identityDrafts.set(deviceId, { device_name: device.name, room: device.room || "" });
     const saved = this._deviceDrafts.get(deviceId);
     if (saved && this.isScopeDirty("device")) {
       this._deviceDraft = clone(saved.draft);
@@ -2083,6 +2087,7 @@ class TaterSatellitePanel extends HTMLElement {
       </div>
       ${this.renderSectionNavigation(groups, active.id, "data-device-section", "Satellite settings")}
       ${active.id === "overview" ? this.renderDeviceOverview(device) : ""}
+      ${active.id === "overview" ? this.renderDeviceIdentity(device) : ""}
       ${active.id === "voice" ? `
       <section class="card section-card">
         <h3>Home Assistant Voice</h3>
@@ -2121,6 +2126,21 @@ class TaterSatellitePanel extends HTMLElement {
       </div>
       ${this.renderDeviceVolume(device)}
       <div class="row-actions"><button type="button" data-identify="${escapeHtml(device.device_id)}" ${device.connected ? "" : "disabled"}>${this.renderIcon("star-four-points-outline")} Identify satellite</button><button type="button" data-device-section="diagnostics">View diagnostics</button>${firmware.has_ota && device.connected ? `<button type="button" data-ota="${escapeHtml(device.device_id)}">${firmware.update_available ? "Install update" : "Reinstall latest"}</button>` : ""}${!device.connected ? `<button type="button" class="danger" data-forget="${escapeHtml(device.device_id)}">Forget satellite</button>` : ""}</div>
+    </section>`;
+  }
+
+  renderDeviceIdentity(device) {
+    const draft = this._identityDrafts.get(device.device_id) || { device_name: device.name, room: device.room || "" };
+    const supported = device.capabilities?.identity_update === true;
+    const disabled = this._loading || !supported || !device.connected;
+    return `<section class="card section-card"><span class="workspace-eyebrow">Saved on this satellite</span><h3>Name &amp; room</h3>
+      <p class="muted">Choose how this satellite appears and which room it uses. Changes apply live and stay saved after a restart.</p>
+      ${String(device.last_error || "").startsWith("Name and room were not confirmed:") ? `<p class="banner error" role="alert">${escapeHtml(device.last_error)}</p>` : ""}
+      ${!supported ? '<p class="muted">Update this satellite’s firmware to change its name and room.</p>' : !device.connected ? '<p class="muted">Connect this satellite before saving changes.</p>' : ''}
+      <div class="settings-grid">
+        <label class="field"><span>Satellite name</span><input data-identity="device_name" value="${escapeHtml(draft.device_name)}" maxlength="63" ${disabled ? "disabled" : ""}></label>
+        <label class="field"><span>Room</span><input data-identity="room" value="${escapeHtml(draft.room)}" maxlength="63" placeholder="Unassigned" ${disabled ? "disabled" : ""}></label>
+      </div><div class="row-actions"><span data-draft-status="identity">${this.isScopeDirty("identity") ? "Unsaved changes" : "Confirmed on satellite"}</span><button class="primary" data-save-identity ${disabled || !this.isScopeDirty("identity") ? "disabled" : ""}>${this._loading ? "Saving…" : "Save name & room"}</button></div>
     </section>`;
   }
 
@@ -3460,7 +3480,7 @@ class TaterSatellitePanel extends HTMLElement {
         this.confirmAction("Forget satellite?", "This revokes the saved credential. The satellite must pair again before it can reconnect.", "Forget satellite", () => this.run(
           () => this.api("DELETE", `device/${button.dataset.forget}`),
           "Satellite forgotten. Use a new pairing code to add it again.",
-          [`device:${button.dataset.forget}`],
+          [`device:${button.dataset.forget}`, `identity:${button.dataset.forget}`],
         ));
       }),
     );
@@ -3704,6 +3724,21 @@ class TaterSatellitePanel extends HTMLElement {
         "Satellite overrides saved and pushed live.",
         ["device"],
       );
+    });
+    root.querySelectorAll("[data-identity]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const draft = this._identityDrafts.get(this._selectedDeviceId);
+        if (!draft) return;
+        draft[input.dataset.identity] = input.value;
+        this.markDirty("identity");
+        const save = root.querySelector("[data-save-identity]");
+        if (save) save.disabled = this._loading;
+      });
+    });
+    root.querySelector("[data-save-identity]")?.addEventListener("click", () => {
+      const deviceId = this._selectedDeviceId;
+      const values = clone(this._identityDrafts.get(deviceId));
+      this.run(() => this.api("POST", `settings/device/${deviceId}/identity`, values), "Satellite confirmed its new name and room.", ["identity"]);
     });
     root.querySelector('[data-action="reset-device"]')?.addEventListener("click", () => {
       this.confirmAction("Use all shared defaults?", "Remove all firmware setting overrides from this satellite?", "Use shared defaults", () => this.run(

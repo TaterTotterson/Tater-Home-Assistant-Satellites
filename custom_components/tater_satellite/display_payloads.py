@@ -159,6 +159,8 @@ def cameras_payload(
     selected_id: str = "",
     loading: bool = False,
     error: str = "",
+    popup_id: str = "",
+    popup_expires_at: float = 0,
 ) -> dict[str, Any]:
     """Build a display.cameras payload.
 
@@ -194,6 +196,9 @@ def cameras_payload(
         )
     if error:
         payload["error"] = error
+    if popup_id and selected is not None and popup_expires_at > 0:
+        payload["popup_id"] = popup_id
+        payload["popup_expires_at"] = popup_expires_at
     return payload
 
 

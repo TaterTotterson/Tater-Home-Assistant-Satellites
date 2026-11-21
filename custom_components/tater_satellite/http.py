@@ -194,6 +194,50 @@ class VisionSettingsView(HomeAssistantView):
         return self.json({"ok": True, "settings": saved})
 
 
+class DoorbellsView(HomeAssistantView):
+    """Save an explicitly configured doorbell in either assistant mode."""
+
+    url = f"{API_BASE_PATH}/doorbell/doorbells"
+    name = "api:tater_satellite:doorbells"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        try:
+            saved = await _manager(request).doorbell.async_save_doorbell(
+                body.get("doorbell"), str(body.get("id") or "")
+            )
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "doorbell": saved})
+
+
+class DoorbellView(HomeAssistantView):
+    url = f"{API_BASE_PATH}/doorbell/doorbells/{{doorbell_id}}"
+    name = "api:tater_satellite:doorbell"
+    requires_auth = True
+
+    async def delete(self, request: web.Request, doorbell_id: str) -> web.Response:
+        try:
+            await _manager(request).doorbell.async_delete_doorbell(doorbell_id)
+        except (KeyError, ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True})
+
+
+class DoorbellTestView(HomeAssistantView):
+    url = f"{API_BASE_PATH}/doorbell/doorbells/{{doorbell_id}}/test"
+    name = "api:tater_satellite:doorbell_test"
+    requires_auth = True
+
+    async def post(self, request: web.Request, doorbell_id: str) -> web.Response:
+        try:
+            result = await _manager(request).doorbell.async_test(doorbell_id)
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": result["status"] == "sent", "event": result})
+
+
 class AwarenessMonitorsView(HomeAssistantView):
     """Create or update a camera monitor in either assistant mode."""
 
@@ -823,6 +867,9 @@ VIEWS = (
     GlobalSettingsView,
     TaterAssistantSettingsView,
     VisionSettingsView,
+    DoorbellsView,
+    DoorbellView,
+    DoorbellTestView,
     AwarenessMonitorsView,
     AwarenessMonitorView,
     AwarenessTestView,

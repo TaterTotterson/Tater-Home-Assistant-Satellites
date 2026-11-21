@@ -60,6 +60,50 @@ test('all bridge and Tater workspaces plus fallback settings remain reachable', 
   }
 });
 
+test('doorbell stays available in HA and keeps independent speaker, camera, and screen drafts', async () => {
+  const panel = fixture();
+  panel._data.doorbell = {default_prompt:'Be welcoming.',doorbells:[],history:[],catalog:{
+    triggers:[{id:'event.press',name:'Doorbell',options:[{value:'event:press',label:'Pressed'}],suggested_for:['camera.front']}],
+    cameras:[{id:'camera.front',name:'Front camera',device_id:'front'}],
+    speakers:[{id:'media_player.separate',name:'Another brand speaker',device_id:'front'}],
+    screens:[{id:'rook',name:'Rook',supported:true,available:true},{id:'old',name:'Old Show',supported:false,available:true}],
+  }};
+  assert.match(panel.renderNavigation(), /data-tab="doorbell"/);
+  panel.openDoorbell();
+  let html = panel.renderDoorbellEditor();
+  assert.match(html, /Greeting speaker[\s\S]*Another brand speaker/);
+  assert.match(html, /Home Assistant’s default Assist pipeline/);
+  assert.match(html, /data-doorbell-screen="old"[^>]*disabled/);
+  const trigger = {dataset:{doorbellSetting:'trigger_entity'},value:'event.press',tagName:'SELECT'};
+  controls(panel, {}, {'[data-doorbell-setting]':[trigger]});
+  trigger.listeners.change();
+  assert.equal(panel._doorbellDraft.camera_entity,'camera.front');
+  assert.equal(panel._doorbellDraft.speaker_entity,'media_player.separate');
+  assert.equal(panel._doorbellDraft.trigger_value,'event:press');
+  panel._doorbellDraft.speaker_entity='media_player.user_choice';
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._doorbellDraft.speaker_entity,'media_player.user_choice');
+  assert.equal(panel.pageHasDraft('doorbell'),true);
+  assert.match(panel.renderDoorbellEditor(), /media_player.user_choice · Unavailable/);
+  let request;
+  panel.api=async(...args)=>{request=args;return {doorbell:{...panel._doorbellDraft,id:'saved'}};};
+  panel.run=async action=>action();
+  const save={};
+  controls(panel, {'[data-action="save-doorbell"]':save});
+  await save.listeners.click();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(request[1],'doorbell/doorbells');
+  assert.equal(request[2].doorbell.speaker_entity,'media_player.user_choice');
+  panel._doorbellDraft.greeting_enabled=false;
+  assert.doesNotMatch(panel.renderDoorbellEditor(), /data-doorbell-setting="speaker_entity"/);
+  assert.match(panel.renderDoorbellEditor(), /Camera viewing will work without generating speech/);
+  panel._doorbellSection='activity';
+  panel._data.doorbell.history=[{name:'<Door>',created_at:1,status:'partial',greeting:'<Hello>',deliveries:[{kind:'speaker',destination:'media_player.separate',status:'failed',error:'<Offline>'}]}];
+  html=panel.renderDoorbell();
+  assert.match(html,/&lt;Hello&gt;/);
+  assert.match(html,/&lt;Offline&gt;/);
+});
+
 test('identity drafts survive refresh and device navigation and stay separate from overrides', async () => {
   const panel = fixture();
   panel._data.devices[0].capabilities.identity_update = true;

@@ -39,7 +39,8 @@ const WORKSPACE_PAGES = [
   { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every built-in tool decision." },
   { id: "satellites", label: "Satellites", icon: "access-point", group: "Your home", description: "Voice around your home, connected directly to Home Assistant." },
   { id: "awareness", label: "Awareness", icon: "camera-iris", group: "Your home", description: "Turn camera events into a picture and a useful description, wherever you want to see them." },
-  { id: "vision", label: "Vision", icon: "eye-outline", group: "Your home", description: "One shared image-understanding model for Awareness and Mini-Tater." },
+  { id: "doorbell", label: "Doorbell", icon: "doorbell-video", group: "Your home", description: "Welcome visitors with a camera-aware greeting and show the door on your screens." },
+  { id: "vision", label: "Vision", icon: "eye-outline", group: "Your home", description: "One shared image-understanding model for Awareness, Doorbell, and Mini-Tater." },
   { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
   { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Discover and connect Bluetooth devices through a satellite." },
   { id: "defaults", label: "Voice defaults", icon: "microphone", group: "Voice & wake", description: "One shared wake profile, with clear defaults for every satellite." },
@@ -182,6 +183,8 @@ class TaterSatellitePanel extends HTMLElement {
     this._visionDraft = null;
     this._awarenessDraft = null;
     this._awarenessSection = "monitors";
+    this._doorbellDraft = null;
+    this._doorbellSection = "doorbells";
     this._hydraSection = "ledger";
     this._testMessage = "";
     this._testImages = [];
@@ -544,7 +547,7 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   renderDraftFooter(scope, buttons) {
-    return `<footer class="sticky-actions workspace-save-bar"><div><strong data-draft-status="${scope}">${this.isScopeDirty(scope) ? "Unsaved changes" : "Settings synchronized"}</strong><span>${scope === "device" ? "Applies to this satellite." : "Applies to the shared profile."}</span></div><div class="row-actions">${buttons}</div></footer>`;
+    return `<footer class="sticky-actions workspace-save-bar"><div><strong data-draft-status="${scope}">${this.isScopeDirty(scope) ? "Unsaved changes" : "Settings synchronized"}</strong><span>${scope === "device" ? "Applies to this satellite." : scope === "doorbell" ? "Applies to this doorbell." : "Applies to the shared profile."}</span></div><div class="row-actions">${buttons}</div></footer>`;
   }
 
   renderDialog() {
@@ -1421,6 +1424,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this._tab === "models" ? this.renderModelsAndSpeech() : ""}
       ${this._tab === "vision" ? this.renderVision() : ""}
       ${this._tab === "awareness" ? this.renderAwareness() : ""}
+      ${this._tab === "doorbell" ? this.renderDoorbell() : ""}
       ${this._tab === "home-control" ? this.renderHomeControl() : ""}
       ${this._tab === "hydra" ? this.renderHydra() : ""}
       ${this._tab === "defaults" ? this.renderVoiceDefaults() : ""}
@@ -1552,7 +1556,7 @@ class TaterSatellitePanel extends HTMLElement {
     const dirty = this.isScopeDirty("vision");
     const base = this._data.tater_assistant?.settings || {};
     return `<section class="card provider-card">
-      <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Shared visual intelligence</span><h2>Image understanding</h2><p class="muted">Describe Awareness snapshots, answer camera questions, and understand chat images with one model. Works in Home Assistant and Mini-Tater mode.</p></div><span class="badge ${!dirty && ready.ok ? "online" : "update"}">${dirty ? "Unsaved changes" : ready.ok ? "Configured" : "Setup needed"}</span></div>
+      <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Shared visual intelligence</span><h2>Image understanding</h2><p class="muted">Describe Awareness snapshots, greet doorbell visitors, and understand camera and chat images with one model. Works in Home Assistant and Mini-Tater mode.</p></div><span class="badge ${!dirty && ready.ok ? "online" : "update"}">${dirty ? "Unsaved changes" : ready.ok ? "Configured" : "Setup needed"}</span></div>
       <div class="provider-choice" role="group" aria-label="Vision model source"><button type="button" data-tater-vision-provider="base" ${provider === "base" ? 'aria-current="true"' : ""}>Same as Base</button><button type="button" data-tater-vision-provider="openai_compatible" ${provider === "openai_compatible" ? 'aria-current="true"' : ""}>Different endpoint</button></div>
       ${provider === "base" ? `<div class="verifier-note"><strong>Reuse the Base model</strong><p>Uses Mini-Tater’s saved Base endpoint, model, and key. The model must support image input.</p><p>${base.llm_model ? `${escapeHtml(base.llm_model)} · ${escapeHtml(base.llm_base_url || "")}` : 'Using Home Assistant mode? Choose <b>Different endpoint</b> to configure Vision without setting up Mini-Tater.'}</p></div>` : `
         <div class="settings-grid">
@@ -1623,6 +1627,63 @@ class TaterSatellitePanel extends HTMLElement {
         const running = (awareness.running || []).includes(row.id);
         return `<article class="card awareness-monitor"><header><span class="awareness-camera-icon">${this.renderIcon("camera-outline")}</span><span class="badge ${row.enabled ? "online" : ""}">${running ? "Processing" : row.enabled ? "Enabled" : "Paused"}</span></header><h3>${escapeHtml(row.name)}</h3><p class="muted">${escapeHtml(camera?.name || row.camera_entity)}</p><dl><div><dt>When</dt><dd>${escapeHtml(trigger?.name || row.trigger_entity)} · ${escapeHtml(trigger?.options?.find((option) => option.value === row.trigger_value)?.label || row.trigger_value)}</dd></div><div><dt>Notify</dt><dd>${escapeHtml(row.destinations.map(label).join(", "))}</dd></div></dl><div class="awareness-last-run">${last ? `${status(last.status)} · ${escapeHtml(stamp(last.created_at))}` : "Waiting for its first event"}</div><footer><button type="button" data-awareness-edit="${escapeHtml(row.id)}">Edit monitor</button><button type="button" data-awareness-test="${escapeHtml(row.id)}" ${this._loading || running || !ready ? "disabled" : ""}>Test</button><button type="button" class="danger" data-awareness-delete="${escapeHtml(row.id)}" aria-label="Delete ${escapeHtml(row.name)}">${this.renderIcon("delete-outline")}</button></footer></article>`;
       }).join("") || (!this._awarenessDraft ? `<section class="card awareness-empty">${this.renderIcon("camera-iris")}<h2>A little more awareness</h2><p class="muted">Choose a camera, connect a trigger, and let a picture tell you what happened.</p><div class="awareness-flow"><span>Camera</span>${this.renderIcon("arrow-right")}<span>Vision</span>${this.renderIcon("arrow-right")}<span>Your screens & phones</span></div><button type="button" class="primary" data-action="new-awareness">Create your first monitor</button></section>` : "")}</div>`}`;
+  }
+
+  openDoorbell(id = "") {
+    const open = () => {
+      const row = (this._data.doorbell?.doorbells || []).find((item) => item.id === id);
+      this._doorbellDraft = row ? clone(row) : { id: "", name: "", camera_entity: "", trigger_entity: "", trigger_value: "", enabled: true, greeting_enabled: true, speaker_entity: "", prompt: this._data.doorbell?.default_prompt || "", screens: [], cooldown_seconds: 30, display_seconds: 60 };
+      this._doorbellSection = "doorbells";
+      this.clearDirty("doorbell");
+      this.render();
+    };
+    if (this.isScopeDirty("doorbell")) this.confirmAction("Discard doorbell changes?", "Open another doorbell and discard these unsaved changes?", "Discard changes", open);
+    else open();
+  }
+
+  doorbellSelect(key, label, rows, placeholder) {
+    const value = this._doorbellDraft?.[key] || "";
+    const options = [...rows];
+    if (value && !options.some((row) => row.id === value)) options.push({ id: value, name: value, available: false });
+    return `<label class="field"><span>${escapeHtml(label)}</span><select data-doorbell-setting="${key}"><option value="">${escapeHtml(placeholder)}</option>${options.map((row) => `<option value="${escapeHtml(row.id)}" ${value === row.id ? "selected" : ""}>${escapeHtml(row.name)}${row.available === false ? " · Unavailable" : ""}</option>`).join("")}</select></label>`;
+  }
+
+  renderDoorbellEditor() {
+    const draft = this._doorbellDraft;
+    if (!draft) return "";
+    const catalog = this._data.doorbell?.catalog || {};
+    const triggers = [...(catalog.triggers || [])].sort((a, b) => Number(/doorbell|ring|press/i.test(b.name + b.id)) - Number(/doorbell|ring|press/i.test(a.name + a.id)));
+    const trigger = triggers.find((row) => row.id === draft.trigger_entity);
+    const screens = [...(catalog.screens || [])];
+    for (const id of draft.screens) if (!screens.some((row) => row.id === id)) screens.push({ id, name: id, available: false, supported: false });
+    const visionReady = this._data.tater_assistant?.ready?.vision?.ok;
+    return `<section class="card awareness-editor">
+      <div class="workspace-section-heading"><div><span class="workspace-eyebrow">${draft.id ? "Edit doorbell" : "New doorbell"}</span><h2>${escapeHtml(draft.name || "A warmer welcome")}</h2><p class="muted">Choose the door, the greeting, and where to see your visitor.</p></div><label class="awareness-enabled"><input type="checkbox" data-doorbell-setting="enabled" ${draft.enabled ? "checked" : ""}> Enabled</label></div>
+      <label class="field"><span>Doorbell name</span><input data-doorbell-setting="name" value="${escapeHtml(draft.name)}" placeholder="Front door" maxlength="100"></label>
+      <div class="awareness-step"><span class="awareness-step-number">1</span><div><h3>When the doorbell rings</h3><p class="muted">Use the press sensor or event supplied by your doorbell’s Home Assistant integration.</p><div class="settings-grid">${this.doorbellSelect("trigger_entity", "Doorbell trigger", triggers, "Choose a press sensor or event")}${this.doorbellSelect("trigger_value", "When", (trigger?.options || []).map((row) => ({ id: row.value, name: row.label })), "Choose a press event")}</div></div></div>
+      <div class="awareness-step"><span class="awareness-step-number">2</span><div><h3>See who is there</h3><p class="muted">Capture a fresh image for the greeting. The camera can be a different device from the doorbell.</p>${this.doorbellSelect("camera_entity", "Camera", catalog.cameras || [], "Choose a camera")}</div></div>
+      <div class="awareness-step"><span class="awareness-step-number">3</span><div><div class="workspace-section-heading"><div><h3>Greet your visitor</h3><p class="muted">A short, natural greeting shaped by the picture and your instructions.</p></div><label class="awareness-enabled"><input type="checkbox" data-doorbell-setting="greeting_enabled" ${draft.greeting_enabled ? "checked" : ""}> AI greeting</label></div>${draft.greeting_enabled ? `${this.doorbellSelect("speaker_entity", "Greeting speaker", catalog.speakers || [], "Choose an audio-capable media player")}<p class="muted">Any compatible HA media player: your doorbell’s speaker or a separate speaker near the door.</p><label class="field"><span>How should the assistant greet people?</span><textarea data-doorbell-setting="prompt" maxlength="2000" rows="4">${escapeHtml(draft.prompt)}</textarea></label><p class="muted">${this.isTaterModeSelected() ? "Uses Mini-Tater’s configured TTS voice." : "Uses the voice in Home Assistant’s default Assist pipeline."} Greeting images use your shared Vision settings.</p>${!visionReady ? `<div class="workspace-profile-strip"><span>Connect Vision to generate greetings.</span><button type="button" data-tab="vision">Open Vision ${this.renderIcon("arrow-right")}</button></div>` : ""}` : '<p class="muted">Camera viewing will work without generating speech.</p>'}</div></div>
+      <div class="awareness-step"><span class="awareness-step-number">4</span><div><h3>Bring up the camera <span class="muted">· Optional</span></h3><p class="muted">Open the live doorbell camera immediately on selected Show or Rook screens. Camera viewing continues if the greeting fails.</p><div class="awareness-destinations">${screens.map((row) => `<label class="awareness-destination ${draft.screens.includes(row.id) ? "selected" : ""}"><input type="checkbox" data-doorbell-screen="${escapeHtml(row.id)}" ${draft.screens.includes(row.id) ? "checked" : ""} ${!row.supported && !draft.screens.includes(row.id) ? "disabled" : ""}>${this.renderIcon("monitor")}<span><strong>${escapeHtml(row.name)}</strong><small>${!row.supported ? "Firmware update needed for auto-open" : row.available === false ? "Offline" : "Live camera popup"}</small></span></label>`).join("") || '<p class="muted">Connect a Show or Rook satellite to select a screen.</p>'}</div>${draft.screens.length ? `<label class="field"><span>Keep the camera open (seconds)</span><input data-doorbell-setting="display_seconds" type="number" min="10" max="300" value="${draft.display_seconds}"><small>Closes automatically, or dismiss it on the screen.</small></label>` : ""}</div></div>
+      <details class="awareness-options"><summary>Timing</summary><label class="field"><span>Cooldown (seconds)</span><input data-doorbell-setting="cooldown_seconds" type="number" min="0" max="86400" value="${draft.cooldown_seconds}"><small>Ignore repeated presses during this interval. Default: 30 seconds.</small></label></details>
+      <p class="muted awareness-editor-note">A test speaks through your selected speaker and opens your selected screens. Save changes before testing.</p>
+    </section>${this.renderDraftFooter("doorbell", `<button type="button" data-action="discard-doorbell">Close editor</button>${draft.id ? `<button type="button" data-doorbell-test="${escapeHtml(draft.id)}" ${this._loading || this.isScopeDirty("doorbell") ? "disabled" : ""}>Test doorbell</button>` : ""}<button type="button" class="primary" data-action="save-doorbell" ${this._loading ? "disabled" : ""}>Save doorbell</button>`)}`;
+  }
+
+  renderDoorbell() {
+    const data = this._data.doorbell || {};
+    const rows = data.doorbells || [];
+    const history = data.history || [];
+    const catalog = data.catalog || {};
+    const label = (id) => [...(catalog.speakers || []), ...(catalog.screens || []), ...(catalog.cameras || []), ...(catalog.triggers || [])].find((row) => row.id === id)?.name || id;
+    const stamp = (value) => value ? new Date(value * 1000).toLocaleString() : "Never";
+    const status = (value) => ({ sent: "Sent", partial: "Partly sent", failed: "Failed" }[value] || value);
+    return `<div class="workspace-toolbar"><div class="workspace-summary"><span>${rows.filter((row) => row.enabled).length} active doorbell${rows.filter((row) => row.enabled).length === 1 ? "" : "s"}</span><span>Works with HA and Mini-Tater</span></div><button type="button" class="primary" data-action="new-doorbell">${this.renderIcon("plus")} Add doorbell</button></div>
+      <nav class="workspace-section-nav" aria-label="Doorbell views"><button type="button" data-doorbell-section="doorbells" ${this._doorbellSection === "doorbells" ? 'aria-current="page"' : ""}>Doorbells <span>${rows.length}</span></button><button type="button" data-doorbell-section="activity" ${this._doorbellSection === "activity" ? 'aria-current="page"' : ""}>Recent activity <span>${history.length}</span></button></nav>
+      ${this._doorbellSection === "activity" ? `<section class="card awareness-activity"><div class="workspace-section-heading"><div><span class="workspace-eyebrow">Visitor greetings</span><h2>Recent activity</h2><p class="muted">The last 50 runs, with separate speaker and screen results.</p></div></div>${history.map((row) => `<article class="awareness-event"><div class="awareness-camera-icon">${this.renderIcon("doorbell-video")}</div><div><div class="workspace-device-name"><h3>${escapeHtml(row.name)}</h3><span class="badge ${row.status === "sent" ? "online" : "update"}">${status(row.status)}</span>${row.test ? '<span class="badge">Test</span>' : ""}</div><small class="muted">${escapeHtml(stamp(row.created_at))}</small><p>${escapeHtml(row.greeting || "Camera display only, or no greeting was generated.")}</p><ul class="awareness-deliveries">${(row.deliveries || []).map((item) => `<li class="${item.status === "failed" ? "awareness-error" : ""}">${this.renderIcon(item.kind === "screen" ? "monitor" : "speaker")} ${escapeHtml(label(item.destination))} · ${item.status === "sent" ? "Sent" : escapeHtml(item.error || "Delivery failed")}</li>`).join("")}</ul></div></article>`).join("") || `<div class="awareness-empty">${this.renderIcon("doorbell-video")}<h3>Your doorbell activity will appear here</h3><p class="muted">Test a saved doorbell or wait for someone to ring.</p></div>`}</section>` : `${this.renderDoorbellEditor()}<div class="awareness-monitor-grid" ${this._doorbellDraft ? "hidden" : ""}>${rows.map((row) => {
+        const last = history.find((event) => event.doorbell_id === row.id);
+        const running = (data.running || []).includes(row.id);
+        return `<article class="card awareness-monitor"><header><span class="awareness-camera-icon">${this.renderIcon("doorbell-video")}</span><span class="badge ${row.enabled ? "online" : ""}">${running ? "Greeting" : row.enabled ? "Enabled" : "Paused"}</span></header><h3>${escapeHtml(row.name)}</h3><p class="muted">${escapeHtml(label(row.camera_entity))}</p><dl><div><dt>When</dt><dd>${escapeHtml(label(row.trigger_entity))}</dd></div><div><dt>Speak</dt><dd>${row.greeting_enabled ? escapeHtml(label(row.speaker_entity)) : "Greeting off"}</dd></div><div><dt>Screens</dt><dd>${escapeHtml(row.screens.map(label).join(", ") || "None selected")}</dd></div></dl><div class="awareness-last-run">${last ? `${status(last.status)} · ${escapeHtml(stamp(last.created_at))}` : "Ready for the next visitor"}</div><footer><button type="button" data-doorbell-edit="${escapeHtml(row.id)}">Edit doorbell</button><button type="button" data-doorbell-test="${escapeHtml(row.id)}" ${this._loading || running ? "disabled" : ""}>Test</button><button type="button" class="danger" data-doorbell-delete="${escapeHtml(row.id)}" aria-label="Delete ${escapeHtml(row.name)}">${this.renderIcon("delete-outline")}</button></footer></article>`;
+      }).join("") || (!this._doorbellDraft ? `<section class="card awareness-empty">${this.renderIcon("doorbell-video")}<h2>A warmer welcome at the door</h2><p class="muted">Turn a doorbell press into a personal greeting and a live view on your screens. Choose your own camera and speaker, from any compatible HA integration.</p><div class="awareness-flow"><span>Doorbell</span>${this.renderIcon("arrow-right")}<span>Vision & greeting</span>${this.renderIcon("arrow-right")}<span>Speaker & screens</span></div><button type="button" class="primary" data-action="new-doorbell">Set up your doorbell</button></section>` : "")}</div>`}`;
   }
 
   renderModelsAndSpeech() {
@@ -3059,6 +3120,56 @@ class TaterSatellitePanel extends HTMLElement {
     }
   }
 
+  bindDoorbellEvents(root) {
+    root.querySelectorAll('[data-action="new-doorbell"]').forEach((button) => button.addEventListener("click", () => this.openDoorbell()));
+    root.querySelectorAll("[data-doorbell-edit]").forEach((button) => button.addEventListener("click", () => this.openDoorbell(button.dataset.doorbellEdit)));
+    root.querySelectorAll("[data-doorbell-section]").forEach((button) => button.addEventListener("click", () => { this._doorbellSection = button.dataset.doorbellSection; this.render(); }));
+    root.querySelectorAll("[data-doorbell-setting]").forEach((input) => input.addEventListener(input.type === "text" || input.tagName === "TEXTAREA" ? "input" : "change", () => {
+      const key = input.dataset.doorbellSetting;
+      const draft = this._doorbellDraft;
+      draft[key] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value;
+      this.markDirty("doorbell");
+      if (["trigger_entity", "camera_entity", "greeting_enabled"].includes(key)) {
+        const catalog = this._data.doorbell?.catalog || {};
+        const selected = (catalog.triggers || []).find((row) => row.id === draft.trigger_entity);
+        if (key === "trigger_entity") {
+          if (!(selected?.options || []).some((row) => row.value === draft.trigger_value)) draft.trigger_value = selected?.options?.[0]?.value || "";
+          if (!draft.camera_entity && selected?.suggested_for?.length === 1) draft.camera_entity = selected.suggested_for[0];
+        }
+        const camera = (catalog.cameras || []).find((row) => row.id === draft.camera_entity);
+        const speakers = (catalog.speakers || []).filter((row) => camera?.device_id && row.device_id === camera.device_id);
+        if (!draft.speaker_entity && speakers.length === 1) draft.speaker_entity = speakers[0].id;
+        this.render();
+      }
+    }));
+    root.querySelectorAll("[data-doorbell-screen]").forEach((input) => input.addEventListener("change", () => {
+      const selected = new Set(this._doorbellDraft.screens);
+      if (input.checked) selected.add(input.dataset.doorbellScreen);
+      else selected.delete(input.dataset.doorbellScreen);
+      this._doorbellDraft.screens = [...selected]; this.markDirty("doorbell"); this.render();
+    }));
+    root.querySelector('[data-action="save-doorbell"]')?.addEventListener("click", () => {
+      const draft = clone(this._doorbellDraft);
+      this.run(async () => { const result = await this.api("POST", "doorbell/doorbells", { id: draft.id, doorbell: draft }); this._doorbellDraft = clone(result.doorbell); }, "Doorbell saved.", ["doorbell"]);
+    });
+    root.querySelector('[data-action="discard-doorbell"]')?.addEventListener("click", () => {
+      const close = () => { this._doorbellDraft = null; this.clearDirty("doorbell"); this.render(); };
+      if (this.isScopeDirty("doorbell")) this.confirmAction("Discard doorbell changes?", "Close the editor and discard these unsaved changes?", "Discard changes", close);
+      else close();
+    });
+    root.querySelectorAll("[data-doorbell-test]").forEach((button) => button.addEventListener("click", () => {
+      if (this.isScopeDirty("doorbell") && this._doorbellDraft?.id === button.dataset.doorbellTest) { this._error = "Save this doorbell’s changes before testing."; this.render(); return; }
+      this.run(async () => { await this.api("POST", `doorbell/doorbells/${encodeURIComponent(button.dataset.doorbellTest)}/test`, {}); this._doorbellSection = "activity"; }, "Test finished. Review the speaker and screen results below.");
+    }));
+    root.querySelectorAll("[data-doorbell-delete]").forEach((button) => button.addEventListener("click", () => {
+      const id = button.dataset.doorbellDelete;
+      this.confirmAction("Delete this doorbell?", "Stop its trigger and remove the saved doorbell. Recent activity remains available.", "Delete doorbell", () => this.run(async () => {
+        await this.api("DELETE", `doorbell/doorbells/${encodeURIComponent(id)}`);
+        if (this._doorbellDraft?.id === id) { this._doorbellDraft = null; this.clearDirty("doorbell"); }
+      }, "Doorbell removed."));
+    }));
+  }
+
   bindAwarenessEvents(root) {
     root.querySelectorAll('[data-action="new-awareness"]').forEach((button) => button.addEventListener("click", () => this.openAwarenessMonitor()));
     root.querySelectorAll("[data-awareness-edit]").forEach((button) => button.addEventListener("click", () => this.openAwarenessMonitor(button.dataset.awarenessEdit)));
@@ -3142,6 +3253,7 @@ class TaterSatellitePanel extends HTMLElement {
   bindEvents() {
     const root = this.shadowRoot;
     this.bindAwarenessEvents(root);
+    this.bindDoorbellEvents(root);
     root.querySelectorAll("[data-tab]").forEach((button) => {
       button.addEventListener("click", () => this.navigate(button.dataset.tab));
     });

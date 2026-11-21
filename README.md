@@ -24,6 +24,8 @@ the Tater Assistant add-on is not required.
 - **Music:** play audio, save stereo pairs, and group speakers across rooms.
 - **Calls and alerts:** broadcast intercom messages, make Sat Chat calls, and
   send camera alerts to compatible Echo screens or Home Assistant phones.
+- **Doorbell:** generate a visitor greeting from a fresh camera image, play it
+  through a compatible HA media player, and optionally open the camera on Echo screens.
 - **Personalize:** choose wake words and adjust each satellite's sound,
   display, and night settings.
 - **Bluetooth:** discover and connect supported Bluetooth devices through a satellite.

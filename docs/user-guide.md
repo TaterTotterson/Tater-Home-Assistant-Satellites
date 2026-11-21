@@ -314,6 +314,40 @@ repeated triggers for a busy monitor are coalesced. Restarting HA preserves save
 monitors, recent activity, and the last-run cooldown. Editing, pausing, or deleting
 a monitor cancels any pending alert for that monitor.
 
+## Doorbell greetings and live camera popups
+
+**Doorbell** is available in both Home Assistant and Mini-Tater modes. Choose
+**Add doorbell** and set up:
+
+1. The doorbell press sensor or event entity and the event that means a press.
+2. The camera to use for the snapshot and live view.
+3. An optional AI greeting, its instructions, and the greeting speaker. Any HA
+   media player that supports playing the generated audio can be selected,
+   including a UniFi Protect doorbell speaker or a separate speaker from another
+   integration. The trigger, camera, and speaker can belong to different devices.
+4. Optional Show or Rook screens and a display duration of 10–300 seconds.
+
+Greeting images use the existing **Vision** settings. In HA mode, speech uses
+the TTS provider, language, and voice in HA's default Assist pipeline. Mini-Tater
+mode uses the existing Mini-Tater TTS settings. Complete audio clips are sent
+through HA's normal media-player playback action; audio format support and
+network reachability depend on the selected media player.
+
+Automatic camera opening requires Echo firmware 5.0.4 or newer with camera popup support.
+Older screen firmware is listed with an update note. Screens open independently
+of the greeting and automatically close after the selected duration; a visitor
+can also dismiss the popup. Manual camera navigation takes ownership of its
+view so an earlier popup's timeout cannot close it. A model, speaker, or screen
+failure is reported separately and does not block the other outputs. Clear
+**AI greeting** to use camera viewing without Vision or TTS.
+
+The default cooldown is 30 seconds. Repeated presses are ignored while a run is
+busy or cooling down. Doorbells, cooldown history, and the last 50 activity
+results persist across HA restarts; images are only sent to Vision and are not
+retained by this feature. Editing, pausing, or deleting a doorbell cancels its
+pending greeting. **Test doorbell** runs the saved setup and sends actual audio
+and camera popups; it does not enable a paused doorbell.
+
 ## Pair a satellite
 
 1. Open **Tater Satellites** in the Home Assistant sidebar.

@@ -567,6 +567,9 @@ class AwarenessHttpTests(unittest.IsolatedAsyncioTestCase):
             "AwarenessMonitorView",
             "AwarenessTestView",
             "AwarenessImageView",
+            "DoorbellsView",
+            "DoorbellView",
+            "DoorbellTestView",
         }
         classes = {
             row.name: row

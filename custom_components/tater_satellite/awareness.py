@@ -33,8 +33,8 @@ def _text(value: Any, limit: int = 500) -> str:
     return str(value or "").strip()[:limit]
 
 
-def normalize_monitor(value: Any, monitor_id: str = "") -> dict[str, Any]:
-    """Validate only the explicit camera, trigger, and destinations selected."""
+def normalize_camera_trigger(value: Any) -> dict[str, str]:
+    """Validate an explicit HA snapshot source and state/event trigger."""
     if not isinstance(value, dict):
         raise ValueError("A monitor must be an object")
     camera = _text(value.get("camera_entity"))
@@ -49,6 +49,26 @@ def normalize_monitor(value: Any, monitor_id: str = "") -> dict[str, Any]:
             raise ValueError("Choose an event type")
     elif condition not in {"state:on", "state:off"}:
         raise ValueError("Choose when the trigger becomes active or inactive")
+    return {"camera_entity": camera, "trigger_entity": trigger, "trigger_value": condition}
+
+
+async def capture_camera_image(hass: Any, entity_id: str) -> tuple[bytes, str]:
+    """Capture a bounded fresh image for camera alerts and doorbell greetings."""
+    from homeassistant.components.camera import async_get_image
+
+    image = await async_get_image(hass, entity_id, timeout=10, width=1280)
+    data = bytes(image.content)
+    mime = _text(image.content_type).split(";", 1)[0].lower()
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise RuntimeError("The camera returned an empty image or an image larger than 4 MB")
+    if mime not in _MIME_EXTENSIONS:
+        raise RuntimeError("The camera must return a JPEG, PNG, or WebP image")
+    return data, mime
+
+
+def normalize_monitor(value: Any, monitor_id: str = "") -> dict[str, Any]:
+    """Validate only the explicit camera, trigger, and destinations selected."""
+    source = normalize_camera_trigger(value)
     raw_destinations = value.get("destinations")
     if not isinstance(raw_destinations, list):
         raise ValueError("Choose at least one notification destination")
@@ -69,9 +89,7 @@ def normalize_monitor(value: Any, monitor_id: str = "") -> dict[str, Any]:
     return {
         "id": monitor_id or uuid.uuid4().hex,
         "name": _text(value.get("name"), 100) or "Camera monitor",
-        "camera_entity": camera,
-        "trigger_entity": trigger,
-        "trigger_value": condition,
+        **source,
         "destinations": destinations,
         "enabled": value.get("enabled", True) is True,
         "cooldown_seconds": cooldown,
@@ -273,18 +291,7 @@ class AwarenessCoordinator:
             self._tasks.pop(monitor_id, None)
 
     async def _capture(self, entity_id: str) -> tuple[bytes, str]:
-        from homeassistant.components.camera import async_get_image
-
-        image = await async_get_image(self.hass, entity_id, timeout=10, width=1280)
-        data = bytes(image.content)
-        mime = _text(image.content_type).split(";", 1)[0].lower()
-        if not data or len(data) > MAX_IMAGE_BYTES:
-            raise RuntimeError(
-                "The camera returned an empty image or an image larger than 4 MB"
-            )
-        if mime not in _MIME_EXTENSIONS:
-            raise RuntimeError("The camera must return a JPEG, PNG, or WebP image")
-        return data, mime
+        return await capture_camera_image(self.hass, entity_id)
 
     async def _describe(self, monitor: dict[str, Any], data: bytes, mime: str) -> str:
         prompt = (

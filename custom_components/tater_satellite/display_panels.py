@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from haffmpeg.camera import CameraMjpeg
@@ -68,6 +69,9 @@ class TaterDisplayPanelCoordinator:
         self.hass = manager.hass
         self._climate_unsubs: dict[str, Any] = {}
         self._camera_tasks: dict[str, asyncio.Task[None]] = {}
+        self._camera_popups: dict[str, tuple[str, str, float]] = {}
+        self._popup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._camera_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
     def climate_entity_id(runtime: SatelliteRuntime) -> str:
@@ -274,6 +278,9 @@ class TaterDisplayPanelCoordinator:
     async def _async_send_cameras(
         self, runtime: SatelliteRuntime, **kwargs: Any
     ) -> None:
+        popup = self._camera_popups.get(runtime.device_id)
+        if popup and kwargs.get("selected_id") == popup[1]:
+            kwargs.update(popup_id=popup[0], popup_expires_at=popup[2])
         await runtime.async_send(
             "display.cameras", cameras_payload(self._camera_rows(), **kwargs)
         )
@@ -422,6 +429,13 @@ class TaterDisplayPanelCoordinator:
     async def _async_select_camera(
         self, runtime: SatelliteRuntime, entity_id: str
     ) -> None:
+        async with self._camera_locks.setdefault(runtime.device_id, asyncio.Lock()):
+            await self._async_select_camera_locked(runtime, entity_id)
+
+    async def _async_select_camera_locked(
+        self, runtime: SatelliteRuntime, entity_id: str
+    ) -> None:
+        self._clear_popup(runtime.device_id)
         await self._async_stop_camera(runtime.device_id)
         if self.hass.states.get(entity_id) is None or not entity_id.startswith(
             "camera."
@@ -439,6 +453,63 @@ class TaterDisplayPanelCoordinator:
             )
         )
 
+    def _clear_popup(self, device_id: str) -> None:
+        self._camera_popups.pop(device_id, None)
+        task = self._popup_tasks.pop(device_id, None)
+        if task is not None:
+            task.cancel()
+
+    async def async_show_doorbell(
+        self, runtime: SatelliteRuntime, entity_id: str, popup_id: str, duration: int
+    ) -> None:
+        """Open an explicit camera and expire only the popup this call owns."""
+        async with self._camera_locks.setdefault(runtime.device_id, asyncio.Lock()):
+            await self._async_show_doorbell_locked(runtime, entity_id, popup_id, duration)
+
+    async def _async_show_doorbell_locked(
+        self, runtime: SatelliteRuntime, entity_id: str, popup_id: str, duration: int
+    ) -> None:
+        if not runtime.connected or not supports_display_cameras(runtime.capabilities):
+            raise RuntimeError("This satellite's camera screen is unavailable")
+        if not runtime.capabilities.get("screen_camera_popup_version"):
+            raise RuntimeError("Update this satellite's firmware for automatic doorbell cameras")
+        camera = self.hass.states.get(entity_id)
+        if not entity_id.startswith("camera.") or camera is None or camera.state in {"unavailable", "unknown"}:
+            raise ValueError("That doorbell camera is unavailable")
+        self._clear_popup(runtime.device_id)
+        await self._async_stop_camera(runtime.device_id)
+        lease = (popup_id, entity_id, time.time() + max(10, min(duration, 300)))
+        self._camera_popups[runtime.device_id] = lease
+        try:
+            sent = await runtime.async_send(
+                "display.cameras", cameras_payload(
+                    self._camera_rows(), selected_id=entity_id, loading=True,
+                    popup_id=popup_id, popup_expires_at=lease[2],
+                )
+            )
+            if not sent:
+                raise RuntimeError("The screen connection closed before delivery")
+            self._camera_tasks[runtime.device_id] = self.manager.entry.async_create_background_task(
+                self.hass, self._async_stream_camera(runtime, entity_id), f"tater_doorbell_camera_{runtime.device_id}"
+            )
+            self._popup_tasks[runtime.device_id] = self.manager.entry.async_create_background_task(
+                self.hass, self._async_expire_popup(runtime, lease), f"tater_doorbell_expiry_{runtime.device_id}"
+            )
+        except BaseException:
+            self._clear_popup(runtime.device_id)
+            raise
+
+    async def _async_expire_popup(self, runtime: SatelliteRuntime, lease: tuple[str, str, float]) -> None:
+        await asyncio.sleep(max(0, lease[2] - time.time()))
+        async with self._camera_locks.setdefault(runtime.device_id, asyncio.Lock()):
+            if self._camera_popups.get(runtime.device_id) != lease:
+                return
+            self._camera_popups.pop(runtime.device_id, None)
+            self._popup_tasks.pop(runtime.device_id, None)
+            await self._async_stop_camera(runtime.device_id)
+            if runtime.connected:
+                await self._async_send_cameras(runtime)
+
     # Routing and lifecycle
 
     async def async_handle_message(
@@ -453,16 +524,18 @@ class TaterDisplayPanelCoordinator:
             return True
         if not supports_display_cameras(runtime.capabilities):
             return True
-        if kind == "display.cameras.open":
-            await self._async_send_cameras(runtime)
-        elif kind == "display.camera.select":
+        if kind == "display.camera.select":
             await self._async_select_camera(runtime, _text(payload.get("camera_id")))
-        elif kind == "display.camera.close":
-            await self._async_stop_camera(runtime.device_id)
+        elif kind in {"display.cameras.open", "display.camera.close"}:
+            async with self._camera_locks.setdefault(runtime.device_id, asyncio.Lock()):
+                self._clear_popup(runtime.device_id)
+                await self._async_stop_camera(runtime.device_id)
+                await self._async_send_cameras(runtime)
         return True
 
     async def async_handle_disconnect(self, runtime: SatelliteRuntime) -> None:
         """Stop streams and state tracking for a disconnected satellite."""
+        self._clear_popup(runtime.device_id)
         unsub = self._climate_unsubs.pop(runtime.device_id, None)
         if unsub is not None:
             unsub()
@@ -470,6 +543,10 @@ class TaterDisplayPanelCoordinator:
 
     async def async_shutdown(self) -> None:
         """Stop every camera stream and state listener."""
+        tasks = list(self._popup_tasks.values())
+        for device_id in list(self._camera_popups):
+            self._clear_popup(device_id)
+        await asyncio.gather(*tasks, return_exceptions=True)
         for unsub in self._climate_unsubs.values():
             unsub()
         self._climate_unsubs.clear()

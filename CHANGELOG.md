@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.22
+
+- Add a Doorbell workspace in HA and Mini-Tater modes with independent press
+  trigger, camera, editable greeting instructions, and audio-capable HA media
+  player selections. Reuse shared Vision and the active mode's speech provider.
+- Optionally open the live camera immediately on compatible Show and Rook
+  satellites. Keep screen delivery independent of Vision/TTS, bound the display
+  duration, and preserve manual camera navigation and dismissal.
+- Add cooldowns, test controls, saved doorbells, and the last 50 activity results
+  with separate speaker and screen errors. Camera-only doorbells require no
+  Vision or TTS provider. Automatic camera opening requires updated Echo firmware
+  advertising the camera popup capability (Echo 5.0.4 or newer).
+
 ## 1.4.21
 
 - Preserve the first words spoken immediately after the wake word in Mini-Tater

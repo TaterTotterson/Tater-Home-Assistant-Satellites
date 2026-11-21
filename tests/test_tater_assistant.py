@@ -1692,15 +1692,17 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             tater, "_create_vad_backend", return_value=self._TestVad()
         ):
-            with self.assertRaisesRegex(RuntimeError, "No speech"):
-                async for _chunk in runtime._voice_activity_stream(
+            captured = [
+                chunk async for chunk in runtime._voice_activity_stream(
                     self._audio_stream(chunks),
                     {"rate": 16000, "width": 2, "channels": 1},
                     "default",
                     event_callback,
-                ):
-                    pass
+                )
+            ]
 
+        self.assertGreater(len(captured), 0)
+        self.assertLess(len(captured), len(chunks))
         self.assertEqual([name for name, _data in events], ["STT_VAD_END"])
 
     async def test_tater_voice_turn_runs_after_server_vad(self) -> None:

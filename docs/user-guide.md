@@ -187,9 +187,13 @@ does not move other Home Assistant devices, and existing entity IDs remain
 unchanged when a device is renamed. Older firmware retains room matching but
 cannot accept live name or room changes.
 
-Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
-native satellite knows when to stop streaming and begin transcription. It uses
+Tater mode automatically uses Home Assistant's built-in Neural Micro VAD to
+end command capture after speech. It uses
 the default endpoint timing automatically and exposes no Tater-mode VAD options.
+Command audio is forwarded to STT immediately after the firmware wake boundary,
+including while neural VAD initializes. VAD controls when capture ends; a short
+command is not discarded just because VAD never marked a speech start. Empty
+STT transcripts are still rejected before Hydra runs.
 
 Mini-Tater has eight built-in capabilities: `device_control`, `tater_vision`,
 `voicepe_remote_timer` (Timer), `todo_list`, `weather_forecast`, `broadcast`,

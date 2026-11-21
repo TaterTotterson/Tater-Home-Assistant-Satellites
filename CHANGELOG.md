@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.21
+
+- Preserve the first words spoken immediately after the wake word in Mini-Tater
+  mode. Forward post-boundary audio to STT while neural VAD initializes, following
+  HA's Assist stream, instead of dropping audio from a short speech-start buffer.
+- Close no-speech captures cleanly so STT can finish short commands that VAD did
+  not classify, while retaining capture limits and empty-transcript rejection.
+
 ## 1.4.20
 
 - Fix Mini-Tater continued conversation by checking whether the final reply

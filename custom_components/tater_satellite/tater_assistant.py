@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-from collections import deque
 import importlib
 import io
 import json
@@ -67,7 +66,6 @@ MAX_VISION_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_VISION_TOTAL_BYTES = 12 * 1024 * 1024
 MAX_TATER_VISION_CAMERAS = 6
 VISION_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-VAD_PRE_ROLL_SECONDS = 0.4
 VAD_SPEECH_START_SECONDS = 0.06
 VAD_NO_SPEECH_SECONDS = 3.5
 VAD_MAX_UTTERANCE_SECONDS = 8.5
@@ -3386,7 +3384,13 @@ class MiniTaterRuntime:
         sensitivity: str,
         event_callback,
     ) -> AsyncGenerator[bytes]:
-        """Yield one utterance and close capture using Home Assistant's neural VAD."""
+        """Forward command audio immediately; use HA's neural VAD to end capture.
+
+        microVAD needs initial audio before it can return any score. Just as
+        HA's Assist stream does, send that audio to STT instead of keeping a
+        short speech-start buffer that can discard the first spoken words.
+        The firmware boundary gate has already removed the wake pre-roll.
+        """
         values = audio_format if isinstance(audio_format, dict) else {}
         rate = _bounded_int(values.get("rate"), 16000, 8000, 48000)
         width = _bounded_int(values.get("width"), 2, 1, 4)
@@ -3397,8 +3401,6 @@ class MiniTaterRuntime:
             VAD_END_SILENCE_SECONDS["default"],
         )
         frame_bytes = width * channels
-        pending: deque[tuple[bytes, float]] = deque()
-        pending_seconds = 0.0
         total_seconds = 0.0
         speech_candidate_seconds = 0.0
         trailing_silence_seconds = 0.0
@@ -3421,12 +3423,6 @@ class MiniTaterRuntime:
                 speech_probability = backend.process(chunk)
 
                 if not speech_started:
-                    pending.append((chunk, chunk_seconds))
-                    pending_seconds += chunk_seconds
-                    while pending and pending_seconds > VAD_PRE_ROLL_SECONDS:
-                        _old_chunk, old_seconds = pending.popleft()
-                        pending_seconds -= old_seconds
-
                     if speech_probability is not None:
                         if speech_probability >= 0.2:
                             speech_candidate_seconds += chunk_seconds
@@ -3436,30 +3432,20 @@ class MiniTaterRuntime:
                     if speech_candidate_seconds >= VAD_SPEECH_START_SECONDS:
                         speech_started = True
                         await event_callback("STT_VAD_START", {})
-                        while pending:
-                            buffered, _duration = pending.popleft()
-                            yield buffered
-                        pending_seconds = 0.0
-                    elif total_seconds >= VAD_NO_SPEECH_SECONDS:
-                        break
-                    continue
-
-                yield chunk
-                if speech_probability is not None:
+                elif speech_probability is not None:
                     if speech_probability >= 0.5:
                         trailing_silence_seconds = 0.0
                     else:
                         trailing_silence_seconds += chunk_seconds
-                if (
-                    trailing_silence_seconds >= end_silence
-                    or total_seconds >= VAD_MAX_UTTERANCE_SECONDS
+                yield chunk
+                if not speech_started and total_seconds >= VAD_NO_SPEECH_SECONDS:
+                    break
+                if speech_started and (
+                    trailing_silence_seconds >= end_silence or total_seconds >= VAD_MAX_UTTERANCE_SECONDS
                 ):
                     break
         finally:
             await end_vad()
-
-        if not speech_started:
-            raise RuntimeError("No speech was detected")
 
     async def _transcribe_wyoming(
         self,

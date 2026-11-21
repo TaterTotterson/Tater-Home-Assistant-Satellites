@@ -17,6 +17,7 @@ from typing import Any
 TIMER_TOOL_ID = "voicepe_remote_timer"
 TIMER_VERBA_DESCRIPTION = (
     "Use this for normal timer requests. Set, start, create, cancel, stop, silence, snooze, or check multiple named timers from one natural-language request. "
+    "Pause, resume, and add or remove time from existing timers. "
     "Examples: set a pasta timer for 5 minutes; start a 90 second timer; how much time is left on the pasta timer; cancel the 10 minute timer."
 )
 MAX_TIMER_SECONDS = 7200
@@ -196,6 +197,9 @@ class TimerTool:
         if failure:
             return failure
         action, duration = self._resolve_action_duration({"query": query})
+        paused = self.manager.data.get("tater_paused_timers", {}).get(runtime.device_id, {})
+        if action in {"pause", "resume", "increase", "decrease"} or (paused and action in {"status", "cancel"}):
+            return await self._extended(runtime, query, action)
         if action not in {"start", "status", "cancel", "snooze"}:
             return self._failure(
                 "Would you like to start, check, cancel, or snooze a timer?",
@@ -333,10 +337,102 @@ class TimerTool:
             "say_hint": "Report the verified timer result naturally, with the name, duration or time left, and satellite when helpful.",
         }
 
+    async def _extended(self, runtime, query: str, action: str) -> dict[str, Any]:
+        """Use existing confirmed clear/arm commands; paused snapshots live in HA."""
+        if re.search(r"(?<!\w)-\s*\d|\b(?:negative|minus)\s+", query, re.I):
+            return self._failure("Use a positive amount of time to add or remove.", code="invalid_duration")
+        try:
+            response = await runtime.async_request("timer.list", {}, timeout=3.0)
+            if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("timers"), list):
+                return self._failure("The satellite did not return its live timers.")
+            stored = self.manager.data.get("tater_paused_timers", {}).get(runtime.device_id, {})
+            live = {row["id"]: row for raw in response["timers"] if isinstance(raw, dict) and (row := self._public_timer(raw))["id"]}
+            combined = {**stored, **live}
+            if action in {"increase", "decrease"}:
+                by = re.split(r"\bby\s+", query, maxsplit=1, flags=re.I)
+                parts = re.split(r"\b(?:to|from)\s+(?:(?:the|my)\s+)?", query, maxsplit=1, flags=re.I)
+                amount = self._parse_duration_to_seconds(by[1] if len(by) == 2 else parts[0], MAX_TIMER_SECONDS)
+                if amount <= 0:
+                    return self._failure("How much time should I add or remove?")
+                reference = by[0] if len(by) == 2 else parts[1] if len(parts) == 2 else query
+                reference = re.sub(r"\b(?:add|increase|extend|remove|decrease|subtract|shorten)\b", "", reference, flags=re.I)
+                name = self._clean_timer_name(reference)
+                original = self._parse_duration_to_seconds(reference, MAX_TIMER_SECONDS) if len(by) == 2 or len(parts) == 2 else 0
+            else:
+                amount = 0
+                reference = re.sub(r"^\s*(?:pause|resume|unpause)\s+", "", query, flags=re.I)
+                name = self._clean_timer_name(reference) if action in {"pause", "resume"} else self._extract_timer_name({"query": query}, action)
+                original = self._parse_duration_to_seconds(reference, MAX_TIMER_SECONDS)
+            if name in {"all", "every", "running", "active"}:
+                name = ""
+            rows = [row for row in combined.values() if (not name or row["name"].casefold() == name.casefold()) and (not original or row["original_duration_s"] == original)]
+            if action == "status":
+                return {"ok": True, "data": {"timers": rows}, "summary_for_user": "; ".join(self._timer_status(row) for row in rows) + "." if rows else "No matching timer is currently running."}
+            all_requested = bool(re.search(r"\b(?:all|every)\b.*\btimers?\b", query, re.I))
+            if not rows:
+                return self._failure("No matching timer is currently running.", code="timer_not_found")
+            if len(rows) != 1 and not (action == "cancel" and all_requested):
+                return self._failure("More than one timer matches. Name the timer or its original duration.", code="ambiguous_timer")
+            changed = []
+            paused = self.manager.data.setdefault("tater_paused_timers", {}).setdefault(runtime.device_id, {})
+            for row in rows:
+                timer_id = row["id"]
+                if action == "cancel" and timer_id not in live:
+                    paused.pop(timer_id, None)
+                    changed.append(row)
+                    await self.manager.async_save()
+                    continue
+                if action == "pause":
+                    if row["state"] == "paused":
+                        return self._failure("That timer is already paused.")
+                    if row["state"] == "ringing":
+                        return self._failure("That timer is already ringing. Cancel or snooze it instead.")
+                    reply = await runtime.async_request("timer.cancel", {"id": timer_id}, timeout=3.0)
+                    if not isinstance(reply, dict) or reply.get("ok") is not True or int(reply.get("affected") or reply.get("cancelled") or 0) < 1:
+                        return self._failure("The satellite did not confirm the pause.")
+                    row = {**row, "state": "paused"}
+                    paused[timer_id] = row
+                elif action == "cancel":
+                    reply = await runtime.async_request("timer.cancel", {"id": timer_id}, timeout=3.0)
+                    if not isinstance(reply, dict) or reply.get("ok") is not True or int(reply.get("affected") or reply.get("cancelled") or 0) < 1:
+                        return self._failure("The satellite did not confirm the cancellation.")
+                    paused.pop(timer_id, None)
+                else:
+                    if action == "resume" and row["state"] != "paused":
+                        return self._failure("That timer is already running.")
+                    remaining = row["remaining_s"] + (amount if action == "increase" else -amount if action == "decrease" else 0)
+                    if not 0 < remaining <= MAX_TIMER_SECONDS:
+                        return self._failure("The resulting timer duration must be greater than zero and at most two hours.")
+                    row = {**row, "remaining_s": remaining}
+                    if row["state"] == "paused" and action != "resume":
+                        paused[timer_id] = row
+                    else:
+                        payload = {"id": timer_id, "name": row["name"], "duration_ms": remaining * 1000, "remaining_ms": remaining * 1000, "original_duration_ms": row["original_duration_s"] * 1000, "source": "mini_tater"}
+                        reply = await runtime.async_request("timer.arm", payload, timeout=3.0)
+                        confirmed = reply.get("timer") if isinstance(reply, dict) else None
+                        if not isinstance(reply, dict) or reply.get("ok") is not True or not isinstance(confirmed, dict) or str(confirmed.get("id") or confirmed.get("timer_id")) != timer_id:
+                            return self._failure("The satellite did not confirm the timer update. Its outcome is unknown; check the timer before retrying.")
+                        row = self._public_timer(confirmed)
+                        paused.pop(timer_id, None)
+                changed.append(row)
+                # Persist each confirmed change, including progress through a
+                # cancel-all request if a later satellite acknowledgement fails.
+                await self.manager.async_save()
+            verb = {"pause": "Paused", "resume": "Resumed", "increase": "Added time to", "decrease": "Removed time from", "cancel": "Cancelled"}[action]
+            return {"ok": True, "data": {"timers": changed}, "summary_for_user": f"{verb} {len(changed)} timer(s) on {runtime.name}."}
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            return self._failure("The satellite did not confirm the timer change. Check its timers before retrying.", code="timer_timeout")
+        except Exception as err:
+            return self._failure(f"The timer change could not be confirmed: {err}")
+
     def _timer_status(self, timer: dict[str, Any]) -> str:
         label = timer["name"] + " timer" if timer["name"] else self._format_remaining(timer["original_duration_s"]) + " timer"
         return (
-            f"The {label} is ringing"
+            f"The {label} is paused with {self._format_remaining(timer['remaining_s'])} left"
+            if timer["state"] == "paused"
+            else f"The {label} is ringing"
             if timer["state"] == "ringing"
             else f"The {label} has {self._format_remaining(timer['remaining_s'])} left"
         )
@@ -692,7 +788,15 @@ class TimerTool:
             return action, ""
 
         if not action:
-            if re.search(r"\bsnooze\b", merged):
+            if re.search(r"\b(unpause|resume)\b", merged):
+                action = "resume"
+            elif re.search(r"\bpause\b", merged):
+                action = "pause"
+            elif re.search(r"\b(add|increase|extend)\b", merged):
+                action = "increase"
+            elif re.search(r"\b(remove|decrease|subtract|shorten)\b", merged):
+                action = "decrease"
+            elif re.search(r"\bsnooze\b", merged):
                 action = "snooze"
             elif re.search(r"\b(cancel|stop|clear|end|silence|dismiss)\b", merged):
                 action = "cancel"

@@ -1089,6 +1089,7 @@ class TaterSatelliteManager:
     async def async_shutdown(self) -> None:
         """Close all device connections."""
         self._shutting_down = True
+        self.tater_assistant.shutdown()
         await self.awareness.async_shutdown()
         await self.bluetooth.async_shutdown()
         await self.sat_chat.async_shutdown()

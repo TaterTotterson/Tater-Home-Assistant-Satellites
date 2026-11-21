@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.4.20
+
+- Fix Mini-Tater continued conversation by checking whether the final reply
+  asks for an answer, following Tater's bounded follow-up classifier. Respect
+  each satellite's Continued conversation and microphone-mute settings, preserve
+  the conversation ID, and reopen only after successful firmware playback. Keep
+  HA mode using the selected conversation agent's continuation flag.
+- Give every Mini-Tater Hydra model request the current Home Assistant date,
+  time, and timezone, following Tater's live-clock prompt.
+- Add natural-language shopping/to-do list, HA weather and forecast, broadcast,
+  music search/playback, and delayed device-action tools using the existing
+  three-head Hydra flow and Shop Verbas as references. Keep tool descriptions
+  in Astraeus's catalog and pass each locked NL query unchanged to Thanatos's
+  selected tool.
+- Use existing HA lists, weather integrations, Music Assistant or searchable
+  media players, and announcement satellites. Recheck the selected Assist scope
+  before changes and report unavailable targets and partial failures.
+- Save delayed actions with fixed targets across restarts, support listing and
+  cancellation, and avoid replaying actions missed by more than a minute or
+  retrying interrupted actions with unknown outcomes.
+- Extend device control to floors, thermostat fan modes, mower start/dock,
+  relative volume/mute, and compatible vacuum area cleaning.
+- Add confirmed timer pause/resume and time adjustments using existing satellite
+  commands. Store paused remaining time in HA; running timers remain local to
+  satellites. Update Home tools in the existing workspace style and document
+  provider requirements. Home Assistant mode remains the default pipeline.
+- Move Home Assistant device control to the bottom of Home tools with its
+  Available now entity list directly underneath. Preserve scope selection and
+  save controls.
+- Simplify the README setup steps and move detailed feature instructions into
+  the linked user guide.
+
 ## 1.4.19
 
 - Add explicit 15-second Bluetooth discovery and Stop controls. Reading the panel

@@ -839,6 +839,10 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
                 "key": "continued_chat",
                 "label": "Continued conversation",
                 "type": "boolean",
+                "description": (
+                    "Reopen the microphone after a reply needs an answer. Home Assistant's "
+                    "agent requests follow-ups in HA mode; Mini-Tater checks its own replies."
+                ),
             },
             {
                 "key": "barge_in_enabled",

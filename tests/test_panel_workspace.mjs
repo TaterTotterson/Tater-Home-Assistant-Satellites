@@ -108,7 +108,7 @@ test('Home Assistant is default and hides Tater-only navigation until selected',
   assert.equal(panel._tab, 'assistant');
 });
 
-test('mini Tater pages retain the complete pipeline, all three tools, and Hydra controls', () => {
+test('mini Tater pages retain the complete pipeline, built-in tools, and Hydra controls', () => {
   const panel = fixture();
   let assistant = panel.renderAssistantChoice();
   assert.match(assistant, /Home Assistant[\s\S]*Mini version of Tater[\s\S]*Mini-Tater/i);
@@ -123,7 +123,15 @@ test('mini Tater pages retain the complete pipeline, all three tools, and Hydra 
   panel.prepareDeviceDraft('one');
   panel._deviceSection = 'voice';
   assert.doesNotMatch(panel.renderDeviceEditor(panel._data.devices[0]), /End-of-speech sensitivity|data-special="vad"/);
-  assert.match(panel.renderHomeControl(), /Three built-in capabilities[\s\S]*Use for any request to control or check smart-home devices[\s\S]*device_control[\s\S]*Exposed to Assist[\s\S]*All HA entities[\s\S]*Tater Vision is Tater's visual-question tool[\s\S]*tater_vision[\s\S]*Use this for normal timer requests[\s\S]*voicepe_remote_timer/);
+  assert.match(panel.renderHomeControl(), /Tater Vision is Tater's visual-question tool[\s\S]*tater_vision[\s\S]*Use this for normal timer requests[\s\S]*voicepe_remote_timer[\s\S]*Built-in Home Assistant capabilities[\s\S]*Use for any request to control or check smart-home devices[\s\S]*device_control[\s\S]*Exposed to Assist[\s\S]*All HA entities[\s\S]*Available now[\s\S]*2 entities across 1 areas[\s\S]*Save home tools/);
+  panel._data.tater_assistant.built_in_tools = [
+    {id:'todo_list',description:'Manage HA lists'}, {id:'weather_forecast',description:'Read HA weather'},
+    {id:'broadcast',description:'Spoken announcements'}, {id:'music_assistant',description:'Music playback'},
+    {id:'schedule_home',description:'Delayed device actions'},
+  ];
+  const tools = panel.renderHomeControl();
+  for (const id of ['todo_list','weather_forecast','broadcast','music_assistant','schedule_home']) assert.match(tools, new RegExp(id));
+  assert.match(tools, /Home Assistant clock[\s\S]*configured timezone/);
   panel._hydraSection = 'behavior';
   assert.match(panel.renderHydra(), /Maximum ledger items[\s\S]*Astraeus second plan check/);
 });

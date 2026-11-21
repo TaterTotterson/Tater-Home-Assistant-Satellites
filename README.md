@@ -28,7 +28,8 @@ the Tater Assistant add-on is not required.
   display, and night settings.
 - **Bluetooth:** discover and connect supported Bluetooth devices through a satellite.
 - **Optional Tater mode:** use your own language and speech models for voice
-  conversations, home control, and camera questions.
+  conversations, home control, camera questions, HA lists and weather, music,
+  spoken announcements, and delayed device actions.
 
 Available features depend on the satellite's hardware and firmware.
 

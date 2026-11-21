@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,14 +32,17 @@ class Satellite:
         self.calls.append((command, payload, kwargs))
         if self.error:
             raise self.error
-        if command == "timer.start":
+        if command in {"timer.start", "timer.arm"}:
             timer = {**payload, "state": "armed", "remaining_ms": payload["duration_ms"]}
+            self.timers = [row for row in self.timers if row["id"] != payload["id"]]
             self.timers.append(timer)
             return {"ok": True, "timer": timer}
         if command == "timer.list":
             return {"ok": True, "timers": self.timers}
         selected = self.timers
         if not payload.get("all"):
+            if payload.get("id"):
+                selected = [row for row in selected if row["id"] == payload["id"]]
             if payload.get("name"):
                 selected = [row for row in selected if row["name"] == payload["name"]]
             if payload.get("original_duration_ms"):
@@ -62,6 +66,7 @@ class MiniTimerTests(unittest.IsolatedAsyncioTestCase):
         self.satellite = Satellite()
         self.other = Satellite("sat-2", "Office Echo", "Office")
         self.manager = SimpleNamespace(runtimes={"sat-1": self.satellite, "sat-2": self.other}, data={})
+        self.manager.async_save = AsyncMock()
         self.tool = timer_module.TimerTool(self.manager)
 
     async def call(self, query, device_id="sat-1"):
@@ -76,6 +81,7 @@ class MiniTimerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             definition["description"],
             "Use this for normal timer requests. Set, start, create, cancel, stop, silence, snooze, or check multiple named timers from one natural-language request. "
+            "Pause, resume, and add or remove time from existing timers. "
             "Examples: set a pasta timer for 5 minutes; start a 90 second timer; how much time is left on the pasta timer; cancel the 10 minute timer.",
         )
 
@@ -270,6 +276,76 @@ class MiniTimerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["timers"], [])
         self.assertFalse((await self.call("cancel the pasta timer"))["ok"])
+
+    async def test_pause_survives_tool_recreation_and_resume_preserves_timer_id(self):
+        await self.call("set a pasta timer for five minutes")
+        await self.call("set a tea timer for two minutes")
+        original = self.satellite.timers[0]["id"]
+        self.satellite.timers[0]["remaining_ms"] = 120000
+        result = await self.call("pause the pasta timer")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([row["name"] for row in self.satellite.timers], ["tea"])
+        self.tool = timer_module.TimerTool(self.manager)
+        status = await self.call("check the pasta timer")
+        self.assertEqual(status["data"]["timers"][0]["state"], "paused")
+        result = await self.call("resume the pasta timer")
+        self.assertTrue(result["ok"], result)
+        pasta = next(row for row in self.satellite.timers if row["name"] == "pasta")
+        self.assertEqual(pasta["id"], original)
+        self.assertEqual(pasta["remaining_ms"], 120000)
+        self.assertEqual(pasta["original_duration_ms"], 300000)
+        self.assertEqual(self.manager.data["tater_paused_timers"]["sat-1"], {})
+
+    async def test_adjust_running_and_paused_timer_without_starting_paused_timer(self):
+        await self.call("set a pasta timer for five minutes")
+        result = await self.call("add two minutes to the pasta timer")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.satellite.timers[0]["remaining_ms"], 420000)
+        self.assertEqual(self.satellite.timers[0]["original_duration_ms"], 300000)
+        result = await self.call("shorten the pasta timer by one minute")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.satellite.timers[0]["remaining_ms"], 360000)
+        self.assertTrue((await self.call("pause the pasta timer"))["ok"])
+        result = await self.call("remove one minute from the pasta timer")
+        self.assertTrue(result["ok"], result)
+        paused = next(iter(self.manager.data["tater_paused_timers"]["sat-1"].values()))
+        self.assertEqual(paused["remaining_s"], 300)
+        self.assertEqual(self.satellite.timers, [])
+        self.assertEqual(self.satellite.calls[-1][0], "timer.list")
+
+    async def test_ambiguous_adjustment_and_invalid_duration_do_not_mutate(self):
+        await self.call("set a pasta timer for five minutes")
+        await self.call("set a tea timer for five minutes")
+        result = await self.call("add two minutes to the timer")
+        self.assertEqual(result["code"], "ambiguous_timer")
+        result = await self.call("remove ten minutes from the pasta timer")
+        self.assertFalse(result["ok"])
+        result = await self.call("add -5 minutes to the pasta timer")
+        self.assertEqual(result["code"], "invalid_duration")
+        self.assertEqual([row["remaining_ms"] for row in self.satellite.timers], [300000, 300000])
+
+    async def test_cancel_all_includes_paused_and_live_timers(self):
+        await self.call("set a pasta timer for five minutes")
+        await self.call("set a tea timer for two minutes")
+        await self.call("pause the pasta timer")
+        result = await self.call("cancel all my timers")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.satellite.timers, [])
+        self.assertEqual(self.manager.data["tater_paused_timers"]["sat-1"], {})
+
+    async def test_pause_timeout_does_not_store_unconfirmed_paused_timer(self):
+        await self.call("set a pasta timer for five minutes")
+        request = self.satellite.async_request
+
+        async def timeout(command, *args, **kwargs):
+            if command == "timer.cancel":
+                raise asyncio.TimeoutError()
+            return await request(command, *args, **kwargs)
+
+        self.satellite.async_request = timeout
+        result = await self.call("pause the pasta timer")
+        self.assertEqual(result["code"], "timer_timeout")
+        self.assertFalse(self.manager.data.get("tater_paused_timers", {}).get("sat-1"))
 
 
 if __name__ == "__main__":

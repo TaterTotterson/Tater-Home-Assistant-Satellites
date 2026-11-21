@@ -170,6 +170,14 @@ such as "turn on the lights" use that room unless the user names another room
 or a specific device. Each turn reads the room again; management chat has no
 assumed room, and an unassigned satellite never supplies a guessed location.
 
+**Continued conversation** works with both modes when enabled on the satellite.
+In Home Assistant mode, the selected conversation agent must request a follow-up.
+In Mini-Tater mode, a short model check follows Tater's approach: reopen after a
+direct question or invitation to answer, not after an ordinary confirmation.
+The satellite reopens after successful reply playback and keeps the conversation
+ID. A failed or timed-out follow-up check leaves the microphone closed without
+preventing the reply from playing.
+
 The satellite's confirmed saved room remains the source of truth. On updated
 firmware, an explicit HA area assignment or area rename is saved onto the
 satellite. If saving fails, the bridge restores the last confirmed assignment.
@@ -183,15 +191,51 @@ Tater mode automatically uses Home Assistant's built-in Neural Micro VAD so a
 native satellite knows when to stop streaming and begin transcription. It uses
 the default endpoint timing automatically and exposes no Tater-mode VAD options.
 
-Mini Tater has three built-in capabilities: `device_control`, `tater_vision`, and
-`voicepe_remote_timer` (Timer).
+Mini-Tater has eight built-in capabilities: `device_control`, `tater_vision`,
+`voicepe_remote_timer` (Timer), `todo_list`, `weather_forecast`, `broadcast`,
+`music_assistant`, and `schedule_home`.
 Astraeus receives the same kind of stable tool catalog used by Tater, plans
 atomic natural-language steps, and Thanatos passes each locked step unchanged as
 `query` to the selected tool. Device control interprets actions and values,
-resolves Home Assistant friendly names, aliases, rooms, and supported services,
+resolves Home Assistant friendly names, aliases, rooms, floors, and supported services,
 and rechecks entity scope before execution. Deterministic parsing runs first;
 unclear wording or ambiguous names can use a bounded Thanatos model call like
 Tater's Device Control Verba.
+
+Every model request receives the current date, time, and timezone from Home
+Assistant, following Tater's live-clock prompt. Date and time questions need no
+additional tool or setting. All three Hydra roles receive this clock, including
+when Beast Mode uses separate models.
+
+The additional tools follow the Shop Verbas' natural-language approach while
+using Home Assistant's configured integrations:
+
+- **Shopping & to-do lists:** read pending items, add items, mark them complete,
+  or remove them. Name a list when more than one could match. Changes are saved
+  to the actual HA list; duplicate item names require clarification.
+- **Weather:** read current conditions or daily, hourly, or twice-daily forecasts
+  when the selected HA weather integration provides them. No additional weather
+  account is needed. A location must match a configured weather entity.
+- **Spoken announcements:** explicitly ask to broadcast a message to a named
+  room/satellite or everywhere. Tater satellites use Mini-Tater's configured
+  voice; other exposed HA announcement satellites use their configured pipeline.
+  Offline or failed destinations are reported.
+- **Music & playback:** play or queue named media through Music Assistant or a
+  HA player that supports media search. Pause, resume, skip, stop, mute, and
+  adjust volume. Name the player/room in chat; satellite requests can use their
+  assigned room. Available actions depend on the selected player.
+- **Delayed device actions:** for example, “turn off the office lights in five
+  minutes.” Ask to list or cancel pending actions. Scheduling keeps the resolved
+  device targets, saves the job in HA, and checks the selected entity scope again
+  before running. Pending jobs survive HA restarts; jobs more than a minute late
+  after an outage are marked missed instead of replayed. An interrupted action
+  with an unknown outcome is not retried automatically. Actions may be scheduled
+  up to seven days ahead, with at most 50 pending jobs.
+
+Device control also supports thermostat fan modes, mower start/dock, relative
+speaker volume and mute, and vacuum cleaning of named HA areas on compatible
+devices. Vacuum room cleaning uses HA's cleaning-area action, so the vacuum must
+support that action and the requested areas.
 
 Tater Vision mirrors the Tater Shop Verba for current visual questions. It can
 resolve a named Home Assistant camera, room, outdoor area, or the asking
@@ -200,8 +244,9 @@ Vision setting from the shared **Vision** workspace. **Same as Base** uses the B
 model, and key; the dedicated option uses the existing separate Vision endpoint,
 model, and key. Raw camera images are not stored in conversation history or the
 Hydra ledger. Mini Tater does not load Cores, Portals, Shop items, downloaded
-Verbas, web tools, file tools, or messaging tools. Under **Home tools**, choose
-entities exposed to Assist or all supported Home Assistant entities.
+Verbas, web tools, file tools, or external messaging tools. Under **Home tools**,
+choose entities exposed to Assist or all supported Home Assistant entities. The
+scope applies to lists, weather, media players, and other HA entity targets too.
 
 The **Hydra** workspace shows conversation counts, Astraeus plans and reviews,
 Thanatos actions, Hermes responses, timing, and bounded conversation history.
@@ -213,10 +258,14 @@ context first, then the request continues through the normal audited Hydra flow;
 raw image data is never written to conversation history or the Hydra ledger.
 
 **Timer** follows the Tater Shop Verba's description and natural-language `query`
-contract. Ask to start named timers, check time remaining, cancel or silence an
-alarm, or snooze (five minutes by default). The satellite owns the timer state,
-countdown, and alarm, so it continues while disconnected; the bridge queries
-live state and does not restore or reset timers on reconnect. Start durations
+contract. Ask to start named timers, check time remaining, pause/resume, add or
+remove time, cancel or silence an alarm, or snooze (five minutes by default).
+The satellite owns running countdowns and alarms, so they continue while
+disconnected; the bridge queries live state without resetting running timers
+on reconnect. Pausing confirms removal of the running satellite timer and saves
+its remaining time in HA; resuming confirms rearming the same timer. Paused timers
+remain paused across HA restarts and require HA and the satellite online to
+resume. Start durations and adjusted remaining time
 are capped at two hours, matching the Verba default. Voice requests use the
 asking satellite; in management chat, name the destination satellite or room.
 When a room or timer selection is ambiguous, Mini-Tater asks which one to use.

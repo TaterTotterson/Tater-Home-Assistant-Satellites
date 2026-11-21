@@ -957,7 +957,7 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
         runtime = tater.MiniTaterRuntime(_Manager())
         prompt = runtime._astraeus_prompt()
 
-        self.assertIn('"available_tool_ids":["device_control","tater_vision","voicepe_remote_timer"]', prompt)
+        self.assertIn('"available_tool_ids":' + json.dumps(list(tater.MINI_TATER_TOOL_IDS), separators=(",", ":")), prompt)
         self.assertIn('"id":"device_control","description"', prompt)
         self.assertIn('"id":"tater_vision","description"', prompt)
         self.assertNotIn('"usage"', prompt)
@@ -1736,6 +1736,7 @@ class MiniHydraTests(unittest.IsolatedAsyncioTestCase):
             record={"vad_sensitivity": "default"},
             device_id="satellite-1",
             server_base_url="http://ha.test:8123",
+            effective_settings=lambda: {"continued_chat": False},
         )
 
         with patch.object(

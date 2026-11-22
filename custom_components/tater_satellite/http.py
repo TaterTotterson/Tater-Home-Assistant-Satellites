@@ -381,6 +381,24 @@ class TrainerSettingsView(HomeAssistantView):
         return self.json({"ok": True, "settings": saved})
 
 
+class WakeArbitrationSettingsView(HomeAssistantView):
+    """Manage bridge-side wake selection in either assistant mode."""
+
+    url = f"{API_BASE_PATH}/settings/arbitration"
+    name = "api:tater_satellite:settings_arbitration"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        """Persist host settings; no firmware update or settings push needed."""
+        body = await _json_body(request)
+        values = body.get("settings", body)
+        try:
+            saved = await _manager(request).async_set_wake_arbitration_settings(values)
+        except (ValueError, RuntimeError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "settings": saved})
+
+
 class WakeVerifierSettingsView(HomeAssistantView):
     """Manage STT wake-check settings."""
 
@@ -879,6 +897,7 @@ VIEWS = (
     TaterSpeechAudioView,
     TrainerSettingsView,
     WakeVerifierSettingsView,
+    WakeArbitrationSettingsView,
     SharedWakeSettingsView,
     WakeFamilySettingsView,
     DeviceSettingsView,

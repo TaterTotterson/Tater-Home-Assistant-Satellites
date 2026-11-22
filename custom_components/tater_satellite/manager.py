@@ -98,6 +98,11 @@ from .settings import (
     wake_family_for,
 )
 from .trainer import TrainerLinkManager
+from .wake_arbitration import (
+    SETTINGS_FIELDS as WAKE_ARBITRATION_FIELDS,
+    WakeArbitrator,
+    normalize_settings as normalize_arbitration_settings,
+)
 from .wake_bundle import parse_wake_bundle
 from .wake_verifier import (
     async_verify_packet,
@@ -653,6 +658,7 @@ class SatelliteRuntime:
         # the Assist entity to idle. Announcements have their own waiter and the
         # base AssistSatelliteEntity updates state after async_announce returns.
         if not resolved_waiter and self.assist_entity is not None:
+            self.assist_entity.voice_playback_finished()
             with contextlib.suppress(Exception):
                 self.assist_entity.tts_response_finished()
         self.notify()
@@ -866,6 +872,7 @@ class TaterSatelliteManager:
         self.display_panels = TaterDisplayPanelCoordinator(self)
         self.bluetooth = TaterBluetoothProxyManager(self)
         self.tater_assistant = MiniTaterRuntime(self)
+        self.wake_arbitrator = WakeArbitrator()
         self.awareness = AwarenessCoordinator(self)
         self.doorbell = DoorbellCoordinator(self)
         self._save_lock = asyncio.Lock()
@@ -1096,6 +1103,7 @@ class TaterSatelliteManager:
     async def async_shutdown(self) -> None:
         """Close all device connections."""
         self._shutting_down = True
+        self.wake_arbitrator.shutdown()
         self.tater_assistant.shutdown()
         await self.doorbell.async_shutdown()
         await self.awareness.async_shutdown()
@@ -1118,6 +1126,24 @@ class TaterSatelliteManager:
         """Persist manager data."""
         async with self._save_lock:
             await self.store.async_save(self.data)
+
+    def wake_arbitration_settings(self) -> dict[str, Any]:
+        """Return bridge-only arbitration settings, separate from firmware."""
+        return normalize_arbitration_settings(self.data.get("wake_arbitration"))
+
+    async def async_set_wake_arbitration_settings(
+        self, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Validate and persist settings without sending anything to satellites."""
+        # Validate the patch before merging so malformed requests cannot erase
+        # existing settings or introduce arbitrary firmware/provider options.
+        normalize_arbitration_settings(values, strict=True)
+        settings = normalize_arbitration_settings(
+            {**self.wake_arbitration_settings(), **values}, strict=True
+        )
+        self.data["wake_arbitration"] = settings
+        await self.async_save()
+        return settings
 
     def public_base_url(self) -> str:
         """Return the local Home Assistant URL satellites should use."""
@@ -2870,6 +2896,11 @@ class TaterSatelliteManager:
             "intercom": self.intercom.snapshot(),
             "sat_chat": self.sat_chat.snapshot(),
             "tater_assistant": self.tater_assistant.snapshot(),
+            "wake_arbitration": {
+                "settings": self.wake_arbitration_settings(),
+                "fields": WAKE_ARBITRATION_FIELDS,
+                **self.wake_arbitrator.snapshot(),
+            },
             "awareness": self.awareness.snapshot(),
             "doorbell": self.doorbell.snapshot(),
             "bluetooth": self.bluetooth.snapshot(),

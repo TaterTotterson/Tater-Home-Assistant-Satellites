@@ -32,9 +32,18 @@ class PanelWorkspaceTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("workspace_settings", ROOT / "custom_components/tater_satellite/settings.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        # Read the host-only schema without importing Home Assistant.
+        source = ast.parse((ROOT / "custom_components/tater_satellite/wake_arbitration.py").read_text())
+        fields = {
+            node.targets[0].id: ast.literal_eval(node.value)
+            for node in source.body if isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in {"DEFAULT_SETTINGS", "SETTINGS_FIELDS"}
+        }
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory) / "settings.json"
-            fixture.write_text(json.dumps({"schema": module.SETTINGS_SCHEMA, "defaults": module.DEFAULT_SETTINGS}))
+            fixture.write_text(json.dumps({"schema": module.SETTINGS_SCHEMA, "defaults": module.DEFAULT_SETTINGS,
+                                           "arbitration": {"settings": fields["DEFAULT_SETTINGS"], "fields": fields["SETTINGS_FIELDS"]}}))
             result = subprocess.run(
                 ["node", str(ROOT / "tests/test_panel_workspace.mjs"), str(ROOT / "custom_components/tater_satellite/frontend/tater-satellite-panel.js"), str(fixture)],
                 capture_output=True, text=True, cwd=ROOT, check=False,

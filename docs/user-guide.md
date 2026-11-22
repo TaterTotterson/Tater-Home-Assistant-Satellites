@@ -18,6 +18,7 @@ For a quick start, return to the [README](../README.md).
 - [Wake words](#configure-wake-words), [catalog models](#choose-a-catalog-microwakeword),
   [trainer linking](#link-the-wake-word-trainer), and
   [STT wake verification](#stt-wake-verification)
+- [Wake arbitration](#wake-arbitration)
 - [Voice timers](#voice-timers)
 - [Firmware updates and recovery](#firmware-updates-and-recovery)
 
@@ -71,6 +72,8 @@ integration from **Devices & services**.
 - Optional STT wake verification through each satellite's selected Assist
   pipeline, with Disabled, Observe, and Enabled modes plus per-satellite results
 - Announcements, continued conversations, timers, TTS playback, and diagnostics
+- Bridge-side wake arbitration to choose one satellite when several hear you,
+  with room or whole-home scope, audio comparison, and adjustable timing
 - Direct Sat Chat audio and video calls between compatible satellites, relayed
   locally over their existing authenticated connections, with capability-gated
   H.264 on updated Echo Shows/Spot and JPEG fallback for other pairs
@@ -610,6 +613,29 @@ wake model, download state, settings generation, and confirmation status. Use
 **Resend live settings** to resync settings. Reconnects and unchanged settings
 keep using the cached model; uploading or publishing a new model changes its
 revision and refreshes it.
+
+## Wake arbitration
+
+Open **Voice & wake → Wake arbitration** to choose one satellite when several
+hear the same wake word. It works before STT in both HA and Mini-Tater modes,
+buffers command audio during selection, and quietly ends the other captures.
+No satellite firmware update is required.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| Choose one satellite per wake | Enabled | Turn bridge arbitration on or off. |
+| Compare satellites | Same room | Use the room saved on each satellite, or compare across the whole home. Satellites without a room are grouped together. |
+| Choose the winner | Strongest command audio | Compare buffered PCM audio strength, or prefer the first wake received. Microphone gain affects audio strength; missing audio falls back to the first wake. |
+| Selection window | 900 ms | Collect candidates for 100–3000 ms before starting STT. Longer windows add response latency. |
+| Late-wake protection | 1500 ms | Keep other satellites quiet for 0–5000 ms after the reply finishes. The winner can wake again immediately. |
+| Busy safety timeout | 120 seconds | Release a stuck turn after 5–300 seconds. |
+
+The winner remains protected during listening, processing, and response playback.
+Button starts and continued conversations skip the comparison. Saved changes
+apply to new wakes, and the page shows the last 30 decisions since bridge startup.
+
+HA mode also retains Home Assistant's own global cooldown for the same wake
+phrase. Room-scoped bridge arbitration does not bypass that cooldown.
 
 ## Voice timers
 

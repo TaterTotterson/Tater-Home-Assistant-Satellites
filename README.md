@@ -125,6 +125,7 @@ Everything is managed from **Tater Satellites** in the sidebar:
 
 - **Satellites:** open a device to change its name, room, volume, and settings.
 - **Voice defaults:** choose a shared wake word and voice settings.
+- **Wake arbitration:** choose which satellite answers when several hear you.
 - **Tater Audio:** create stereo pairs and manage room playback.
 - **Awareness / Vision:** set up camera alerts and image understanding.
 - **Assistant:** keep Home Assistant Assist or configure optional Tater mode.

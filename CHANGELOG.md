@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.24
+
+- Add wake arbitration before both HA and Mini-Tater voice pipelines so one
+  satellite handles a shared wake. Compare command audio or select the first
+  wake, using the firmware room or the whole home as the scope.
+- Add a Wake arbitration workspace with a selection window, late-wake
+  protection, busy safety timeout, and recent decisions. Buffer command audio
+  during selection and protect the winner through reply playback. Settings
+  apply to new wakes without a firmware update.
+
 ## 1.4.23
 
 - Add PoE support information for SAT1, Voice PE, ReSpeaker XVF3800, and

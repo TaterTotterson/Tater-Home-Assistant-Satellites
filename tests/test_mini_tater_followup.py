@@ -105,6 +105,7 @@ class HomeAssistantContinuationTests(unittest.IsolatedAsyncioTestCase):
         for follow_up in (True, False):
             tasks = []
             entity = SimpleNamespace(
+                _wake_candidate=None,
                 hass=SimpleNamespace(async_create_task=Mock(side_effect=lambda coroutine, name: tasks.append(asyncio.create_task(coroutine)))),
                 _async_forward_pipeline_event=AsyncMock(),
             )

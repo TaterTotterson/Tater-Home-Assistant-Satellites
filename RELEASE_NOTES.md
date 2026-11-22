@@ -1,13 +1,14 @@
-# Tater Satellite 1.4.23
+# Tater Satellite 1.4.24
 
 ## What's changed
 
-- **PoE support:** SAT1, Voice PE, ReSpeaker XVF3800, and ESP32-S3-BOX-3 with [Native Firmware 0.7.0](https://github.com/TaterTotterson/Tater-Native-Firmware/releases/tag/native-0.7.0).
-- **Network diagnostics:** View the active connection, IP addresses, Ethernet link, and adapter status.
-- **Connection status:** Keep network details current when satellites switch connections or go offline.
+- **Wake arbitration:** Choose one satellite to handle a shared wake in both Home Assistant and Mini-Tater modes. Other satellites quietly return to idle.
+- **Adjustable controls:** Compare satellites in the same room or across the home, select strongest command audio or first wake, and tune the selection window, late-wake protection, and busy safety timeout.
+- **Audio buffering:** Preserve the beginning of commands during selection, including when satellites send many small packets. Protect the winner through reply playback.
+- **Recent decisions:** See which satellite was selected and review the audio comparison in the new **Voice & wake → Wake arbitration** workspace.
 
-Update through Marketplace or HACS, then restart Home Assistant.
+Arbitration is enabled by default with same-room scope, strongest-audio selection, a **900 ms** selection window, **1500 ms** late-wake protection, and a **120-second** busy safety timeout. Saved changes apply to new wakes. Home Assistant's own wake cooldown still applies in HA mode.
 
-[PoE setup and adapter information](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites#usb-ethernet-and-poe)
+Update through Marketplace or HACS, then restart Home Assistant. **No satellite firmware update is required.**
 
-[Full changelog](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/compare/v1.4.22...v1.4.23)
+[Full changelog](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/compare/v1.4.23...v1.4.24)

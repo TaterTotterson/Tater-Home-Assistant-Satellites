@@ -22,6 +22,7 @@ function fixture() {
     hydra_llm_thanatos_provider: 'base',
     hydra_llm_hermes_provider: 'base',
   });
+  panel._data.wake_arbitration = { ...copy(settings.arbitration), pending: 0, busy: 0, history: [] };
   panel.syncDrafts(panel._data);
   panel.render = () => {};
   return panel;
@@ -34,6 +35,48 @@ function controls(panel, selectors, collections = {}) {
   }
   panel.bindEvents();
 }
+
+test('wake arbitration is available in both modes and saves its own draft without touching satellite settings', async () => {
+  const panel = fixture();
+  for (const mode of ['home_assistant', 'tater']) {
+    panel._taterDraft.assistant_mode = mode;
+    assert.match(panel.renderNavigation(), /data-tab="arbitration"/);
+  }
+  let html = panel.renderArbitration();
+  for (const key of ['enabled', 'scope', 'selection', 'window_ms', 'release_ms', 'busy_timeout_s']) assert.match(html, new RegExp(`data-setting="${key}" data-scope="arbitration"`));
+  assert.match(html, /Home Assistant also applies its own cooldown/);
+  const shared = copy(panel._globalDraft);
+  const duration = { type: 'range', dataset: { scope: 'arbitration', setting: 'window_ms' }, value: '1200' };
+  const release = { type: 'range', dataset: { scope: 'arbitration', setting: 'release_ms' }, value: '0' };
+  controls(panel, {}, { '[data-setting]': [duration, release] });
+  duration.listeners.change();
+  release.listeners.change();
+  assert.equal(panel.pageHasDraft('arbitration'), true);
+  panel.syncDrafts({ ...panel._data, wake_arbitration: { ...panel._data.wake_arbitration, settings: { ...settings.arbitration.settings, window_ms: 800 } } });
+  assert.equal(panel._arbitrationDraft.window_ms, 1200);
+  assert.equal(panel._arbitrationDraft.release_ms, 0);
+  html = panel.renderArbitration();
+  assert.match(html, /data-setting="release_ms"[^>]+value="0"/);
+  assert.deepEqual(panel._globalDraft, shared);
+  let request, scopes;
+  panel.api = async (...args) => { request = args; };
+  panel.run = async (action, message, savedScopes) => { scopes = savedScopes; await action(); };
+  const save = {};
+  controls(panel, { '[data-action="save-arbitration"]': save });
+  await save.listeners.click();
+  assert.equal(request[1], 'settings/arbitration');
+  assert.equal(request[2].settings.window_ms, 1200);
+  assert.deepEqual(Object.keys(request[2].settings).sort(), Object.keys(settings.arbitration.settings).sort());
+  assert.deepEqual(scopes, ['arbitration']);
+  const discard = {};
+  panel._tab = 'arbitration';
+  controls(panel, { '[data-action="reset-draft"]': discard });
+  discard.listeners.click();
+  assert.equal(panel._arbitrationDraft.window_ms, settings.arbitration.settings.window_ms);
+  assert.equal(panel.pageHasDraft('arbitration'), false);
+  panel._data.wake_arbitration.history = [{ timestamp: 100, winner: '<unsafe>', reason: 'strongest_audio', candidates: [] }];
+  assert.match(panel.renderArbitration(), /&lt;unsafe&gt;/);
+});
 
 test('all bridge and Tater workspaces plus fallback settings remain reachable', () => {
   const panel = fixture();

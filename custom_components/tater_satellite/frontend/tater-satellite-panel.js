@@ -45,6 +45,7 @@ const WORKSPACE_PAGES = [
   { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Discover and connect Bluetooth devices through a satellite." },
   { id: "defaults", label: "Voice defaults", icon: "microphone", group: "Voice & wake", description: "One shared wake profile, with clear defaults for every satellite." },
   { id: "verifier", label: "STT wake check", icon: "text-recognition", group: "Voice & wake", description: "Confirm wake words through each satellite’s Assist pipeline." },
+  { id: "arbitration", label: "Wake arbitration", icon: "access-point-check", group: "Voice & wake", description: "Choose one satellite to handle a wake when several hear you." },
   { id: "trainer", label: "Wake Word Trainer", icon: "school-outline", group: "Voice & wake", description: "Link your trainer and publish wake words to your satellites." },
   { id: "firmware", label: "Firmware & recovery", icon: "package-variant-closed-check", group: "Maintenance", description: "Update wirelessly or prepare a board-specific USB installer." },
 ];
@@ -190,6 +191,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._testImages = [];
     this._testConversationId = "tater-panel-test";
     this._globalDraft = null;
+    this._arbitrationDraft = null;
     this._wakeDraft = null;
     this._deviceDraft = null;
     this._deviceOriginal = null;
@@ -306,6 +308,9 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   syncDrafts(data) {
+    if (!this._arbitrationDraft || !this.isScopeDirty("arbitration")) {
+      this._arbitrationDraft = clone(data.wake_arbitration?.settings || {});
+    }
     const fresh = this.prepareSettingsDraft(data.global_settings);
     if (!this._globalDraft) this._globalDraft = fresh;
     else Object.entries(fresh).forEach(([key, value]) => {
@@ -1429,6 +1434,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this._tab === "hydra" ? this.renderHydra() : ""}
       ${this._tab === "defaults" ? this.renderVoiceDefaults() : ""}
       ${this._tab === "verifier" ? this.renderVerifier() : ""}
+      ${this._tab === "arbitration" ? this.renderArbitration() : ""}
       ${this._tab === "trainer" ? this.renderTrainer() : ""}
       ${this._tab === "firmware" ? this.renderFirmware() : ""}
       ${this._tab === "audio" ? this.renderAudio() : ""}
@@ -2639,6 +2645,48 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  renderArbitration() {
+    const arbitration = this._data.wake_arbitration || {};
+    const draft = this._arbitrationDraft || {};
+    const fields = arbitration.fields || [];
+    const reasons = { strongest_audio: "Strongest audio", first_wake: "First wake", busy: "Already handling a turn" };
+    return `
+      <section class="card section-card trainer-hero">
+        <div class="trainer-head">
+          <div class="trainer-identity"><div class="trainer-mark" aria-hidden="true">${this.renderIcon("access-point-check")}</div>
+            <div><h2>One wake. One reply.</h2><div class="muted">Choose which satellite answers when several hear the same wake word. Works with Home Assistant and Mini-Tater.</div></div>
+          </div>
+          <span class="badge ${arbitration.settings?.enabled ? "online" : ""}">${arbitration.settings?.enabled ? "Enabled" : "Disabled"}</span>
+        </div>
+        <div class="facts trainer-status-grid">
+          <div class="fact"><label>Comparing now</label><span>${Number(arbitration.pending || 0)}</span></div>
+          <div class="fact"><label>Protected rooms / home</label><span>${Number(arbitration.busy || 0)}</span></div>
+          <div class="fact"><label>Saved selection window</label><span>${Number(arbitration.settings?.window_ms || 900)} ms</span></div>
+        </div>
+        <div class="verifier-note">Command audio stays buffered during selection, including the first words after the wake. Other satellites quietly return to idle. Button starts and continued conversations skip the comparison.</div>
+      </section>
+      <section class="card section-card">
+        <h3>Choose who answers</h3>
+        <div class="section-description">Save to apply to new wakes. The current conversation keeps its settings.</div>
+        <div class="settings-grid">${fields.filter(field => !["release_ms", "busy_timeout_s"].includes(field.key)).map(field => this.renderField(field, draft, "arbitration")).join("")}</div>
+      </section>
+      <section class="card section-card">
+        <h3>Keep the reply in one place</h3>
+        <div class="section-description">Protect the winner while it listens, thinks, and speaks. The safety timeout releases a stuck turn automatically.</div>
+        <div class="settings-grid">${fields.filter(field => ["release_ms", "busy_timeout_s"].includes(field.key)).map(field => this.renderField(field, draft, "arbitration")).join("")}</div>
+        <p class="muted">In HA mode, Home Assistant also applies its own cooldown for the same wake phrase across the home, even when bridge arbitration is set to the same room.</p>
+      </section>
+      <section class="card section-card">
+        <h3>Recent decisions</h3><div class="section-description">The last 30 decisions since the bridge started. Audio levels describe the comparison, not distance from the speaker.</div>
+        ${(arbitration.history || []).map(row => `<article class="card">
+          <div class="editor-head"><div><strong>${escapeHtml(row.winner)}</strong><div class="muted">${escapeHtml(row.room || "No room set")} · ${escapeHtml(row.phrase || "Wake")}</div></div><span class="badge">${escapeHtml(reasons[row.reason] || row.reason)}</span></div>
+          <p class="muted">${escapeHtml(new Date(Number(row.timestamp) * 1000).toLocaleTimeString())} · ${(row.candidates || []).map(candidate => `${escapeHtml(candidate.name)}${candidate.selected ? " · selected" : " · quiet"} (${candidate.audio_dbfs == null ? "no comparison audio" : `${Number(candidate.audio_dbfs).toFixed(1)} dBFS`})`).join("; ")}</p>
+        </article>`).join("") || '<p class="muted">Wake a satellite to see the result here.</p>'}
+      </section>
+      ${this.renderDraftFooter("arbitration", `<button data-action="reset-draft">Discard changes</button><button class="primary" data-action="save-arbitration" ${this._loading ? "disabled" : ""}>Save wake arbitration</button>`)}
+    `;
+  }
+
   renderVerifier() {
     const devices = this._data.devices || [];
     const mode = String(this._globalDraft?.wake_verifier_mode || "off");
@@ -2815,7 +2863,7 @@ class TaterSatellitePanel extends HTMLElement {
       const maximum = Number(field.max ?? (duration ? 2000 : 1));
       const step = Number(field.step ?? (duration ? 100 : 0.01));
       const defaultValue = Number(field.default ?? (duration ? 500 : 0.85));
-      const numericValue = Math.max(minimum, Math.min(maximum, Number(value || defaultValue)));
+      const numericValue = Math.max(minimum, Math.min(maximum, Number(value === "" ? defaultValue : value)));
       const format = (number) => duration ? `${Math.round(number)} ms` : `${Math.round(number * 100)}%`;
       return `
         <div class="percentage-range-field">
@@ -3674,6 +3722,7 @@ class TaterSatellitePanel extends HTMLElement {
         const target = {
           global: this._globalDraft,
           wake: this._wakeDraft,
+          arbitration: this._arbitrationDraft,
         }[button.dataset.resetScope] || this._deviceDraft;
         target[button.dataset.resetSetting] = Number(button.dataset.resetValue);
         this.markDirty(button.dataset.resetScope, button.dataset.resetSetting);
@@ -3695,6 +3744,7 @@ class TaterSatellitePanel extends HTMLElement {
         const target = {
           global: this._globalDraft,
           wake: this._wakeDraft,
+          arbitration: this._arbitrationDraft,
         }[input.dataset.scope] || this._deviceDraft;
         let value = input.type === "checkbox" ? input.checked : input.value;
         if (input.type === "number" || input.type === "range") value = Number(value);
@@ -3815,6 +3865,13 @@ class TaterSatellitePanel extends HTMLElement {
         ["trainer"],
       ),
     );
+    root.querySelector('[data-action="save-arbitration"]')?.addEventListener("click", () =>
+      this.run(
+        () => this.api("POST", "settings/arbitration", { settings: clone(this._arbitrationDraft) }),
+        "Wake arbitration saved. Applies to new wakes in both assistant modes.",
+        ["arbitration"],
+      ),
+    );
     root.querySelector('[data-action="save-verifier"]')?.addEventListener("click", () =>
       this.run(
         () => this.api("POST", "settings/verifier", {
@@ -3842,7 +3899,7 @@ class TaterSatellitePanel extends HTMLElement {
       this.render();
     });
     root.querySelector('[data-action="reset-draft"]')?.addEventListener("click", () => {
-      const scope = { trainer: "trainer", verifier: "verifier" }[this._tab] || "global";
+      const scope = { trainer: "trainer", verifier: "verifier", arbitration: "arbitration" }[this._tab] || "global";
       this.clearDirty(scope);
       this.syncDrafts(this._data);
       this.render();

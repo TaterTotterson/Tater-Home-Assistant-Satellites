@@ -27,10 +27,12 @@ from .conversation_display import ConversationDisplayState
 from .manager import SatelliteRuntime, TaterSatelliteManager
 from .timers import timer_event_command
 from .wake_audio import WakePrerollGate
+from .wake_arbitration import WakeCandidate
 from .wake_word_catalog import is_catalog_url
 
 _LOGGER = logging.getLogger(__name__)
 _PLAYBACK_COMMAND_SETTLE_SECONDS = 0.075
+_ARBITRATION_BUFFER_BYTES = 256 * 1024
 _CATALOG_WAKE_PREFIX = "catalog:"
 
 _EVENT_NAMES = {
@@ -98,6 +100,11 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         self._attr_unique_id = f"{runtime.device_id}_assist_satellite"
         self._attr_name = "Voice Assistant"
         self._bridge_task: asyncio.Task[None] | None = None
+        self._wake_candidate: WakeCandidate | None = None
+        self._accept_audio = False
+        self._response_playback_pending = False
+        self._arbitration_audio = bytearray()
+        self._arbitration_buffer_full = False
         self._pipeline_event_lock = asyncio.Lock()
         self._conversation_display = ConversationDisplayState(runtime.device_id)
         self._wake_preroll_gate = WakePrerollGate()
@@ -281,6 +288,13 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         await super().async_will_remove_from_hass()
 
     async def _audio_stream(self) -> AsyncGenerator[bytes]:
+        # Selection can collect many small packets before STT starts. Keep that
+        # prefix outside the ordinary bounded live queue, then feed it at normal
+        # PCM chunk sizes so VAD sees the original stream in order.
+        prefix = bytes(self._arbitration_audio)
+        self._arbitration_audio.clear()
+        for offset in range(0, len(prefix), 1024):
+            yield prefix[offset : offset + 1024]
         while True:
             data = await self.runtime.audio_queue.get()
             if data is None:
@@ -292,6 +306,7 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         wake_word: str,
         conversation_id: str,
         audio_format: dict[str, Any],
+        candidate: WakeCandidate,
     ) -> None:
         if conversation_id:
             self._conversation_id = conversation_id
@@ -299,13 +314,31 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
             self.manager.tater_assistant.settings().get("assistant_mode") == "tater"
         )
         try:
+            if not await candidate.decision:
+                # A normal RUN_END quietly closes capture on Native, Echo and
+                # Linux satellites; no error chime or STT/provider call needed.
+                self._accept_audio = False
+                self._wake_preroll_gate.finish(abort=True)
+                self._arbitration_audio.clear()
+                self.runtime.reset_audio()
+                self.runtime.finish_audio()
+                self.runtime.add_log(
+                    "info",
+                    "Another satellite is handling this wake.",
+                    kind="wake.arbitration",
+                )
+                await self._async_forward_pipeline_event("RUN_END", {}, candidate)
+                await self.runtime.async_send("state", {"state": "idle"})
+                return
             if using_tater:
                 await self.manager.tater_assistant.async_run_voice(
                     self.runtime,
                     self._audio_stream(),
                     audio_format,
                     conversation_id,
-                    self._async_forward_pipeline_event,
+                    lambda event, data: self._async_forward_pipeline_event(
+                        event, data, candidate
+                    ),
                 )
             else:
                 await self.async_accept_pipeline_from_satellite(
@@ -315,8 +348,13 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                     wake_word_phrase=wake_word or None,
                 )
         except asyncio.CancelledError:
+            self.manager.wake_arbitrator.cancel(candidate)
             raise
         except Exception as err:
+            self._accept_audio = False
+            self._arbitration_audio.clear()
+            self.runtime.finish_audio()
+            self.manager.wake_arbitrator.release(candidate)
             _LOGGER.exception("Voice pipeline failed for %s", self.runtime.device_id)
             await self.runtime.async_send(
                 "voice.event",
@@ -330,9 +368,10 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
             )
             await self.runtime.async_send("state", {"state": "error"})
             if using_tater:
-                await self._async_forward_pipeline_event("RUN_END", {})
+                await self._async_forward_pipeline_event("RUN_END", {}, candidate)
         finally:
-            self._bridge_task = None
+            if self._bridge_task is asyncio.current_task():
+                self._bridge_task = None
 
     async def async_device_voice_start(self, payload: dict[str, Any]) -> bool:
         """Start an Assist run requested by firmware."""
@@ -355,17 +394,46 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
         conversation_id = str(
             payload.get("conversation_id") or payload.get("conversation") or ""
         )
+        self._accept_audio = True
+        self._response_playback_pending = False
+        self._arbitration_audio.clear()
+        self._arbitration_buffer_full = False
+        candidate = self.manager.wake_arbitrator.begin(
+            self.runtime.device_id,
+            self.runtime.name,
+            self.runtime.room,
+            wake_word,
+            self.manager.wake_arbitration_settings(),
+            audio_format,
+        )
+        self._wake_candidate = candidate
         self._bridge_task = self.config_entry.async_create_background_task(
             self.hass,
-            self._run_pipeline(wake_word, conversation_id, audio_format),
+            self._run_pipeline(wake_word, conversation_id, audio_format, candidate),
             f"tater_satellite_pipeline_{self.runtime.device_id}",
         )
         return True
 
     def device_audio(self, data: bytes) -> None:
         """Accept a PCM audio chunk from firmware."""
+        if not self._accept_audio:
+            return
         for chunk in self._wake_preroll_gate.add_audio(data):
-            self.runtime.add_audio(chunk)
+            self._queue_command_audio(chunk)
+
+    def _queue_command_audio(self, chunk: bytes) -> None:
+        """Score without consuming audio, retaining a bounded selection prefix."""
+        candidate = self._wake_candidate
+        if candidate is not None:
+            candidate.add_audio(chunk)
+            if not candidate.decision.done() and not self._arbitration_buffer_full:
+                if len(self._arbitration_audio) + len(chunk) <= _ARBITRATION_BUFFER_BYTES:
+                    self._arbitration_audio.extend(chunk)
+                    return
+                # More than eight seconds of 16 kHz PCM in a <=3 second window
+                # is an abnormal sender. Fall back to the bounded live queue.
+                self._arbitration_buffer_full = True
+        self.runtime.add_audio(chunk)
 
     def device_audio_boundary(self, payload: dict[str, Any]) -> bool:
         """Apply an ordered boundary between local wake and command audio."""
@@ -392,9 +460,11 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 len(fallback),
             )
             for chunk in fallback:
-                self.runtime.add_audio(chunk)
+                self._queue_command_audio(chunk)
         self.runtime.finish_audio()
         if abort:
+            self._accept_audio = False
+            self._arbitration_audio.clear()
             with contextlib.suppress(Exception):
                 await self._cancel_running_pipeline()
             if self._bridge_task is not None:
@@ -402,6 +472,17 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._bridge_task
                 self._bridge_task = None
+            if self._wake_candidate is not None:
+                self.manager.wake_arbitrator.cancel(self._wake_candidate)
+                self._wake_candidate = None
+            self._response_playback_pending = False
+
+    @callback
+    def voice_playback_finished(self) -> None:
+        """Keep the winning room claimed until actual firmware playback ends."""
+        if self._response_playback_pending and self._wake_candidate is not None:
+            self.manager.wake_arbitrator.release(self._wake_candidate)
+        self._response_playback_pending = False
 
     @callback
     def on_pipeline_event(self, event: PipelineEvent) -> None:
@@ -451,17 +532,22 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
             }
 
         self.hass.async_create_task(
-            self._async_forward_pipeline_event(event_name, data),
+            self._async_forward_pipeline_event(event_name, data, self._wake_candidate),
             f"tater_satellite_event_{event_name.lower()}",
         )
 
     async def _async_forward_pipeline_event(
-        self, event_name: str, data: dict[str, Any]
+        self,
+        event_name: str,
+        data: dict[str, Any],
+        candidate: WakeCandidate | None = None,
     ) -> None:
         # Home Assistant delivers pipeline callbacks as independent tasks.
         # Keep each event's command group together, as Tater's single outbound
         # queue does, so RUN_END cannot race the firmware's playback-start log.
         async with self._pipeline_event_lock:
+            if candidate is not self._wake_candidate:
+                return
             await self.runtime.async_send(
                 "voice.event", {"event": event_name, "data": data}
             )
@@ -478,17 +564,26 @@ class TaterAssistSatellite(assist_satellite.AssistSatelliteEntity):
                     "display.conversation", display_payload
                 )
             if event_name == "STT_VAD_END":
+                self._accept_audio = False
                 self.runtime.finish_audio()
             if event_name == "TTS_END" and data.get("url"):
-                await self.runtime.async_send(
+                self._response_playback_pending = True
+                sent = await self.runtime.async_send(
                     "play.url",
                     {"url": data["url"], "tts_kind": "response"},
                 )
+                if not sent:
+                    self.voice_playback_finished()
                 # The firmware starts playback from its WebSocket receive
                 # callback and immediately sends a playback-started log. Leave
                 # that callback a small window to release the client lock
                 # before the independently scheduled RUN_END event is sent.
                 await asyncio.sleep(_PLAYBACK_COMMAND_SETTLE_SECONDS)
+            if event_name in {"RUN_END", "ERROR"}:
+                self._accept_audio = False
+                self.runtime.finish_audio()
+                if not self._response_playback_pending and candidate is not None:
+                    self.manager.wake_arbitrator.release(candidate)
 
     async def _play_announcement_parts(
         self,

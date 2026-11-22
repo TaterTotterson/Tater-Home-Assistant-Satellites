@@ -2,17 +2,10 @@
 
 ## 1.4.23
 
-- Show the active network and connection IP in satellite overviews, plus
-  reported Ethernet/Wi-Fi IPs, Ethernet link, and adapter state in diagnostics.
-  Keep Wi-Fi signal separate from the active connection.
-- Normalize Native ESP32 and Echo USB Ethernet reports, retain Echo rescue and
-  recovery states, and clear live network indicators on disconnect. Preserve
-  the existing five-second panel refresh and settings drafts.
-- Document Native Firmware 0.7.0 USB Ethernet support for SAT1, Voice PE,
-  ReSpeaker XVF3800, and ESP32-S3-BOX-3, with the powered UCTRONICS B0B9ZLVGJ4
-  adapter and data-capable Micro-USB female to USB-C male converter. Include
-  compatible adapter requirements, 5 V power limits, Echo power differences,
-  setup, and console recovery in the README and user guide.
+- Add PoE support information for SAT1, Voice PE, ReSpeaker XVF3800, and
+  ESP32-S3-BOX-3 with Native Firmware 0.7.0.
+- Show the active network, IP addresses, Ethernet link, and adapter status.
+- Keep connection details current through network changes and disconnects.
 
 ## 1.4.22
 

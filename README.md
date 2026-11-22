@@ -77,6 +77,48 @@ Once the satellite is online, try your wake word and a voice command.
 It uses your preferred Assist pipeline by default; open the satellite's
 **Voice** settings to choose a different one.
 
+## USB Ethernet and PoE
+
+[Tater Native Firmware **0.7.0**](https://github.com/TaterTotterson/Tater-Native-Firmware/releases/tag/native-0.7.0)
+includes USB Ethernet in all four ESP32 satellite images: **SAT1**, **Voice PE**,
+**ReSpeaker XVF3800**, and **ESP32-S3-BOX-3**. Supported Echo satellites also
+provide USB Ethernet through Tater Echo Firmware.
+
+The tested powered adapter is the
+[UCTRONICS B0B9ZLVGJ4 (U6113)](https://www.amazon.com/dp/B0B9ZLVGJ4), the same
+adapter used with Echo. It carries Ethernet data over USB and supplies 5 V
+power from a compatible PoE switch/injector. For the native USB-C boards, add
+a **data-capable Micro-USB female → USB-C male converter**.
+
+1. Update the satellite's firmware from **Firmware & recovery**.
+2. Disconnect it from the computer and connect the powered adapter to its
+   **ESP32 USB port** (the XIAO port on ReSpeaker, not a separate XMOS audio port).
+3. Cold boot through the adapter. Ethernet takes priority after DHCP; saved
+   Wi-Fi remains available as fallback.
+4. Open the satellite's overview or **Diagnostics** to see its active network
+   and connection IP. Diagnostics also show Ethernet/Wi-Fi IPs, Ethernet link,
+   and adapter state when reported. Wi-Fi signal is a separate reading and
+   does not indicate which connection is active.
+
+Bridge **1.4.23** adds these network details to the panel. Existing pairing and
+voice work over either connection; Ethernet does not require pairing again.
+To use the native USB console, boot directly on a computer. Reboot through the
+adapter to enable USB Ethernet again.
+
+Other powered RTL8152 adapters exposing **USB `0bda:8152` and CDC-ECM
+configuration 2** may work with native firmware. Only the linked adapter has
+been tested; other chipsets are not enabled. A power-only PoE splitter cannot
+provide Ethernet data. A USB-C plug or higher wattage alone does not establish
+compatibility. The tested adapter supplies 5 V and does not enable SAT1's
+higher-voltage amplifier modes.
+
+Echo follows its own per-device USB and power requirements: Biscuit can receive
+power through this adapter; Checkers, Cronos, Crown, Athena, and Rook retain
+their normal power supplies. See the
+[Native USB Ethernet guide](https://github.com/TaterTotterson/Tater-Native-Firmware/blob/main/docs/usb-ethernet.md)
+and [Echo adapter guide](https://github.com/TaterTotterson/Tater-Echo-Firmware#usb-ethernet-adapters)
+for setup and recovery details.
+
 ## Make it yours
 
 Everything is managed from **Tater Satellites** in the sidebar:

@@ -632,6 +632,45 @@ test('STT mismatch and the satellite timeout outcome remain separate', () => {
   assert.match(panel.renderVerifierDevice(device), /Waiting for result/);
 });
 
+test('network diagnostics follow Ethernet, Wi-Fi fallback and disconnects without hiding Wi-Fi signal', () => {
+  const panel = fixture();
+  const device = panel._data.devices[1];
+  device.wifi_rssi = -48;
+  for (const board of ['satellite1', 'voice-pe', 'respeaker-xvf3800', 's3-box', 'biscuit']) {
+    device.board = board;
+    device.network = { connection: 'USB Ethernet', connection_ip: '192.0.2.9', ethernet_ip: '192.0.2.9', wifi_ip: '192.0.2.10', ethernet_link: true, usb_ethernet_state: 'connected' };
+    assert.match(panel.renderDeviceOverview(device), /<label>Network<\/label><span>USB Ethernet<\/span>/);
+    const diagnostics = panel.renderDeviceDiagnostics(device);
+    assert.match(diagnostics, /<label>Ethernet IP<\/label><span>192.0.2.9<\/span>/);
+    assert.match(diagnostics, /<label>Ethernet link<\/label><span>Up<\/span>/);
+    assert.match(diagnostics, /<label>Wi-Fi signal<\/label><span>-48 dBm<\/span>/);
+  }
+  device.network.connection = 'Wi-Fi';
+  device.network.connection_ip = '192.0.2.10';
+  device.network.ethernet_link = false;
+  device.network.usb_ethernet_state = 'waiting_for_link';
+  assert.match(panel.renderDeviceDiagnostics(device), /<label>Network<\/label><span>Wi-Fi<\/span>/);
+  assert.match(panel.renderDeviceDiagnostics(device), /<label>Ethernet link<\/label><span>Down<\/span>/);
+  assert.match(panel.renderDeviceDiagnostics(device), /waiting for link/);
+  device.connected = false;
+  const offline = panel.renderDeviceDiagnostics(device);
+  assert.match(offline, /<label>Network<\/label><span>Offline<\/span>/);
+  assert.doesNotMatch(offline, /192\.0\.2\./);
+  assert.doesNotMatch(offline, /waiting for link/);
+});
+
+test('network diagnostics handle older firmware and escape reported text', () => {
+  const panel = fixture();
+  const device = panel._data.devices[0];
+  assert.match(panel.renderDeviceDiagnostics(device), /<label>Network<\/label><span>Not reported<\/span>/);
+  device.network = { connection: '<route>', connection_ip: '<ip>', usb_ethernet_state: '<adapter>' };
+  const html = panel.renderDeviceDiagnostics(device);
+  for (const value of ['route', 'ip', 'adapter']) {
+    assert.match(html, new RegExp(`&lt;${value}&gt;`));
+    assert.doesNotMatch(html, new RegExp(`<${value}>`));
+  }
+});
+
 test('trainer reports direct delivery separately from model pairing', () => {
   const panel = fixture();
   assert.match(panel.renderTrainer(), /Satellites send captures directly/);

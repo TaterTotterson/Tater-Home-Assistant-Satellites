@@ -2178,13 +2178,27 @@ class TaterSatellitePanel extends HTMLElement {
     `;
   }
 
+  renderDeviceNetwork(device, detailed = false) {
+    const network = device.connected ? (device.network || {}) : {};
+    const connection = device.connected ? (network.connection || "Not reported") : "Offline";
+    const link = network.ethernet_link === true ? "Up" : network.ethernet_link === false ? "Down" : "Not reported";
+    const state = String(network.usb_ethernet_state || "").replaceAll("_", " ");
+    return `<div class="fact"><label>Network</label><span>${escapeHtml(connection)}</span></div>
+      <div class="fact"><label>Connection IP</label><span>${escapeHtml(network.connection_ip || "—")}</span></div>
+      ${detailed ? `<div class="fact"><label>Ethernet IP</label><span>${escapeHtml(network.ethernet_ip || "—")}</span></div>
+      <div class="fact"><label>Wi-Fi IP</label><span>${escapeHtml(network.wifi_ip || "—")}</span></div>
+      <div class="fact"><label>Ethernet link</label><span>${link}</span></div>
+      <div class="fact"><label>Ethernet adapter</label><span>${escapeHtml(state || "Not reported")}</span></div>` : ""}`;
+  }
+
   renderDeviceOverview(device) {
     const firmware = device.firmware || {};
     return `<section class="card section-card"><h3>At a glance</h3><p class="muted">This satellite uses your shared voice defaults unless you override a setting.</p>
       <div class="facts">
         <div class="fact"><label>Hardware</label><span>${escapeHtml(firmware.label || device.board)}</span></div>
         <div class="fact"><label>Firmware</label><span>${escapeHtml(device.firmware_version || "Unknown")}</span></div>
-        <div class="fact"><label>Wi-Fi</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
+        ${this.renderDeviceNetwork(device)}
+        <div class="fact"><label>Wi-Fi signal</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
         <div class="fact"><label>Free memory</label><span>${formatBytes(device.free_heap)}</span></div>
         <div class="fact"><label>Last seen</label><span>${formatAge(device.last_seen)}</span></div>
         <div class="fact"><label>Voice state</label><span>${escapeHtml(device.state || "offline")}</span></div>
@@ -2243,7 +2257,8 @@ class TaterSatellitePanel extends HTMLElement {
         <h3>Satellite Diagnostics</h3>
         <div class="facts">
           <div class="fact"><label>Firmware</label><span>${escapeHtml(device.firmware_version || "Unknown")}</span></div>
-          <div class="fact"><label>Wi-Fi</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
+          ${this.renderDeviceNetwork(device, true)}
+          <div class="fact"><label>Wi-Fi signal</label><span>${device.wifi_rssi ?? "—"}${device.wifi_rssi != null ? " dBm" : ""}</span></div>
           <div class="fact"><label>Free memory</label><span>${formatBytes(device.free_heap)}</span></div>
           <div class="fact"><label>Audio drops</label><span>${Number(device.audio_drops || 0)}</span></div>
           <div class="fact"><label>Settings sync</label><span>${escapeHtml(syncLabel)}</span></div>

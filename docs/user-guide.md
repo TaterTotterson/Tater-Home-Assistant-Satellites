@@ -623,6 +623,32 @@ The satellite owns the actual countdown and alarm, so it continues through a
 temporary Home Assistant or network disconnect and rings locally. The timer is
 intentionally lost if the satellite reboots or loses power.
 
+## USB Ethernet and PoE
+
+Native firmware 0.7.0 includes USB Ethernet for SAT1, Voice PE, ReSpeaker
+XVF3800, and ESP32-S3-BOX-3. Use the powered
+[UCTRONICS B0B9ZLVGJ4 (U6113)](https://www.amazon.com/dp/B0B9ZLVGJ4) with a
+**data-capable Micro-USB female → USB-C male converter**, connected to the
+ESP32 USB port. On ReSpeaker, use the XIAO port; a separate XMOS audio port
+is not the ESP32 network connection.
+
+Cold boot the satellite through the powered adapter. Ethernet is preferred
+after DHCP succeeds, with saved Wi-Fi available as fallback. To restore the
+native USB console, connect directly to a computer and reset/cold boot. No
+pairing or voice protocol change is required.
+
+Open a satellite's overview or **Diagnostics** for its active connection and
+connection IP. Diagnostics also show reported Ethernet/Wi-Fi IPs, Ethernet link,
+and adapter state. The connection IP comes from the current Home Assistant
+socket; during a handoff it can briefly differ from a newly reported interface
+address. The panel refreshes every five seconds when visible and no input is
+active. Older firmware may not report every field. Echo Wi-Fi rescue and wired
+recovery remain distinct states. Offline devices do not retain live link or IP
+indicators from their last connection.
+
+For adapter alternatives, 5 V power limits, Echo power differences, and recovery,
+see [USB Ethernet and PoE in the README](../README.md#usb-ethernet-and-poe).
+
 ## Firmware updates and recovery
 
 The **Firmware & Recovery** tab reads the latest official Tater Native, Tater

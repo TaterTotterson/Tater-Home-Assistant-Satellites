@@ -98,7 +98,7 @@ class VolumeControlTests(unittest.TestCase):
         self.assertIn("volume_percent", audio_group)
         self.assertIn("output_channel_mode", audio_group)
 
-    def test_manifest_version_is_bumped(self) -> None:
+    def test_manifest_version_matches_release_notes(self) -> None:
         manifest = json.loads(
             (
                 ROOT
@@ -108,7 +108,14 @@ class VolumeControlTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
 
-        self.assertEqual(manifest["version"], "1.4.21")
+        version = manifest["version"]
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertTrue(
+            (ROOT / "RELEASE_NOTES.md").read_text().startswith(
+                f"# Tater Satellite {version}\n"
+            )
+        )
+        self.assertIn(f"\n## {version}\n", (ROOT / "CHANGELOG.md").read_text())
 
 
 def volume_methods():

@@ -57,6 +57,7 @@ from .firmware import FirmwareCatalog, board_manifest_key, version_tuple
 from .intercom import TaterIntercomCoordinator, is_intercom_request
 from .identity import identity_text
 from .media import TaterMediaCoordinator
+from .network import network_snapshot
 from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .pairing import (
     PAIRING_RETRY_GRACE_SECONDS,
@@ -749,6 +750,9 @@ class SatelliteRuntime:
             "state": text(status.get("state"))
             or ("idle" if self.connected else "offline"),
             "wifi_rssi": status.get("wifi_rssi"),
+            "network": network_snapshot(
+                status, connected=self.connected, remote=self.remote
+            ),
             "free_heap": status.get("free_heap"),
             "uptime_s": status.get("uptime_s"),
             "xmos_doa": status.get("xmos_doa")

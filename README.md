@@ -45,6 +45,7 @@ Tater firmware:
 - [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
 - [Tater Echo Firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware)
 - [Tater ThirdReality S420 Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware)
+- [Tater SAT1 RPi](https://github.com/TaterTotterson/Tater-SAT1-RPi) — Satellite1 HAT + Raspberry Pi; choose the **satellite** image.
 
 For Home Assistant voice control, have a working Assist pipeline ready.
 
@@ -155,6 +156,7 @@ for hardware-specific steps.
 - [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware)
 - [Tater Echo Firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware)
 - [Tater ThirdReality Voice Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware)
+- [Tater SAT1 RPi](https://github.com/TaterTotterson/Tater-SAT1-RPi) — ready-to-flash Raspberry Pi images for Satellite1.
 - [Tater Assistant](https://github.com/TaterTotterson/Tater)
 - [Tater Home Assistant Add-ons](https://github.com/TaterTotterson/hassio-addons-tater)
 

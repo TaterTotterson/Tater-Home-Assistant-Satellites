@@ -35,7 +35,7 @@ const WAKE_VERIFIER_SETTING_KEYS = new Set([
 const WORKSPACE_PAGES = [
   { id: "assistant", label: "Assistant", icon: "robot-outline", group: "Tater assistant", description: "Choose who owns each voice turn: Home Assistant Assist or the complete Tater pipeline." },
   { id: "models", label: "Models & speech", icon: "creation-outline", group: "Tater assistant", description: "Connect Tater's language, speech-to-text, and text-to-speech providers." },
-  { id: "home-control", label: "Home tools", icon: "home-automation", group: "Tater assistant", description: "Review Mini-Tater’s built-in Home Assistant tools." },
+  { id: "home-control", label: "Home tools", icon: "home-automation", group: "Tater assistant", description: "Review Mini-Tater’s built-in home and web tools." },
   { id: "hydra", label: "Hydra", icon: "chart-timeline-variant-shimmer", group: "Tater assistant", description: "Tune conversation memory and inspect every built-in tool decision." },
   { id: "satellites", label: "Satellites", icon: "access-point", group: "Your home", description: "Voice around your home, connected directly to Home Assistant." },
   { id: "awareness", label: "Awareness", icon: "camera-iris", group: "Your home", description: "Turn camera events into a picture and a useful description, wherever you want to see them." },
@@ -81,6 +81,17 @@ const escapeHtml = (value) =>
     .replaceAll("'", "&#039;");
 
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
+
+function webSource(value) {
+  if (!value || typeof value.url !== "string" || value.url.length > 2048 || /[\s\u0000-\u001f\u007f\\]/u.test(value.url)) return null;
+  try {
+    const url = new URL(value.url);
+    if (!["https:", "http:"].includes(url.protocol) || !url.hostname || url.username || url.password) return null;
+    return { url: url.href, title: String(value.title || url.hostname).slice(0, 200) };
+  } catch {
+    return null;
+  }
+}
 
 const isWakeWordCatalogUrl = (value) => {
   try {
@@ -796,6 +807,11 @@ class TaterSatellitePanel extends HTMLElement {
       .assistant-test-message p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
       .assistant-test-message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
       .assistant-test-message-attachments small { padding: 4px 7px; border: 1px solid var(--workspace-line); border-radius: 999px; color: var(--workspace-muted); background: var(--workspace-field); }
+      .assistant-test-sources { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--workspace-line); }
+      .assistant-test-sources > strong { color: var(--workspace-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+      .assistant-test-sources > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+      .assistant-test-sources a { display: inline-flex; max-width: 100%; padding: 5px 8px; border: 1px solid var(--workspace-line); border-radius: 8px; color: var(--tater-accent); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; text-decoration: none; }
+      .assistant-test-sources a:hover, .assistant-test-sources a:focus-visible { background: var(--tater-accent-soft); text-decoration: underline; }
       .assistant-test-image-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
       .assistant-test-image-preview article { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px; border: 1px solid var(--workspace-line); border-radius: 10px; background: var(--workspace-field); }
       .assistant-test-image-preview img { width: 52px; height: 52px; border-radius: 7px; object-fit: cover; background: #111; }
@@ -1449,10 +1465,12 @@ class TaterSatellitePanel extends HTMLElement {
 
   renderAssistantTestMessage(message, settings) {
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const sources = message.role === "assistant" && Array.isArray(message.sources) ? message.sources.slice(0, 10).map(webSource).filter(Boolean) : [];
     return `<div class="assistant-test-message ${message.role === "assistant" ? "assistant" : "user"}">
       <span>${message.role === "assistant" ? escapeHtml(settings.assistant_name || "Tater") : "You"}</span>
       <p>${escapeHtml(message.content || "")}</p>
       ${attachments.length ? `<div class="assistant-test-message-attachments">${attachments.map((item) => `<small>${this.renderIcon("image-outline")} ${escapeHtml(item.name || "Image")}</small>`).join("")}</div>` : ""}
+      ${sources.length ? `<div class="assistant-test-sources" role="group" aria-label="Web sources"><strong>Sources</strong><div>${sources.map((source) => `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title)}</a>`).join("")}</div></div>` : ""}
     </div>`;
   }
 
@@ -1499,7 +1517,7 @@ class TaterSatellitePanel extends HTMLElement {
       </section>
 
       ${mode === "tater" ? `<section class="card assistant-test-card">
-        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Verify the LLM, Hydra, device control, Tater Vision, and timers before switching voice turns. Name a satellite or room for timer requests here. No audio is recorded.</p></div></div>
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Text test</span><h2>Talk to Mini-Tater</h2><p class="muted">Try Mini-Tater’s home tools, Tater Vision, timers, and web search here. Name a satellite or room for timer requests. No audio is recorded.</p></div></div>
         <div class="assistant-test-thread">${messages.length ? messages.map((message) => this.renderAssistantTestMessage(message, settings)).join("") : '<p class="muted">No test messages yet.</p>'}</div>
         ${this.renderAssistantImagePreview()}
         <div class="assistant-test-compose">
@@ -1767,8 +1785,8 @@ class TaterSatellitePanel extends HTMLElement {
     const scope = settings.entity_scope || "exposed";
     const examples = summary.examples || [];
     const cameraExamples = vision.examples || [];
-    const additionalTools = (this._data.tater_assistant?.built_in_tools || []).filter((row) => !["device_control", "tater_vision", "voicepe_remote_timer"].includes(row.id));
-    const toolLabels = { todo_list: "Shopping & to-do lists", weather_forecast: "Home Assistant weather", broadcast: "Spoken announcements", music_assistant: "Music & playback", schedule_home: "Delayed device actions" };
+    const additionalTools = (this._data.tater_assistant?.built_in_tools || []).filter((row) => !["device_control", "tater_vision", "voicepe_remote_timer", "schedule_home", "web_search"].includes(row.id));
+    const toolLabels = { todo_list: "Shopping & to-do lists", weather_forecast: "Home Assistant weather", broadcast: "Spoken announcements", music_assistant: "Music & playback" };
     return `
       <section class="card home-tool-card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Fresh camera vision</span><h2>Tater Vision</h2><p class="muted">Tater Vision is Tater's visual-question tool. Use it whenever the answer requires looking at a person, object, room, or named camera-covered area right now—including 'what is this?', 'how do I look?', 'is the dog in the game room?', 'are there any dogs in the backyard?', and conversational follow-ups such as 'what did you see when you looked?'. If the user names a room or area, it automatically uses the cameras covering that location. If no location is named, use trusted room context supplied by a satellite or other room-aware platform; when no room context exists, ask which room, area, or camera to use.</p></div><span class="badge online">tater_vision</span></div>
@@ -1780,8 +1798,16 @@ class TaterSatellitePanel extends HTMLElement {
         <div class="home-scope-note">${this.renderIcon("timer-outline")}<span>${Number(timers.satellite_count || 0)} connected satellite${Number(timers.satellite_count || 0) === 1 ? " supports" : "s support"} timers. Running timers count down and ring on the satellite, including while disconnected. Paused timers are saved in Home Assistant until resumed. Ask from a satellite or name one in chat. Snooze defaults to five minutes; new timers are limited to two hours, matching the Timer Verba default.</span></div>
       </section>
       ${additionalTools.map((tool) => `<section class="card home-tool-card"><div class="workspace-section-heading"><div><span class="workspace-eyebrow">Built-in HA tool</span><h2>${escapeHtml(toolLabels[tool.id] || tool.id)}</h2><p class="muted">${escapeHtml(tool.description)}</p></div><span class="badge online">${escapeHtml(tool.id)}</span></div></section>`).join("")}
-      <section class="card"><div class="workspace-section-heading"><div><span class="workspace-eyebrow">Home Assistant clock</span><h2>Local date & time</h2><p class="muted">Every model request receives Home Assistant’s current date, time, and configured timezone. No additional tool or clock setting is needed.</p></div></div><p class="muted">Delayed actions use fixed device targets, are saved across HA restarts, and recheck Assist scope before running. Actions missed by more than a minute during an outage are marked missed rather than replayed.</p></section>
-      <section class="card"><p class="muted">These tools use Home Assistant’s configured entities and services. Named music needs Music Assistant or a searchable HA player. No separate weather API account is required. Mini-Tater does not load Cores, Portals, Shop, or downloadable Verbas.</p></section>
+      <section class="card home-tool-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Device actions for later</span><h2>Scheduled actions</h2><p class="muted">Ask Mini-Tater to run a device action later, or list and cancel pending actions. For example: “Turn off the kitchen lights in ten minutes” or “What actions are scheduled?”</p></div><span class="badge online">schedule_home</span></div>
+        <div class="home-scope-note">${this.renderIcon("clock-outline")}<span>Schedule one-time actions up to seven days ahead using Home Assistant’s local time. Device targets are saved with the action, schedules survive HA restarts, and the selected entity scope is checked again before running. Actions missed by more than a minute during an outage are marked missed.</span></div>
+      </section>
+      <section class="card home-tool-card">
+        <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Current information</span><h2>Web search</h2><p class="muted">Ask Mini-Tater to look up current information, news, or public facts. For example: “Search for the latest Home Assistant release.”</p></div><span class="badge online">web_search</span></div>
+        <div class="home-scope-note">${this.renderIcon("magnify")}<span>DuckDuckGo search with an automatic Bing fallback, with no API key or setup needed. Answers use search snippets, with clickable source links in chat. Searches require an internet connection.</span></div>
+      </section>
+      <section class="card"><div class="workspace-section-heading"><div><span class="workspace-eyebrow">Home Assistant clock</span><h2>Local date & time</h2><p class="muted">Every model request receives Home Assistant’s current date, time, and configured timezone. No additional tool or clock setting is needed.</p></div></div></section>
+      <section class="card"><p class="muted">Home tools use Home Assistant’s configured entities and services; web search uses public search engines. Named music needs Music Assistant or a searchable HA player. No separate weather API account is required. Mini-Tater does not load Cores, Portals, Shop, or downloadable Verbas.</p></section>
       <section class="card home-tool-card">
         <div class="workspace-section-heading"><div><span class="workspace-eyebrow">Built-in Home Assistant capabilities</span><h2>Home Assistant device control</h2><p class="muted">Use for any request to control or check smart-home devices across integrations, including lights, switches, plugs, fans, covers, garage doors, locks, thermostats, media players, remotes, scenes, scripts, and appliance readings such as washer, dryer, or dishwasher status and remaining time. Use Tater Vision for visual camera questions.</p></div><span class="badge online">device_control</span></div>
         <div class="home-scope-grid">

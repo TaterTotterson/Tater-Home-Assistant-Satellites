@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.25
+
+- Add Mini-Tater's natural-language Web search tool to the Hydra catalog and
+  Home tools workspace. Search DuckDuckGo first and automatically fall back to
+  Bing, without an API key, account, or provider settings.
+- Ground web answers in returned search snippets and save verified source links
+  with chat messages. Show clickable sources separately from the spoken reply.
+- Run searches outside Home Assistant's event loop, bound their duration and
+  result size, and cache repeated queries for two minutes. Clearly report
+  unavailable, rate-limited, empty, and timed-out searches.
+- Give Scheduled actions its own Home tools card with examples, listing and
+  cancellation guidance, and scheduling limits. Move scheduling details out of
+  the date-and-time card.
+- Add SAT1 Raspberry Pi satellite and embedded Tater image links to the README,
+  and update the user guide for Mini-Tater's nine built-in tools.
+
 ## 1.4.24
 
 - Add wake arbitration before both HA and Mini-Tater voice pipelines so one

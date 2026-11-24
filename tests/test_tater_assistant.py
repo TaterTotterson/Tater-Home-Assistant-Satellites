@@ -162,7 +162,10 @@ class TaterSettingsTests(unittest.TestCase):
             (ROOT / "custom_components" / "tater_satellite" / "manifest.json").read_text()
         )
         self.assertIn("wyoming", manifest["dependencies"])
-        self.assertEqual(manifest["requirements"], [])
+        self.assertFalse(any(
+            requirement.split("==")[0] in {"wyoming", "webrtcvad", "webrtcvad-wheels"}
+            for requirement in manifest["requirements"]
+        ))
 
     def test_micro_vad_scores_fixed_ten_millisecond_frames(self) -> None:
         class FakeMicroVad:

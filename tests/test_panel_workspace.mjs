@@ -219,8 +219,33 @@ test('mini Tater pages retain the complete pipeline, built-in tools, and Hydra c
   const tools = panel.renderHomeControl();
   for (const id of ['todo_list','weather_forecast','broadcast','music_assistant','schedule_home']) assert.match(tools, new RegExp(id));
   assert.match(tools, /Home Assistant clock[\s\S]*configured timezone/);
+  assert.match(tools, /<h2>Scheduled actions<\/h2>/);
+  assert.match(tools, /<h2>Web search<\/h2>[\s\S]*no API key or setup needed/);
+  assert.equal((tools.match(/<h2>Scheduled actions<\/h2>/g) || []).length, 1);
   panel._hydraSection = 'behavior';
   assert.match(panel.renderHydra(), /Maximum ledger items[\s\S]*Astraeus second plan check/);
+});
+
+test('web search sources are safe clickable links and survive a refreshed chat snapshot', () => {
+  const panel = fixture();
+  panel._taterDraft.assistant_mode = 'tater';
+  panel._data.tater_assistant.messages = [{
+    role: 'assistant', content: 'Here is the current information.',
+    sources: [
+      { title: '<img src=x onerror=alert(1)>', url: 'https://example.org/?a=1&b=2' },
+      { title: 'Unsafe', url: 'javascript:alert(1)' },
+      { title: 'Unsafe', url: 'data:text/html,hello' },
+      { title: 'Unsafe', url: 'https://user:password@example.org/' },
+      { title: 'Unsafe', url: 'https://example.org/\npath' },
+    ],
+  }];
+  const html = panel.renderAssistantChoice();
+  assert.match(html, /aria-label="Web sources"/);
+  assert.match(html, /href="https:\/\/example.org\/\?a=1&amp;b=2" target="_blank" rel="noopener noreferrer"/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(html, /<img src=x|href="javascript:|href="data:|user:password|>Unsafe<\/a>/);
+  assert.equal((html.match(/rel="noopener noreferrer"/g) || []).length, 1);
+  assert.doesNotMatch(panel.renderAssistantTestMessage({ role: 'user', content: 'hello', sources: [{ url: 'https://example.org' }] }, {}), /Web sources/);
 });
 
 test('vision can follow Base or reveal a dedicated compatible endpoint', () => {

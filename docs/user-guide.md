@@ -198,9 +198,9 @@ including while neural VAD initializes. VAD controls when capture ends; a short
 command is not discarded just because VAD never marked a speech start. Empty
 STT transcripts are still rejected before Hydra runs.
 
-Mini-Tater has eight built-in capabilities: `device_control`, `tater_vision`,
+Mini-Tater has nine built-in capabilities: `device_control`, `tater_vision`,
 `voicepe_remote_timer` (Timer), `todo_list`, `weather_forecast`, `broadcast`,
-`music_assistant`, and `schedule_home`.
+`music_assistant`, `schedule_home`, and `web_search`.
 Astraeus receives the same kind of stable tool catalog used by Tater, plans
 atomic natural-language steps, and Thanatos passes each locked step unchanged as
 `query` to the selected tool. Device control interprets actions and values,
@@ -214,8 +214,8 @@ Assistant, following Tater's live-clock prompt. Date and time questions need no
 additional tool or setting. All three Hydra roles receive this clock, including
 when Beast Mode uses separate models.
 
-The additional tools follow the Shop Verbas' natural-language approach while
-using Home Assistant's configured integrations:
+The additional tools follow the Shop Verbas' natural-language approach. Home
+tools use Home Assistant's configured integrations:
 
 - **Shopping & to-do lists:** read pending items, add items, mark them complete,
   or remove them. Name a list when more than one could match. Changes are saved
@@ -238,6 +238,13 @@ using Home Assistant's configured integrations:
   after an outage are marked missed instead of replayed. An interrupted action
   with an unknown outcome is not retried automatically. Actions may be scheduled
   up to seven days ahead, with at most 50 pending jobs.
+- **Web search:** ask for current online information or an explicit lookup.
+  DuckDuckGo search needs no API key, account, or provider settings, with an
+  automatic key-free Bing fallback when DuckDuckGo cannot return results. Mini-Tater
+  summarizes search snippets and shows clickable source links in chat, keeping
+  URLs out of the spoken reply. Searches run outside HA's event loop and repeated
+  queries are cached for two minutes. This uses unofficial search-page access;
+  blocked, rate-limited, empty, and timed-out searches are reported clearly.
 
 Device control also supports thermostat fan modes, mower start/dock, relative
 speaker volume and mute, and vacuum cleaning of named HA areas on compatible
@@ -251,7 +258,7 @@ Vision setting from the shared **Vision** workspace. **Same as Base** uses the B
 model, and key; the dedicated option uses the existing separate Vision endpoint,
 model, and key. Raw camera images are not stored in conversation history or the
 Hydra ledger. Mini Tater does not load Cores, Portals, Shop items, downloaded
-Verbas, web tools, file tools, or external messaging tools. Under **Home tools**,
+Verbas, file tools, or external messaging tools. Under **Home tools**,
 choose entities exposed to Assist or all supported Home Assistant entities. The
 scope applies to lists, weather, media players, and other HA entity targets too.
 

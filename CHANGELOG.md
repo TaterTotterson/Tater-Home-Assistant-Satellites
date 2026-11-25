@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.29
+
+- Fix opening Overview and other existing dashboards in Dashboard Studio failing
+  with "cannot pickle 'orjson.Fragment' object". Decode registered command
+  responses through Home Assistant's JSON encoder before Studio copies, hashes,
+  or stores them.
+- Preserve complete layouts and options, including nested cached JSON fragments
+  and automatically generated dashboard strategies. Keep HA's cached responses
+  independent from Studio drafts and report invalid responses without stalling.
+- Add regression coverage for opening cached Overview configurations, nested
+  fragments, ordinary responses, save acknowledgements, and decoding failures.
+
 ## 1.4.28
 
 - Show the first design's chat and accurate AI progress while the model runs,

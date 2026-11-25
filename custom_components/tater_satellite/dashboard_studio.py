@@ -468,11 +468,24 @@ class LovelaceGateway:
         message = {"id": 1, "type": command, **fields}
         if schema:
             message = schema(message)
+        from homeassistant.core import Context
+        from homeassistant.helpers.json import json_bytes
+
         result = asyncio.get_running_loop().create_future()
 
         def success(_id, value=None):
-            if not result.done():
-                result.set_result(deepcopy(value))
+            if result.done():
+                return
+            # Lovelace can return cached orjson.Fragment values. Decode the same
+            # JSON HA sends over WebSocket before copying, hashing or storing it.
+            try:
+                decoded = json.loads(json_bytes(value))
+            except (TypeError, ValueError):
+                result.set_exception(
+                    RuntimeError("Home Assistant returned an invalid dashboard response.")
+                )
+            else:
+                result.set_result(decoded)
 
         def failure(_id, code, message, *args, **kwargs):
             if not result.done():
@@ -485,8 +498,6 @@ class LovelaceGateway:
                         f"Home Assistant could not complete the dashboard request: {error}"
                     )
                 )
-
-        from homeassistant.core import Context
 
         connection = SimpleNamespace(
             user=user,

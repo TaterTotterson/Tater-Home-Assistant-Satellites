@@ -577,7 +577,36 @@ class ValidationTests(unittest.TestCase):
         )
 
 
+class CachedJsonFragment:
+    """Opaque HA response whose data must cross the JSON boundary, not deepcopy."""
+
+    def __init__(self, value):
+        self.json = json.dumps(value, ensure_ascii=False)
+
+    def __deepcopy__(self, memo):
+        raise TypeError("cannot pickle 'orjson.Fragment' object")
+
+
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        def encode(value):
+            def default(item):
+                if isinstance(item, CachedJsonFragment):
+                    return json.loads(item.json)
+                raise TypeError("Unsupported JSON value")
+
+            return json.dumps(value, default=default, ensure_ascii=False).encode()
+
+        self.enterContext(
+            patch.dict(
+                "sys.modules",
+                {
+                    "homeassistant.core": SimpleNamespace(Context=lambda **kwargs: kwargs),
+                    "homeassistant.helpers.json": SimpleNamespace(json_bytes=encode),
+                },
+            )
+        )
+
     async def test_registered_schema_and_requesting_admin_are_used(self):
         seen = []
 
@@ -598,12 +627,9 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
         )
-        with patch.dict(
-            "sys.modules", {"homeassistant.core": SimpleNamespace(Context=lambda **kwargs: kwargs)}
-        ):
-            result = await gateway.call(
-                USER, "lovelace/dashboards/create", title="Office", url_path="dashboard-office"
-            )
+        result = await gateway.call(
+            USER, "lovelace/dashboards/create", title="Office", url_path="dashboard-office"
+        )
         self.assertEqual(result["id"], "dashboard-office")
         self.assertIs(seen[0][0], USER)
         self.assertEqual(seen[0][1]["mode"], "storage")
@@ -625,10 +651,98 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
         )
-        with patch.dict(
-            "sys.modules", {"homeassistant.core": SimpleNamespace(Context=lambda **kwargs: kwargs)}
+        self.assertIsNone(await gateway.load(USER, "missing"))
+
+    async def test_existing_overview_opens_with_cached_and_nested_json_fragments(self):
+        original = config("Caf\u00e9")
+        original["views"][0]["theme"] = "My theme"
+        strategy = {"strategy": {"type": "original-states", "hide_entities_without_area": True}}
+        for response, expected in (
+            (CachedJsonFragment(original), original),
+            ({"views": [CachedJsonFragment(original["views"][0])]}, original),
+            (original, original),
+            (CachedJsonFragment(strategy), strategy),
         ):
-            self.assertIsNone(await gateway.load(USER, "missing"))
+            with self.subTest(response=type(response).__name__, strategy="strategy" in expected):
+                manager = _Manager()
+                designer = studio.DashboardStudio(manager)
+
+                def list_dashboards(hass, connection, message):
+                    connection.send_result(
+                        message["id"],
+                        [
+                            {
+                                "url_path": "lovelace",
+                                "title": "Overview",
+                                "mode": "storage",
+                                "id": "lovelace",
+                            }
+                        ],
+                    )
+
+                async def load(hass, connection, message):
+                    self.assertEqual(message["url_path"], "lovelace")
+                    connection.send_result(message["id"], response)
+
+                designer.gateway = studio.LovelaceGateway(
+                    SimpleNamespace(
+                        data={
+                            "websocket_api": {
+                                "lovelace/dashboards/list": (list_dashboards, False),
+                                "lovelace/config": (load, False),
+                            }
+                        }
+                    )
+                )
+                opened = await designer.open(USER, url_path="lovelace")
+                self.assertEqual(opened["config"], expected)
+                self.assertFalse(opened["has_changes"])
+                stored = designer._store()[opened["id"]]
+                self.assertEqual(stored["base"], expected)
+                self.assertEqual(stored["base_hash"], studio.config_hash(expected))
+                self.assertEqual(json.loads(json.dumps(opened))["config"], expected)
+                opened["config"]["extra"] = "draft edit"
+                self.assertNotIn("extra", stored["base"])
+                self.assertNotIn("extra", expected)
+
+    async def test_save_acknowledgements_and_plain_results_are_independent_json(self):
+        source = {"views": [{"title": "Original"}]}
+
+        def handler(hass, connection, message):
+            connection.send_result(
+                message["id"], source if message["type"] == "lovelace/config" else None
+            )
+
+        gateway = studio.LovelaceGateway(
+            SimpleNamespace(
+                data={
+                    "websocket_api": {
+                        "lovelace/config": (handler, False),
+                        "lovelace/config/save": (handler, False),
+                    }
+                }
+            )
+        )
+        result = await gateway.load(USER, "lovelace")
+        result["views"][0]["title"] = "Edited"
+        self.assertEqual(source["views"][0]["title"], "Original")
+        self.assertIsNone(await gateway.call(USER, "lovelace/config/save", config=source))
+
+    async def test_invalid_json_response_fails_without_waiting_for_a_timeout(self):
+        def handler(hass, connection, message):
+            connection.send_result(message["id"], object())
+
+        gateway = studio.LovelaceGateway(
+            SimpleNamespace(
+                data={
+                    "websocket_api": {
+                        "lovelace/config": (handler, False),
+                    }
+                }
+            )
+        )
+        with self.assertRaisesRegex(RuntimeError, "invalid dashboard response"):
+            await asyncio.wait_for(gateway.load(USER, "lovelace"), timeout=0.1)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from .const import (
     TRAINER_LINK_HEADER,
 )
 from .manager import TaterSatelliteManager
+from .dashboard_studio import StudioConflict
 
 
 def _manager(request: web.Request) -> TaterSatelliteManager:
@@ -321,6 +322,63 @@ class TaterAssistantTestView(HomeAssistantView):
         except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
             raise web.HTTPBadRequest(text=str(err)) from err
         return self.json({"ok": True, **result})
+
+
+class DashboardStudioView(HomeAssistantView):
+    """Admin-only design workspace, separate from satellite chat."""
+
+    url = f"{API_BASE_PATH}/dashboard-studio"
+    name = "api:tater_satellite:dashboard_studio"
+    requires_auth = True
+
+    @staticmethod
+    def _user(request):
+        user = request.get("hass_user")
+        if user is None or not user.is_admin:
+            raise web.HTTPForbidden(text="Dashboard Studio requires an administrator")
+        return user
+
+    async def get(self, request):
+        user = self._user(request)
+        try:
+            return self.json(await _manager(request).dashboard_studio.snapshot(user))
+        except (ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+
+    async def post(self, request):
+        user = self._user(request)
+        body = await _json_body(request)
+        studio = _manager(request).dashboard_studio
+        workspace_id = str(body.get("workspace_id") or "")
+        revision = body.get("revision")
+        try:
+            action = body.get("action")
+            if action == "settings":
+                settings = await studio.save_settings(user, body.get("settings"))
+                return self.json({"ok": True, "settings": settings})
+            if action == "open":
+                result = await studio.open(
+                    user, workspace_id=workspace_id, url_path=body.get("url_path"),
+                    title=str(body.get("title") or ""),
+                )
+            elif action == "chat":
+                result = await studio.chat(user, workspace_id, revision, body.get("text"))
+            elif action == "apply":
+                result = await studio.apply(user, workspace_id, revision)
+            elif action in {"undo_draft", "undo_apply"}:
+                result = await studio.undo(user, workspace_id, revision, applied=action == "undo_apply")
+            elif action == "remove":
+                await studio.remove(user, workspace_id, revision)
+                return self.json({"ok": True})
+            else:
+                raise ValueError("Choose a Dashboard Studio action.")
+        except StudioConflict as err:
+            raise web.HTTPConflict(text=str(err)) from err
+        except PermissionError as err:
+            raise web.HTTPForbidden(text=str(err)) from err
+        except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
+            raise web.HTTPBadRequest(text=str(err)) from err
+        return self.json({"ok": True, "workspace": result})
 
 
 class TaterHydraClearView(HomeAssistantView):
@@ -893,6 +951,7 @@ VIEWS = (
     AwarenessTestView,
     AwarenessImageView,
     TaterAssistantTestView,
+    DashboardStudioView,
     TaterHydraClearView,
     TaterSpeechAudioView,
     TrainerSettingsView,

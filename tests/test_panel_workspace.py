@@ -27,6 +27,9 @@ class PanelWorkspaceTests(unittest.TestCase):
             self.assertEqual(first, scope["_panel_asset_revision"](path))
             path.write_text("updated panel")
             self.assertNotEqual(first, scope["_panel_asset_revision"](path))
+            current = scope["_panel_asset_revision"](path)
+            (path.parent / "dashboard-studio.js").write_text("updated Studio")
+            self.assertNotEqual(current, scope["_panel_asset_revision"](path))
 
     def test_workspace_preserves_settings_drafts_and_save_contracts(self):
         spec = importlib.util.spec_from_file_location("workspace_settings", ROOT / "custom_components/tater_satellite/settings.py")

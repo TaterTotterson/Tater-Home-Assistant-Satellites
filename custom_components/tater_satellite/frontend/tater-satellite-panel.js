@@ -1,3 +1,7 @@
+const studioModuleUrl = new URL("./dashboard-studio.js", import.meta.url);
+studioModuleUrl.search = new URL(import.meta.url).search;
+const { DashboardStudio, studioStyles } = await import(studioModuleUrl.href);
+
 const API = "tater/satellite/v1";
 const ACCENT = "#e87b40";
 const TATER_HOSTED_USB_FLASHER_URL = "https://taterassistant.com/usb-flasher/";
@@ -43,6 +47,7 @@ const WORKSPACE_PAGES = [
   { id: "vision", label: "Vision", icon: "eye-outline", group: "Your home", description: "One shared image-understanding model for Awareness, Doorbell, and Mini-Tater." },
   { id: "audio", label: "Tater Audio", icon: "waveform", group: "Your home", description: "Stereo pairs, room playback, and push-to-talk intercom." },
   { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", group: "Your home", description: "Discover and connect Bluetooth devices through a satellite." },
+  { id: "dashboard-studio", label: "Dashboard Studio", icon: "view-dashboard-edit-outline", group: "Your home", description: "Design and refine your Home Assistant dashboards with your own AI model." },
   { id: "defaults", label: "Voice defaults", icon: "microphone", group: "Voice & wake", description: "One shared wake profile, with clear defaults for every satellite." },
   { id: "verifier", label: "STT wake check", icon: "text-recognition", group: "Voice & wake", description: "Confirm wake words through each satellite’s Assist pipeline." },
   { id: "arbitration", label: "Wake arbitration", icon: "access-point-check", group: "Voice & wake", description: "Choose one satellite to handle a wake when several hear you." },
@@ -201,6 +206,7 @@ class TaterSatellitePanel extends HTMLElement {
     this._testMessage = "";
     this._testImages = [];
     this._testConversationId = "tater-panel-test";
+    this._studio = new DashboardStudio(this);
     this._globalDraft = null;
     this._arbitrationDraft = null;
     this._wakeDraft = null;
@@ -239,6 +245,7 @@ class TaterSatellitePanel extends HTMLElement {
     const darkMode = value?.themes?.darkMode;
     this.style?.setProperty("color-scheme", typeof darkMode === "boolean" ? darkMode ? "dark" : "light" : "light dark");
     if (!this._data && !this._loading) this.load();
+    if (this._tab === "dashboard-studio") this._studio.updateHass(value);
   }
 
   set panel(value) {
@@ -249,7 +256,7 @@ class TaterSatellitePanel extends HTMLElement {
     if (this._hass && !this._data) this.load();
     if (!this._pollTimer) {
       this._pollTimer = window.setInterval(() => {
-        if (document.hidden || this.hasActiveInput()) return;
+        if (document.hidden || this.hasActiveInput() || this._tab === "dashboard-studio") return;
         if (this._backgroundRenderPending) {
           this._backgroundRenderPending = false;
           this.render();
@@ -357,12 +364,13 @@ class TaterSatellitePanel extends HTMLElement {
     this.render({ preserveView: false });
     this.scrollIntoView?.({ block: "start" });
     this.shadowRoot.querySelector(".workspace-main")?.scrollTo?.({ top: 0, left: 0 });
+    if (tab === "dashboard-studio" && !this._studio.catalog) this._studio.load();
   }
 
   captureViewState() {
     const root = this.shadowRoot;
     if (!root?.querySelectorAll) return null;
-    const scrollSelector = ".workspace-main, .assistant-test-thread, .entity-list, .workspace-dialog, .workspace-dialog-backdrop, pre";
+    const scrollSelector = ".workspace-main, .assistant-test-thread, .studio-thread, .studio-preview-scroll, .entity-list, .workspace-dialog, .workspace-dialog-backdrop, pre";
     const internalScroll = [...root.querySelectorAll(scrollSelector)].map((node, index) => ({
       index,
       top: Number(node.scrollTop || 0),
@@ -511,7 +519,7 @@ class TaterSatellitePanel extends HTMLElement {
       this._picker = null;
     }
     this.shadowRoot.innerHTML = `
-      <style>${this.styles()}${this.workspaceStyles()}</style>
+      <style>${this.styles()}${this.workspaceStyles()}${studioStyles}</style>
       <div class="bridge-workspace">
         <header class="workspace-topbar"><span class="workspace-brand">Tater</span><span class="muted">/</span><span>Home Assistant bridge</span>
           <span class="workspace-connection">${this.renderIcon("home-assistant")} Home Assistant</span>
@@ -529,6 +537,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this.renderDialog()}
     `;
     this.bindEvents();
+    if (this._tab === "dashboard-studio") this._studio.mountPreview();
     this.applyDeviceFilter();
     this.shadowRoot.querySelector("[data-dialog-initial]")?.focus();
     this.restoreViewState(viewState);
@@ -1448,6 +1457,7 @@ class TaterSatellitePanel extends HTMLElement {
       ${this._tab === "doorbell" ? this.renderDoorbell() : ""}
       ${this._tab === "home-control" ? this.renderHomeControl() : ""}
       ${this._tab === "hydra" ? this.renderHydra() : ""}
+      ${this._tab === "dashboard-studio" ? this._studio.render() : ""}
       ${this._tab === "defaults" ? this.renderVoiceDefaults() : ""}
       ${this._tab === "verifier" ? this.renderVerifier() : ""}
       ${this._tab === "arbitration" ? this.renderArbitration() : ""}
@@ -3341,6 +3351,7 @@ class TaterSatellitePanel extends HTMLElement {
 
   bindEvents() {
     const root = this.shadowRoot;
+    if (this._tab === "dashboard-studio") this._studio.bindEvents();
     this.bindAwarenessEvents(root);
     this.bindDoorbellEvents(root);
     root.querySelectorAll("[data-tab]").forEach((button) => {

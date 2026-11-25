@@ -32,6 +32,9 @@ the Tater Assistant add-on is not required.
 - **Optional Tater mode:** use your own language and speech models for voice
   conversations, home control, camera questions, HA lists and weather, music,
   spoken announcements, and delayed device actions.
+- **Dashboard Studio:** design and refine HA dashboards in a dedicated AI chat,
+  with guided starting points, previews, and reversible saves. Available in both
+  assistant modes with its own OpenAI-compatible model connection.
 
 Available features depend on the satellite's hardware and firmware.
 

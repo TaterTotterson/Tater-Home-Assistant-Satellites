@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.26
+
+- Add Dashboard Studio, a workspace at the bottom of Your home in both assistant
+  modes, with a separate design chat, guided starting points, saved drafts, and
+  phone/tablet/desktop previews.
+- Design native HA dashboards from the home's real areas and entities through
+  a dedicated OpenAI-compatible connection with its own settings workspace
+  inside Studio. Preserve the design and chat when visiting settings. Support
+  hosted APIs or local models, preserve saved API keys, and keep credentials
+  server-side. Validate proposals and retry invalid designs.
+- Create and update UI-managed dashboards through HA's registered APIs with
+  backups, draft undo, applied-change undo, and checks for newer edits.
+- Keep Studio conversations separate from voice/Hydra conversations, retain
+  designs across assistant mode changes, and preserve the bridge's existing theme.
+- Refresh the panel and Studio module together when either asset changes.
+
 ## 1.4.25
 
 - Add Mini-Tater's natural-language Web search tool to the Hydra catalog and

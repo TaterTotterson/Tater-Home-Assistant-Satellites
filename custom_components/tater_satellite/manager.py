@@ -74,6 +74,7 @@ from .protocol import (
 )
 from .sat_chat import MAX_SAT_CHAT_FRAME_BYTES, TaterSatChatCoordinator
 from .tater_assistant import MiniTaterRuntime
+from .dashboard_studio import DashboardStudio
 from .settings import (
     DEFAULT_SETTINGS,
     ECHO_SCREEN_DEFAULTS,
@@ -872,6 +873,7 @@ class TaterSatelliteManager:
         self.display_panels = TaterDisplayPanelCoordinator(self)
         self.bluetooth = TaterBluetoothProxyManager(self)
         self.tater_assistant = MiniTaterRuntime(self)
+        self.dashboard_studio = DashboardStudio(self)
         self.wake_arbitrator = WakeArbitrator()
         self.awareness = AwarenessCoordinator(self)
         self.doorbell = DoorbellCoordinator(self)

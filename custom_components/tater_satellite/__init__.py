@@ -40,7 +40,12 @@ def _panel_element_name(version: str) -> str:
 
 def _panel_asset_revision(path: Path) -> str:
     """Give an updated panel a fresh module and custom-element identity."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    digest = hashlib.sha256(path.read_bytes())
+    for dependency in sorted(path.parent.glob("*.js")):
+        if dependency != path:
+            digest.update(dependency.name.encode())
+            digest.update(dependency.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

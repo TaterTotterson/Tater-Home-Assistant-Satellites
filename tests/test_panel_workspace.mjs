@@ -181,6 +181,7 @@ test('Home Assistant is default and hides Tater-only navigation until selected',
   assert.match(nav, /data-tab="assistant"/);
   assert.match(nav, /data-tab="awareness"/);
   assert.match(nav, /data-tab="vision"/);
+  assert.match(nav, /data-tab="bluetooth"[\s\S]*data-tab="dashboard-studio"[\s\S]*Voice & wake/);
   for (const id of ['models', 'home-control', 'hydra']) assert.doesNotMatch(nav, new RegExp(`data-tab="${id}"`));
   panel.navigate('models');
   assert.equal(panel._tab, 'satellites');
@@ -833,4 +834,157 @@ test('sound presets update the full curve, manual edits and refresh preserve uns
   assert.equal(panel._deviceDraft.eq_preset, 'manual');
   assert.equal(panel._deviceDraft.eq_loudness, true);
   assert.match(panel.renderField(field, panel._deviceDraft, 'device'), /<select[\s\S]*Warm[\s\S]*Voice[\s\S]*Manual/);
+});
+
+test('Dashboard Studio keeps a separate workspace and escapes model text', () => {
+  const panel = fixture();
+  panel._studio.catalog = {enabled:true, model_ready:true, home:{areas:4, entities:50}, dashboards:[], workspaces:[]};
+  let html = panel._studio.render();
+  assert.match(html, /Choose for me/);
+  assert.match(html, /Wall tablet/);
+  panel._studio.workspace = {id:'private-design', title:'<img src=x>', url_path:null, revision:2,
+    config:{views:[]}, messages:[{role:'assistant',content:'<script>alert(1)</script>'}], suggestions:[], has_changes:true};
+  html = panel._studio.render();
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+  panel._taterDraft.assistant_mode = 'home_assistant';
+  assert.match(panel.renderNavigation(), /data-tab="dashboard-studio"/);
+  panel.syncDrafts(panel._data);
+  assert.equal(panel._studio.workspace.id, 'private-design');
+});
+
+test('Studio design loop creates a draft and only calls its dedicated API', async () => {
+  const panel = fixture();
+  const calls = [];
+  panel.api = async (method, path, body) => {
+    calls.push({method,path,body});
+    assert.equal(path, 'dashboard-studio');
+    if (method === 'GET') return {enabled:true, model_ready:true, workspaces:[]};
+    if (body.action === 'open') return {workspace:{id:'one',revision:0}};
+    if (body.action === 'chat') return {workspace:{id:'one',revision:1,config:{views:[]},messages:[]}};
+    throw new Error('Unexpected write');
+  };
+  await panel._studio.send('Make a dashboard for my home');
+  assert.equal(panel._studio.workspace.revision, 1);
+  assert.equal(calls.filter(call => call.body?.action === 'chat').length, 1);
+  assert.equal(calls.find(call => call.body?.action === 'chat').body.revision, 0);
+  assert.equal(calls.some(call => call.body?.action === 'apply'), false);
+});
+
+test('Studio preserves a failed request and Enter respects Shift and composition', async () => {
+  const panel = fixture();
+  panel._tab = 'dashboard-studio';
+  const input = {value:'Keep this request'};
+  controls(panel, {'[data-studio-message]':input});
+  panel._studio.message = input.value;
+  panel.api = async () => {throw new Error('Provider unavailable')};
+  await panel._studio.send();
+  assert.equal(panel._studio.message, 'Keep this request');
+  assert.match(panel._studio.error, /Provider unavailable/);
+  let sent = 0, prevented = 0;
+  panel._studio.send = () => {sent++};
+  for (const flags of [{shiftKey:true}, {isComposing:true}, {}]) input.listeners.keydown({key:'Enter', preventDefault:()=>{prevented++}, ...flags});
+  assert.equal(sent, 1);
+  assert.equal(prevented, 1);
+});
+
+test('Studio preview creates inert native cards, rebuilds lazy cards and updates state', async () => {
+  const panel = fixture();
+  class Element {
+    constructor() {this.children=[];this.events={};this.style={setProperty(){}};this.isConnected=true;}
+    setAttribute() {}
+    addEventListener(name, callback) {this.events[name]=callback;}
+    append(child) {this.children.push(child);}
+    replaceChildren(...children) {this.children=children;}
+    get firstElementChild() {return this.children[0];}
+  }
+  const target = new Element();
+  panel.shadowRoot.querySelector = selector => selector === '[data-studio-native-preview]' ? target : null;
+  const oldDocument = globalThis.document, oldHelpers = window.loadCardHelpers;
+  globalThis.document = {createElement:()=>new Element()};
+  const created = [];
+  window.loadCardHelpers = async () => ({createCardElement:config => {
+    const card = new Element();card.config=config;created.push(card);return card;
+  }});
+  try {
+    panel._hass = {states:{'light.office':{state:'off'}}};
+    panel._studio.workspace = {config:{views:[{type:'sections',sections:[{cards:[{type:'tile',entity:'light.office'}]}]}]}};
+    await panel._studio.mountPreview();
+    const holder = target.children[0].children[0].children[0];
+    assert.equal(holder.inert, true);
+    assert.equal(created[0].config.entity, 'light.office');
+    created[0].events['ll-rebuild']({stopPropagation(){}});
+    assert.equal(created.length, 2);
+    assert.equal(panel._studio._cards.length, 1);
+    assert.equal(holder.children[0], created[1]);
+    const hass = {states:{'light.office':{state:'on'}}};
+    panel._studio.updateHass(hass);
+    assert.equal(created[1].hass, hass);
+  } finally {
+    globalThis.document = oldDocument;window.loadCardHelpers = oldHelpers;
+  }
+});
+
+
+test('Studio connection has its own workspace and preserves the design and pending edits', async () => {
+  const panel = fixture();
+  panel._tab = 'dashboard-studio';
+  const saved = {base_url:'http://designer:8000/v1', model:'designer', api_key_set:true};
+  panel._studio.catalog = {model_ready:false, settings:saved, dashboards:[]};
+  let html = panel._studio.render();
+  assert.match(html, /AI connection/);
+  assert.doesNotMatch(html, /data-studio-setting=/);
+  const workspace = {id:'my-layout', title:'My layout', url_path:null, config:{views:[]}, messages:[]};
+  panel._studio.workspace = workspace;
+  panel._studio.message = 'Keep my unfinished request';
+  const position = {designScroll:250};
+  panel.captureViewState = () => position;
+  let restored;
+  panel.restoreViewState = state => {restored = state;};
+  const open = {dataset:{studioAction:'settings'}};
+  controls(panel, {}, {'[data-studio-action]':[open]});
+  await open.listeners.click();
+  assert.equal(panel._studio.screen,'connection');
+  html = panel._studio.render();
+  assert.match(html, /Back to Studio/);
+  assert.doesNotMatch(html, /data-studio-message|data-studio-starter|data-studio-native-preview|data-studio-dashboard/);
+  assert.match(html, /data-studio-setting="base_url"/);
+  assert.match(html, /Key saved/);
+  assert.doesNotMatch(html, /data-tab="models"/);
+  const input = {dataset:{studioSetting:'model'}, value:'new-designer'};
+  const save = {dataset:{studioAction:'save-settings'}};
+  controls(panel, {}, {'[data-studio-setting]':[input], '[data-studio-action]':[save]});
+  input.listeners.input({target:input});
+  html = panel._studio.render();
+  assert.match(html, /value="new-designer"/);
+  const back = {dataset:{studioAction:'back-to-design'}};
+  controls(panel, {}, {'[data-studio-action]':[back]});
+  await back.listeners.click();
+  assert.equal(panel._studio.screen,'design');
+  assert.equal(restored,position);
+  assert.equal(panel._studio.workspace,workspace);
+  assert.equal(panel._studio.message,'Keep my unfinished request');
+  assert.doesNotMatch(panel._studio.render(),/data-studio-setting=/);
+  controls(panel, {}, {'[data-studio-action]':[open]});
+  await open.listeners.click();
+  assert.match(panel._studio.render(), /value="new-designer"/);
+  controls(panel, {}, {'[data-studio-action]':[save]});
+  panel._studio.connectionDraft.api_key = 'new-secret';
+  const calls = [];
+  panel.api = async (method, path, body) => {
+    assert.equal(path,'dashboard-studio');
+    calls.push({method,body});
+    if(method === 'POST') return {settings:{...saved, model:'new-designer'}};
+    return {model_ready:true, settings:{...saved, model:'new-designer'}, dashboards:[]};
+  };
+  await save.listeners.click();
+  assert.equal(calls[0].body.action,'settings');
+  assert.equal(calls[0].body.settings.model,'new-designer');
+  assert.equal(calls[0].body.settings.api_key,'new-secret');
+  assert.equal(panel._studio.connectionDraft.api_key,'');
+  assert.equal(panel._taterDraft.assistant_mode,'home_assistant');
+  assert.match(panel._studio.notice,/ready to design/);
+  assert.equal(panel._studio.screen,'connection');
+  assert.equal(panel._studio.workspace,workspace);
+  assert.doesNotMatch(panel._studio.render(),/new-secret/);
 });

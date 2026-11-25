@@ -140,6 +140,20 @@ option. Software-rendered screens keep the text readable without the effect.
 Use **Server & pairing** to view the Home Assistant address and active pairing
 code. **Add satellite** generates a new temporary pairing code.
 
+### Dashboard Studio
+
+**Your home → Dashboard Studio** is available in both assistant modes. Open
+**AI connection** to open its own settings workspace for the OpenAI-compatible
+API base URL, model, and API key (optional for local providers). Save, then use
+**Back to Studio** to return to your design. Studio uses this independent
+connection for its dedicated dashboard design chat.
+Start with **Choose for me** or a room, tablet, energy, or security layout, then
+refine the draft conversationally. Use the phone/tablet/desktop previews before
+applying. Draft undo and backups let you reverse changes; newer HA edits are
+checked before saving. Switching assistant modes keeps Studio and saved designs
+available.
+See the [Dashboard Studio guide](dashboard-studio.md) for details.
+
 ### Tater assistant mode
 
 The **Assistant** workspace selects who owns the complete voice turn. **Home

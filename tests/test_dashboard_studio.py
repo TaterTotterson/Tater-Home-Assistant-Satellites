@@ -61,6 +61,12 @@ class Gateway:
     async def load(self, user, path):
         return deepcopy(self.configs.get(path))
 
+    async def theme_names(self, user):
+        return ["default", "Midnight"]
+
+    async def components(self, user):
+        return []
+
     async def call(self, user, command, **fields):
         self.calls.append((command, deepcopy(fields)))
         if command.endswith("/create"):
@@ -240,19 +246,24 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.designer.design.side_effect = [
             {"message": "Outline", "config": incomplete},
             {"message": "Still an outline", "config": incomplete},
-            {"message": "Complete design", "config": config()},
+            {
+                "repairs": [
+                    {"view_index": index, "sections": config()["views"][0]["sections"]}
+                    for index in range(3)
+                ]
+            },
         ]
         row = await self.design()
         self.assertEqual(self.designer.design.await_count, 3)
-        self.assertEqual(row["config"], config())
+        self.assertEqual(len(row["config"]["views"]), 3)
+        for view in row["config"]["views"]:
+            self.assertEqual(view["sections"], config()["views"][0]["sections"])
         messages = self.designer.design.call_args.args[0]
-        self.assertEqual(messages[-2]["role"], "assistant")
-        self.assertEqual(json.loads(messages[-2]["content"])["config"], incomplete)
-        feedback = messages[-1]["content"]
-        for number in (1, 2, 3):
-            self.assertIn(f"Sections view {number} needs sections", feedback)
-        self.assertIn('"sections_view_example"', feedback)
-        self.assertIn('"type": "grid"', feedback)
+        self.assertEqual(len(messages), 2)
+        payload = json.loads(messages[-1]["content"])
+        self.assertEqual([row["view_index"] for row in payload["views_to_complete"]], [0, 1, 2])
+        self.assertEqual(payload["available_entities"], INVENTORY)
+        self.assertEqual(self.designer.design.call_args.args[2]["required"], ["repairs"])
         self.assertEqual(self.gateway.calls, [])
 
     async def test_native_tater_base_output_uses_detailed_view_schema_and_repair(self):
@@ -295,13 +306,249 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("type", sections["items"]["properties"]["cards"]["items"]["required"])
         self.assertEqual(self.gateway.calls, [])
 
+    async def test_visual_direction_and_installed_theme_are_saved_in_the_real_config(self):
+        row = await self.studio.open(USER)
+        themed = config()
+        themed["views"][0]["background"] = "linear-gradient(135deg, #111827, #30204a)"
+        themed["views"][0]["sections"][0]["background"] = {"color": "#24556c", "opacity": 30}
+        self.designer.design.return_value = {"message": "A neon control room.", "config": themed}
+        row = await self.studio.chat(
+            USER, row["id"], row["revision"], "Make it bold", visual_style="neon", theme="Midnight"
+        )
+        payload = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        self.assertEqual(payload["visual_direction"], studio.DESIGN_STYLES["neon"])
+        self.assertIn("Midnight", payload["available_themes"])
+        self.assertEqual(payload["selected_theme"], "Midnight")
+        self.assertEqual(row["visual_style"], "neon")
+        self.assertEqual(row["theme"], "Midnight")
+        self.assertEqual(row["config"]["views"][0]["theme"], "Midnight")
+        self.assertEqual(row["config"]["views"][0]["background"], themed["views"][0]["background"])
+        self.assertEqual(self.gateway.calls, [])
+        row = await self.studio.apply(USER, row["id"], row["revision"])
+        self.assertEqual(self.gateway.configs[row["url_path"]], row["config"])
+        self.assertEqual(
+            (await self.studio.open(USER, workspace_id=row["id"]))["visual_style"], "neon"
+        )
+
+    async def test_invalid_visual_choices_never_call_the_model(self):
+        row = await self.studio.open(USER)
+        for values in (
+            {"visual_style": "invented"},
+            {"visual_style": {}},
+            {"theme": "not-installed"},
+            {"theme": {}},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                await self.studio.chat(USER, row["id"], row["revision"], "Restyle", **values)
+        self.designer.design.assert_not_awaited()
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+
+    async def test_focused_repair_preserves_complete_views_and_rejects_invented_devices(self):
+        row = await self.design()
+        outline = config("Keep this view")
+        outline["views"].append(
+            {"title": "New room", "path": "new", "type": "sections", "theme": "Midnight"}
+        )
+        before = deepcopy(outline)
+        for entity in ("light.invented", "light.office"):
+            self.designer.design.side_effect = [
+                {"message": "Expanded layout", "config": outline},
+                {"message": "Expanded layout", "config": outline},
+                {
+                    "repairs": [
+                        {"view_index": 1, "sections": config(entity=entity)["views"][0]["sections"]}
+                    ]
+                },
+            ]
+            if entity == "light.invented":
+                with self.assertRaisesRegex(ValueError, "Unknown entities"):
+                    await self.studio.chat(USER, row["id"], row["revision"], "Add a room")
+                self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+            else:
+                updated = await self.studio.chat(USER, row["id"], row["revision"], "Add a room")
+                self.assertEqual(updated["config"]["views"][0], before["views"][0])
+                self.assertEqual(updated["config"]["views"][1]["theme"], "Midnight")
+        self.assertEqual(outline, before)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_null_repair_cannot_bypass_validation(self):
+        row = await self.design()
+        self.designer.design.side_effect = [
+            {"message": "Draft", "config": config(entity="light.invented")},
+            {"message": "Please provide your devices", "config": None},
+            {"message": "Discussion", "config": None},
+        ]
+        with self.assertRaisesRegex(ValueError, "saved draft is unchanged"):
+            await self.studio.chat(USER, row["id"], row["revision"], "Change it")
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+
+    async def test_original_layout_is_freeform_and_has_no_forced_recipe(self):
+        row = await self.studio.open(USER)
+        row = await self.studio.chat(
+            USER, row["id"], row["revision"], "Surprise me", layout="original"
+        )
+        payload = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        self.assertEqual(payload["composition_examples"], [])
+        self.assertIn("Invent your own", payload["layout_direction"]["brief"])
+        self.assertEqual(row["layout"], "original")
+        self.assertEqual(row["config"], config())
+
+    async def test_scoped_chat_cannot_change_other_sections_or_views(self):
+        row = await self.design()
+        stored = self.studio._store()[row["id"]]
+        stored["draft"]["views"][0]["sections"].append(
+            {"type": "grid", "cards": [{"type": "markdown", "content": "Keep this"}]}
+        )
+        stored["draft"]["views"].append({**deepcopy(config("Other")["views"][0]), "path": "other"})
+        before = deepcopy(stored["draft"])
+        changed = config()
+        changed["background"] = "unrequested global change"
+        changed["views"][0]["theme"] = "Midnight"
+        changed["views"][0]["sections"][0]["cards"][0]["name"] = "Renamed light"
+        self.designer.design.return_value = {
+            "message": "Updated the selected section.",
+            "config": changed,
+        }
+        updated = await self.studio.chat(
+            USER,
+            row["id"],
+            row["revision"],
+            "Make this clearer",
+            focus={"view_index": 0, "section_index": 0},
+        )
+        expected = deepcopy(before)
+        expected["views"][0]["sections"][0] = changed["views"][0]["sections"][0]
+        self.assertEqual(updated["config"], expected)
+        payload = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        self.assertEqual(len(payload["current_draft"]["views"]), 1)
+        self.assertEqual(len(payload["current_draft"]["views"][0]["sections"]), 1)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_bad_scope_fails_before_any_model_request(self):
+        row = await self.studio.open(USER)
+        with self.assertRaises(ValueError):
+            await self.studio.chat(
+                USER, row["id"], row["revision"], "Change it", focus={"view_index": 1}
+            )
+        self.designer.design.assert_not_awaited()
+
+    async def test_design_timeout_has_a_clear_error_and_keeps_the_saved_draft(self):
+        row = await self.studio.open(USER)
+        self.designer.design.side_effect = TimeoutError()
+        with self.assertRaisesRegex(ValueError, "reached its time limit"):
+            await self.studio.chat(USER, row["id"], row["revision"], "Invent a layout")
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+
+    async def test_focused_view_cannot_create_a_conflicting_path_in_another_view(self):
+        row = await self.design()
+        stored = self.studio._store()[row["id"]]
+        stored["draft"]["views"].append({**deepcopy(config("Other")["views"][0]), "path": "other"})
+        before = deepcopy(stored["draft"])
+        proposal = config()
+        proposal["views"][0]["path"] = "other"
+        self.designer.design.return_value = {"message": "Changed view", "config": proposal}
+        with self.assertRaisesRegex(ValueError, "conflicts with the surrounding dashboard"):
+            await self.studio.chat(
+                USER, row["id"], row["revision"], "Change this view", focus={"view_index": 0}
+            )
+        self.assertEqual(stored["draft"], before)
+
+    async def test_concepts_are_distinct_saved_drafts_until_explicitly_chosen_and_applied(self):
+        row = await self.studio.open(USER)
+        initial = deepcopy(row["config"])
+        layouts = [item["example"] for item in studio.layout_examples(INVENTORY, "auto")]
+        self.designer.design.side_effect = [
+            {
+                "message": "A new layout.",
+                "design_intent": "A different composition.",
+                "config": candidate,
+            }
+            for candidate in layouts
+        ]
+        for index in range(3):
+            row = await self.studio.concept(
+                USER, row["id"], row["revision"], index, "Three different ideas"
+            )
+            self.assertEqual(row["config"], initial)
+            self.assertEqual(len(row["concepts"]), index + 1)
+        self.assertEqual(
+            len({studio.composition_signature(idea["config"]) for idea in row["concepts"]}), 3
+        )
+        resumed = await self.studio.open(USER, workspace_id=row["id"])
+        self.assertEqual(resumed["concepts"], row["concepts"])
+        self.assertEqual(self.gateway.calls, [])
+        chosen = await self.studio.choose_concept(
+            USER, row["id"], row["revision"], row["concepts"][1]["id"]
+        )
+        self.assertEqual(chosen["config"], layouts[1])
+        self.assertTrue(chosen["can_undo_draft"])
+        self.assertEqual(chosen["layout"], "editorial")
+        self.assertEqual(self.gateway.calls, [])
+        undone = await self.studio.undo(USER, row["id"], chosen["revision"])
+        self.assertEqual(undone["config"], initial)
+
+    async def test_a_recolored_duplicate_is_repaired_without_losing_the_first_concept(self):
+        row = await self.studio.open(USER)
+        row = await self.studio.concept(USER, row["id"], row["revision"], 0)
+        before = deepcopy(row)
+        self.designer.design.return_value = {
+            "message": "Same cards, different colors.",
+            "config": studio.apply_visual_direction(config(), "neon", ""),
+        }
+        with self.assertRaisesRegex(ValueError, "repeats another concept"):
+            await self.studio.concept(USER, row["id"], row["revision"], 1)
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), before)
+        self.assertEqual(self.designer.design.await_count, 4)
+        with self.assertRaises(studio.StudioConflict):
+            await self.studio.concept(USER, row["id"], row["revision"], 2)
+        with self.assertRaises(ValueError):
+            await self.studio.choose_concept(USER, row["id"], row["revision"], "not-an-idea")
+        with self.assertRaises(ValueError):
+            await self.studio.choose_concept(
+                OTHER, row["id"], row["revision"], row["concepts"][0]["id"]
+            )
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_only_verified_component_guidance_reaches_the_model_and_custom_draft_applies(
+        self,
+    ):
+        self.gateway.components = AsyncMock(
+            return_value=studio.installed_components(
+                [
+                    {
+                        "type": "module",
+                        "url": "/hacsfiles/lovelace-mushroom/mushroom.js?private_resource_token=hidden",
+                    },
+                    {"type": "module", "url": "/hacsfiles/lovelace-card-mod/card-mod.js"},
+                ]
+            )
+        )
+        row = await self.studio.open(USER)
+        proposal = config()
+        card = proposal["views"][0]["sections"][0]["cards"][0]
+        card.update(
+            type="custom:mushroom-entity-card",
+            card_mod={"style": "ha-card { border-radius: 24px; }"},
+        )
+        self.designer.design.return_value = {
+            "message": "Uses your installed cards.",
+            "config": proposal,
+        }
+        row = await self.studio.chat(USER, row["id"], row["revision"], "Use my installed cards")
+        payload = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        self.assertEqual(len(payload["available_components"]), 2)
+        self.assertNotIn("private_resource_token", json.dumps(payload))
+        self.assertEqual(self.gateway.calls, [])
+        applied = await self.studio.apply(USER, row["id"], row["revision"])
+        self.assertEqual(self.gateway.configs[applied["url_path"]], proposal)
+
     async def test_failed_design_preserves_the_previous_draft_and_history(self):
         row = await self.design()
         self.designer.design.return_value = {
             "message": "Bad draft",
             "config": config(entity="light.invented"),
         }
-        with self.assertRaisesRegex(ValueError, "another revision"):
+        with self.assertRaisesRegex(ValueError, "saved draft is unchanged"):
             await self.studio.chat(USER, row["id"], row["revision"], "Change it")
         self.assertEqual((await self.studio.open(USER, workspace_id=row["id"])), row)
         self.assertEqual(self.designer.design.await_count, 1 + studio.MAX_DESIGN_ATTEMPTS)
@@ -435,6 +682,80 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_native_palette_is_visible_even_when_the_model_ignores_the_style_brief(self):
+        source = config()
+        appearances = []
+        for style in studio.STYLE_PALETTES:
+            themed = studio.apply_visual_direction(source, style, "")
+            view = themed["views"][0]
+            appearances.append(view["background"])
+            self.assertIn("var(--primary-background-color)", view["background"])
+            self.assertIn("color", view["sections"][0]["cards"][0])
+            self.assertIn("background", view["sections"][0])
+            self.assertEqual(studio.validate_config(themed, {"light.office"}), [])
+        self.assertEqual(len(set(appearances)), len(studio.STYLE_PALETTES))
+        self.assertEqual(source, config())
+        self.assertEqual(studio.apply_visual_direction(source, "auto", ""), source)
+
+    def test_native_palette_keeps_model_colors_images_and_view_options(self):
+        source = config()
+        view = source["views"][0]
+        view["background"] = {"image": "/local/my-home.jpg", "opacity": 30}
+        view["theme"] = "Existing theme"
+        view["sections"][0]["background"] = {"color": "#123456", "opacity": 22}
+        view["sections"][0]["cards"][0]["color"] = "amber"
+        themed = studio.apply_visual_direction(source, "neon", "")
+        self.assertEqual(themed, source)
+
+    def test_switching_direction_replaces_the_previous_default_palette(self):
+        natural = studio.apply_visual_direction(config(), "natural", "")
+        neon = studio.apply_visual_direction(natural, "neon", "", previous_style="natural")
+        self.assertNotEqual(natural["views"][0]["background"], neon["views"][0]["background"])
+        self.assertEqual(
+            neon["views"][0]["sections"][0]["cards"][0]["color"], studio.STYLE_PALETTES["neon"][0]
+        )
+        self.assertEqual(
+            natural["views"][0]["sections"][0]["cards"][0]["color"],
+            studio.STYLE_PALETTES["natural"][0],
+        )
+
+    def test_focused_repairs_must_cover_exactly_the_missing_views_with_content(self):
+        outline = {
+            "views": [{"type": "sections", "path": "one"}, {"type": "sections", "path": "two"}]
+        }
+        section = config()["views"][0]["sections"]
+        for repairs in (
+            [],
+            [{"view_index": 0, "sections": section}],
+            [{"view_index": 0, "sections": section}, {"view_index": 0, "sections": section}],
+            [{"view_index": 0, "sections": section}, {"view_index": 9, "sections": section}],
+            [{"view_index": 0, "sections": section}, {"view_index": True, "sections": section}],
+            [
+                {"view_index": 0, "sections": section},
+                {"view_index": 1, "sections": [{"type": "grid", "cards": []}]},
+            ],
+        ):
+            with self.subTest(repairs=repairs):
+                self.assertEqual(
+                    studio.merge_section_repairs(outline, {"repairs": repairs}, [0, 1]), outline
+                )
+
+    def test_themes_must_be_installed_or_preserved_from_the_original(self):
+        themed = config()
+        themed["views"][0]["theme"] = "Imagined"
+        self.assertTrue(
+            studio.validate_config(themed, {"light.office"}, available_themes=["default"])
+        )
+        self.assertEqual(
+            studio.validate_config(
+                themed, {"light.office"}, original=themed, available_themes=["default"]
+            ),
+            [],
+        )
+        self.assertEqual(
+            studio.validate_config(themed, {"light.office"}, available_themes=["Imagined"]), []
+        )
+
     def test_missing_types_in_nested_cards_are_repaired_without_rewriting_entity_rows(self):
         proposed = config()
         rows = [{"entity": "light.office", "name": "Keep this row"}]
@@ -637,6 +958,25 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await gateway.call(USER, "call_service", domain="light")
         with self.assertRaises(PermissionError):
             await gateway.call(SimpleNamespace(is_admin=False), "lovelace/config")
+
+    async def test_installed_themes_are_read_without_global_theme_changes(self):
+        def handler(hass, connection, message):
+            self.assertIs(connection.user, USER)
+            self.assertEqual(message["type"], "frontend/get_themes")
+            connection.send_result(
+                message["id"],
+                {
+                    "themes": {"Midnight": {"primary-color": "#123456"}, "Warm": {}},
+                    "default_theme": "Warm",
+                },
+            )
+
+        gateway = studio.LovelaceGateway(
+            SimpleNamespace(data={"websocket_api": {"frontend/get_themes": (handler, False)}})
+        )
+        self.assertEqual(await gateway.theme_names(USER), ["Midnight", "Warm", "default"])
+        gateway.hass.data.clear()
+        self.assertEqual(await gateway.theme_names(USER), ["default"])
 
     async def test_ha_errors_and_async_commands_reach_the_caller(self):
         async def handler(hass, connection, message):

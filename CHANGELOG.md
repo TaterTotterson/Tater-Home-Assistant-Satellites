@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.4.30
+
+- Add working composition examples for bento, editorial, room-navigation,
+  control-center and media layouts, with a separate Original design direction
+  and Surprise me starter. The designer may combine patterns or invent its own.
+- Generate three alternative compositions as separate saved ideas. Preview and
+  compare them, keep completed ideas if a later request fails, and choose one
+  as the editable draft with Undo. Palette-only changes do not count as distinct
+  concepts. Idea generation and selection do not publish to HA.
+- Discover supported registered Mushroom, Bubble Card, Button Card, Mini Graph
+  Card and card-mod resources. Supply usage guidance to the model, allow verified
+  custom card types and static styling, and load needed installed modules for
+  preview. Native designs remain available without community components.
+- Edit a selected view or section while preserving all surrounding configuration
+  in code. Add an edit-scope selector and Edit only this section preview controls.
+- Keep initial concept prompts compact with a balanced entity selection across
+  rooms and domains. Prioritize requested and existing entities, preserve complete
+  existing configurations, and validate against the full home inventory.
+- Distinguish slow model responses from connection failures and explain design
+  time limits clearly while retaining the saved draft and any completed ideas.
+- Improve Dashboard Studio's Sections recovery with a focused final repair that
+  fills only missing views and preserves completed content and view options.
+  Require real card content and keep incomplete or invalid repairs out of saved drafts.
+- Include the full output schema when a model falls back to plain JSON, including
+  the focused repair format. Prevent discussion-only repair replies from bypassing
+  validation, and offer a design retry without requiring a Studio reload.
+- Add visual directions for minimal, neon, natural, playful, editorial, and
+  cinematic dashboards. Discover installed HA themes and apply a selected theme
+  to the proposed configuration. Save design choices with each workspace.
+- Preview view and section themes, backgrounds, section widths, and full-width
+  cards. Keep styles in the Lovelace configuration so they survive Apply.
+
 ## 1.4.29
 
 - Fix opening Overview and other existing dashboards in Dashboard Studio failing

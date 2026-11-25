@@ -891,10 +891,10 @@ test('Studio preserves a failed request and Enter respects Shift and composition
 test('Studio preview creates inert native cards, rebuilds lazy cards and updates state', async () => {
   const panel = fixture();
   class Element {
-    constructor() {this.children=[];this.events={};this.style={setProperty(){}};this.isConnected=true;}
+    constructor() {this.children=[];this.events={};this.style={values:{},setProperty(name,value){this.values[name]=value;}};this.isConnected=true;}
     setAttribute() {}
     addEventListener(name, callback) {this.events[name]=callback;}
-    append(child) {this.children.push(child);}
+    append(...children) {this.children.push(...children);}
     replaceChildren(...children) {this.children=children;}
     get firstElementChild() {return this.children[0];}
   }
@@ -908,9 +908,15 @@ test('Studio preview creates inert native cards, rebuilds lazy cards and updates
   }});
   try {
     panel._hass = {states:{'light.office':{state:'off'}}};
-    panel._studio.workspace = {config:{views:[{type:'sections',sections:[{cards:[{type:'tile',entity:'light.office'}]}]}]}};
+    panel._studio.workspace = {config:{views:[{type:'sections',theme:'Midnight',background:'linear-gradient(135deg,#111827,#30204a)',sections:[{theme:'Warm',background:{color:'#334455',opacity:30},cards:[{type:'tile',entity:'light.office'}]}]}]}};
     await panel._studio.mountPreview();
-    const holder = target.children[0].children[0].children[0];
+    const surface = target.children[0];
+    assert.equal(surface.theme,'Midnight');
+    assert.equal(surface.children[0].background,'linear-gradient(135deg,#111827,#30204a)');
+    const section = surface.children[1].children[0];
+    assert.equal(section.theme,'Warm');
+    assert.equal(section.style.values.background,'color-mix(in srgb,#334455 30%,transparent)');
+    const holder = surface.children[1].children[0].children[0];
     assert.equal(holder.inert, true);
     assert.equal(created[0].config.entity, 'light.office');
     created[0].events['ll-rebuild']({stopPropagation(){}});
@@ -920,6 +926,10 @@ test('Studio preview creates inert native cards, rebuilds lazy cards and updates
     const hass = {states:{'light.office':{state:'on'}}};
     panel._studio.updateHass(hass);
     assert.equal(created[1].hass, hass);
+    assert.equal(surface.hass,hass);
+    assert.equal(section.hass,hass);
+    section.children.at(-1).events.click();
+    assert.deepEqual(panel._studio.focus,{view_index:0,section_index:0});
   } finally {
     globalThis.document = oldDocument;window.loadCardHelpers = oldHelpers;
   }
@@ -1064,4 +1074,134 @@ test('Studio clears its busy state if the initial render fails', async () => {
   assert.equal(panel._studio.busy,false);
   assert.equal(panel._studio.error,'Render failed');
   assert.equal(renders,2);
+});
+
+test('Studio visual direction is pending until the next chat and resumes with the saved design', async () => {
+  const panel=fixture();
+  panel._tab='dashboard-studio';
+  panel._studio.catalog={model_ready:true,dashboards:[],themes:['default','Midnight'],styles:[{id:'auto',label:'Let the designer choose'},{id:'neon',label:'Neon control room',description:'Bold and colorful.'}]};
+  panel._studio.workspace={id:'one',revision:1,config:{views:[]},messages:[]};
+  let calls=[];
+  panel.api=async(method,path,body)=>{
+    calls.push({method,body});
+    if(method==='GET') return panel._studio.catalog;
+    if(body.action==='chat') return {workspace:{...panel._studio.workspace,visual_style:body.visual_style,theme:body.theme,revision:2}};
+    if(body.action==='open') return {workspace:{...panel._studio.workspace,visual_style:'neon',theme:'Midnight'}};
+    throw new Error('Unexpected HA write');
+  };
+  const choice={dataset:{studioStyle:'neon'}}, theme={value:'Midnight'}, details={};
+  controls(panel,{'.studio-direction':details,'[data-studio-theme]':theme},{'[data-studio-style]':[choice]});
+  choice.listeners.click();
+  theme.listeners.change({target:theme});
+  assert.equal(details.open,true);
+  assert.equal(calls.length,0);
+  assert.equal(panel._studio.visualStyle,'neon');
+  assert.match(panel._studio.render(),/Neon control room/);
+  assert.match(panel._studio.render(),/Your next message uses these choices/);
+  await panel._studio.send('Make it dramatic');
+  assert.equal(calls[0].body.visual_style,'neon');
+  assert.equal(calls[0].body.theme,'Midnight');
+  panel._studio.visualStyle='auto';panel._studio.theme='';
+  await panel._studio.act('open',{workspace_id:'one'});
+  assert.equal(panel._studio.visualStyle,'neon');
+  assert.equal(panel._studio.theme,'Midnight');
+});
+
+test('Invalid designs keep the message and draft and offer retry without reloading', async () => {
+  const panel=fixture();
+  panel._studio.catalog={model_ready:true,dashboards:[]};
+  const workspace={id:'one',revision:1,config:{views:[]},messages:[]};
+  panel._studio.workspace=workspace;
+  panel.api=async()=>{throw new Error('The model did not finish a valid dashboard. Your saved draft is unchanged.');};
+  await panel._studio.send('Try an editorial look');
+  assert.equal(panel._studio.workspace,workspace);
+  assert.equal(panel._studio.message,'Try an editorial look');
+  assert.equal(panel._studio.failedDesign,true);
+  assert.match(panel._studio.render(),/Try design again/);
+  assert.doesNotMatch(panel._studio.render(),/Reload Studio/);
+  panel.api=async()=>{throw new Error('Studio lost track of this request. Reload Studio to check the latest saved design.');};
+  await panel._studio.send();
+  assert.equal(panel._studio.failedDesign,false);
+  assert.match(panel._studio.render(),/Reload Studio/);
+});
+
+test('Studio generates three ideas sequentially without replacing the draft or applying to HA', async () => {
+  const panel=fixture();
+  const original={views:[]};
+  let current={id:'ideas',revision:0,config:original,messages:[],concepts:[]};
+  panel._studio.workspace=current;
+  panel._studio.catalog={model_ready:true,dashboards:[]};
+  const calls=[];
+  panel.api=async(method,path,body)=>{
+    if(method==='GET') return panel._studio.catalog;
+    calls.push(structuredClone(body));
+    assert.equal(body.revision,current.revision);
+    if(body.action==='concept') {
+      const idea={id:'idea-'+body.index,title:'Idea '+body.index,description:'A distinct composition',layout:['bento','editorial','original'][body.index],config:{views:[{title:'Home',type:'sections',sections:[{cards:[{type:'markdown',content:'Idea '+body.index}]}]}]}};
+      current={...current,revision:current.revision+1,concepts:[...current.concepts,idea]};
+    } else if(body.action==='choose_concept') {
+      const idea=current.concepts.find(item=>item.id===body.concept_id);
+      current={...current,revision:current.revision+1,config:idea.config,layout:idea.layout,has_changes:true};
+    } else throw new Error('Unexpected HA write');
+    return {workspace:current};
+  };
+  await panel._studio.showIdeas();
+  assert.deepEqual(calls.map(call=>call.index),[0,1,2]);
+  assert.deepEqual(panel._studio.workspace.config,original);
+  assert.equal(panel._studio.previewConcept,'idea-0');
+  assert.match(panel._studio.render(),/Compare ideas/);
+  assert.match(panel._studio.render(),/Use this idea/);
+  assert.equal(panel._studio.currentPreview().id,'idea-0');
+  const before=calls.length;
+  await panel._studio.send('Change this');
+  assert.equal(calls.length,before);
+  await panel._studio.act('choose_concept',{concept_id:'idea-1'});
+  assert.equal(panel._studio.previewConcept,'');
+  assert.equal(panel._studio.layout,'editorial');
+  assert.equal(panel._studio.workspace.config.views[0].sections[0].cards[0].content,'Idea 1');
+  assert.equal(calls.some(call=>call.action==='apply'),false);
+});
+
+test('A failed second idea preserves the first and can resume from the remaining idea', async () => {
+  const panel=fixture();
+  panel._studio.catalog={model_ready:true,dashboards:[]};
+  let current={id:'ideas',revision:0,config:{views:[]},concepts:[]}, fail=true;
+  panel._studio.workspace=current;
+  const indices=[];
+  panel.api=async(method,path,body)=>{
+    if(method==='GET') return panel._studio.catalog;
+    assert.equal(body.action,'concept');indices.push(body.index);
+    if(body.index===1 && fail) {fail=false;throw new Error('The model did not finish this idea.');}
+    current={...current,revision:current.revision+1,concepts:[...current.concepts,{id:'idea-'+body.index,title:'Idea',description:'Draft',config:{views:[]}}]};
+    return {workspace:current};
+  };
+  await panel._studio.showIdeas();
+  assert.equal(panel._studio.workspace.concepts.length,1);
+  assert.equal(panel._studio.busy,false);
+  assert.match(panel._studio.render(),/Finish the three ideas/);
+  await panel._studio.showIdeas(true);
+  assert.deepEqual(indices,[0,1,1,2]);
+  assert.equal(panel._studio.workspace.concepts.length,3);
+});
+
+test('Surprise me requests an original layout and scoped edits send explicit indices', async () => {
+  const panel=fixture();panel._tab='dashboard-studio';
+  const workspace={id:'one',revision:0,config:{views:[{type:'sections',sections:[{cards:[]}]}]},messages:[]};
+  panel._studio.workspace=workspace;panel._studio.catalog={model_ready:true,dashboards:[]};
+  const calls=[];
+  panel.api=async(method,path,body)=>{
+    if(method==='GET')return panel._studio.catalog;
+    calls.push(body);return {workspace:{...workspace,revision:1}};
+  };
+  const starter={dataset:{studioStarter:'5'}};
+  controls(panel,{}, {'[data-studio-starter]':[starter]});
+  await starter.listeners.click();
+  assert.equal(calls[0].layout,'original');
+  assert.match(calls[0].text,/Invent an original/);
+  const scope={value:'section:0'};
+  controls(panel,{'[data-studio-scope]':scope});
+  scope.listeners.change({target:scope});
+  await panel._studio.send('Make this section more useful');
+  assert.deepEqual(calls[1].focus,{view_index:0,section_index:0});
+  assert.match(panel._studio.render(),/Everything outside it stays unchanged/);
 });

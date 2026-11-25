@@ -362,7 +362,18 @@ class DashboardStudioView(HomeAssistantView):
                     title=str(body.get("title") or ""),
                 )
             elif action == "chat":
-                result = await studio.chat(user, workspace_id, revision, body.get("text"))
+                result = await studio.chat(
+                    user, workspace_id, revision, body.get("text"),
+                    visual_style=body.get("visual_style"), theme=body.get("theme"),
+                    layout=body.get("layout"), allow_custom=body.get("allow_custom"),
+                    focus=body.get("focus"),
+                )
+            elif action == "concept":
+                result = await studio.concept(user, workspace_id, revision, body.get("index"),
+                    body.get("text"), visual_style=body.get("visual_style"),
+                    theme=body.get("theme"), allow_custom=body.get("allow_custom"))
+            elif action == "choose_concept":
+                result = await studio.choose_concept(user, workspace_id, revision, body.get("concept_id"))
             elif action == "apply":
                 result = await studio.apply(user, workspace_id, revision)
             elif action in {"undo_draft", "undo_apply"}:

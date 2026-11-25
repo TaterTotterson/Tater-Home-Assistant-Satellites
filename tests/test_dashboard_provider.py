@@ -104,6 +104,25 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tool_choice", calls[1])
         self.assertEqual(calls[1]["model"], "studio-model")
 
+    async def test_plain_json_fallback_gets_the_full_schema_including_focused_repairs(self):
+        from test_dashboard_studio import studio
+
+        schema = studio.section_repair_schema([1, 2])
+        replies = [
+            {
+                "view_index": index,
+                "sections": [{"type": "grid", "cards": [{"type": "heading", "heading": "Home"}]}],
+            }
+            for index in (1, 2)
+        ]
+        self.client._chat = AsyncMock(
+            side_effect=[{}, {"content": json.dumps({"repairs": replies})}]
+        )
+        self.assertEqual((await self.client.design(MESSAGES, SETTINGS, schema))["repairs"], replies)
+        fallback = self.client._chat.call_args.args[0][-1]["content"]
+        self.assertIn(json.dumps(schema, ensure_ascii=False), fallback)
+        self.assertIn('"required": ["repairs"]', fallback)
+
     async def test_unsupported_temperature_and_required_choice_are_retried(self):
         calls = []
 
@@ -145,6 +164,15 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.client._session = lambda: SimpleNamespace(post=post)
         with self.assertRaisesRegex(RuntimeError, "Could not reach") as raised:
+            await self.client._post(SETTINGS, {})
+        self.assertNotIn("secret-key", str(raised.exception))
+
+    async def test_slow_generation_is_distinguished_from_an_unreachable_server(self):
+        def post(*args, **kwargs):
+            raise TimeoutError("secret-key in low-level error")
+
+        self.client._session = lambda: SimpleNamespace(post=post)
+        with self.assertRaisesRegex(RuntimeError, "took too long") as raised:
             await self.client._post(SETTINGS, {})
         self.assertNotIn("secret-key", str(raised.exception))
 

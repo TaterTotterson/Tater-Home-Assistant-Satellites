@@ -52,7 +52,11 @@ class DashboardProvider:
                         detail = detail.replace(key, "[redacted]")
                     raise ProviderError(response.status, detail[:500])
                 data = await response.json()
-        except (aiohttp.ClientError, TimeoutError):
+        except TimeoutError:
+            raise RuntimeError(
+                "The dashboard model took too long to respond. Your saved draft is unchanged. Try a smaller request or check the model server."
+            ) from None
+        except aiohttp.ClientError:
             raise RuntimeError(
                 "Could not reach the dashboard model. Check its address and try again."
             ) from None
@@ -148,7 +152,8 @@ class DashboardProvider:
             + [
                 {
                     "role": "user",
-                    "content": "Return only a JSON object with message, config (or null), and optional title and suggestions.",
+                    "content": "Return only a JSON object matching this output schema. Complete every required layout field with real content; do not return an outline. "
+                    + json.dumps(schema, ensure_ascii=False),
                 }
             ],
             settings,

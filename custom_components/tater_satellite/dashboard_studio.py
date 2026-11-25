@@ -97,6 +97,16 @@ DESIGN_CARD_SCHEMA = {
         "name": {"type": "string"},
         "heading": {"type": "string"},
         "content": {"type": "string"},
+        "entities": {"type": "array", "items": {"type": ["string", "object"]}},
+        "cards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"type": {"type": "string"}},
+                "required": ["type"],
+            },
+            "description": "Nested grid/stack cards also need their own type on every child card.",
+        },
     },
     "required": ["type"],
     "additionalProperties": True,
@@ -174,6 +184,11 @@ Design principles:
   Minimal structure (replace the heading and add cards using supplied entities):
   {"views":[{"title":"Home","path":"home","type":"sections","max_columns":2,
     "sections":[{"type":"grid","cards":[{"type":"heading","heading":"Home"}]}]}]}
+- EVERY card object, including children of grid and stack cards, must have its
+  own nonempty type. Use {"type":"tile","entity":"<supplied entity ID>"} for a
+  simple entity card, {"type":"heading","heading":"Room controls"} for a heading,
+  or {"type":"entities","entities":["<supplied entity ID>"]} for a list. Do not
+  put bare entity IDs or entity rows without type directly into a cards array.
 - Start with a calm overview, then room or task sections. Use heading cards,
   tile cards, entity badges, and room subviews when useful. Keep the most useful
   controls first. Avoid a huge wall of diagnostics or every entity in the house.
@@ -245,6 +260,32 @@ def _references(config: Any) -> set[str]:
     return found
 
 
+def _normalize_card(card):
+    if isinstance(card, str) and re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", card):
+        return {"type": "tile", "entity": card}
+    if not isinstance(card, dict) or card.get("type") not in (None, ""):
+        return card
+    candidates = []
+    for key, value_type, kind in (
+        ("entity", str, "tile"),
+        ("entities", list, "entities"),
+        ("heading", str, "heading"),
+        ("content", str, "markdown"),
+        ("cards", list, "grid"),
+    ):
+        if isinstance(card.get(key), value_type) and (
+            key != "entity" or re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", card[key])
+        ):
+            candidates.append(kind)
+    if isinstance(card.get("card"), dict) and isinstance(card.get("conditions"), list):
+        candidates.append("conditional")
+    if len(candidates) == 1 and not any(
+        key in card for key in ("image", "camera_image", "camera_view")
+    ):
+        return {**card, "type": candidates[0]}
+    return card
+
+
 def normalize_config(config: Any) -> Any:
     """Repair unambiguous model nesting errors without dropping cards or options.
 
@@ -273,6 +314,13 @@ def normalize_config(config: Any) -> Any:
             for section in sections:
                 if isinstance(section, dict) and isinstance(section.get("cards"), list):
                     section.setdefault("type", "grid")
+    # Visit actual card positions; entity rows, badges and feature types have
+    # different schemas and must not be rewritten as standalone cards.
+    for node in _walk(result):
+        if isinstance(node.get("cards"), list):
+            node["cards"] = [_normalize_card(card) for card in node["cards"]]
+        if isinstance(node.get("card"), dict):
+            node["card"] = _normalize_card(node["card"])
     return result
 
 
@@ -349,9 +397,15 @@ def validate_config(config: Any, entity_ids: set[str], original: Any = None) -> 
     cards = list(_cards(config))
     if len(cards) > 300:
         errors.append("Use fewer than 300 cards; keep this dashboard focused.")
-    for card in cards:
-        if not isinstance(card, dict) or not isinstance(card.get("type"), str):
-            errors.append("Every card needs a card type.")
+    for index, card in enumerate(cards):
+        if (
+            not isinstance(card, dict)
+            or not isinstance(card.get("type"), str)
+            or not card["type"].strip()
+        ):
+            errors.append(
+                f"Card {index + 1} needs a card type, such as tile, heading, or entities, including inside nested grids and stacks."
+            )
             continue
         kind = card["type"]
         if kind not in NATIVE_CARDS | {"weather-forecast"} and kind not in previous_types:
@@ -762,6 +816,10 @@ class DashboardStudio:
                             "content": "Repair your previous design and return the complete corrected config. "
                             "Keep every intended view and card. For EACH view whose type is sections, "
                             "include a nonempty sections array, each with type grid and a cards array. "
+                            "EVERY entry in every cards array, including nested grids/stacks, must be "
+                            "an object with its own nonempty type. Use type tile for simple entity cards, "
+                            "type heading for headings, and type entities for entity lists. Entity rows "
+                            "without type belong in an entities card's entities list, not a cards array. "
                             "Do not repeat the invalid outline or omit the layout. "
                             + json.dumps(
                                 {

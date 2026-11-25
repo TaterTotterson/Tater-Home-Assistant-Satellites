@@ -50,6 +50,7 @@ export class DashboardStudio {
     this.catalog = null;
     this.workspace = null;
     this.busy = false;
+    this.operation = "";
     this.error = "";
     this.notice = "";
     this.message = "";
@@ -66,27 +67,37 @@ export class DashboardStudio {
   }
   async load() {
     if (this.busy) return;
-    this.busy = true; this.error = ""; this.panel.render();
-    try { this.catalog = await this.panel.api("GET", "dashboard-studio"); }
+    this.busy = true; this.operation = "load"; this.error = "";
+    try { this.panel.render(); this.catalog = await this.loadCatalog(); }
     catch (error) { this.error = this.formatError(error); }
-    finally { this.busy = false; this.panel.render(); }
+    finally { this.busy = false; this.operation = ""; this.panel.render(); }
+  }
+  async loadCatalog() {
+    return this.panel.api("GET", "dashboard-studio", undefined, {
+      timeoutMs: 15000,
+      timeoutMessage: "Studio could not finish loading. Home Assistant may be starting or reconnecting. Choose Reload Studio to try again.",
+    });
   }
   async request(action, values = {}) {
     return this.panel.api("POST", "dashboard-studio", {
       action, workspace_id: this.workspace?.id, revision: this.workspace?.revision, ...values,
+    }, {
+      timeoutMs: action === "chat" ? 195000 : 60000,
+      timeoutMessage: "Studio lost track of this request. Reload Studio to check the latest saved design before trying again.",
     });
   }
   async saveConnection() {
     if (this.busy || !this.connectionDraft) return;
-    this.busy = true; this.error = ""; this.notice = ""; this.panel.render();
+    this.busy = true; this.operation = "settings"; this.error = ""; this.notice = "";
     try {
+      this.panel.render();
       const result = await this.request("settings", { settings: { ...this.connectionDraft } });
       this.catalog = { ...this.catalog, settings: result.settings };
       this.connectionDraft = { ...result.settings, api_key: "", clear_api_key: false };
-      this.catalog = await this.panel.api("GET", "dashboard-studio");
+      this.catalog = await this.loadCatalog();
       this.notice = this.catalog.model_ready ? "Studio connection saved. You're ready to design." : "Connection saved. Add a model and any required API key to start designing.";
     } catch (error) { this.error = this.formatError(error); }
-    finally { this.busy = false; this.panel.render(); }
+    finally { this.busy = false; this.operation = ""; this.panel.render(); }
   }
   navigate(screen) {
     if (screen === "connection") this._designViewState = this.panel.captureViewState?.();
@@ -120,31 +131,37 @@ export class DashboardStudio {
   }
   async act(action, values = {}) {
     if (this.busy) return;
-    this.busy = true; this.error = ""; this.notice = ""; this.panel.render();
+    this.busy = true; this.operation = action; this.error = ""; this.notice = "";
     try {
+      this.panel.render();
       const result = await this.request(action, values);
       if (result.workspace) this.workspace = result.workspace;
       if (action === "remove") this.workspace = null;
-      this.catalog = await this.panel.api("GET", "dashboard-studio");
+      this.catalog = await this.loadCatalog();
       if (action === "apply") this.notice = "Saved to Home Assistant. Your previous layout is backed up.";
       if (action === "undo_apply") this.notice = "The previous Home Assistant layout has been restored.";
       this.view = Math.min(this.view, Math.max(0, (this.workspace?.config?.views?.length || 1) - 1));
     } catch (error) { this.error = this.formatError(error); }
-    finally { this.busy = false; this.panel.render(); }
+    finally { this.busy = false; this.operation = ""; this.panel.render(); }
   }
   async send(text = this.message) {
     if (this.busy || !String(text).trim()) return;
     const pending = String(text).trim();
     this.message = pending;
-    this.busy = true; this.error = ""; this.notice = ""; this.panel.render();
+    this.busy = true; this.operation = this.workspace ? "chat" : "open"; this.error = ""; this.notice = "";
     try {
+      this.panel.render();
       if (!this.workspace) this.workspace = (await this.request("open", { workspace_id: "", title: "My home" })).workspace;
+      this.operation = "chat";
+      this.panel.render();
       this.workspace = (await this.request("chat", { text: pending })).workspace;
       this.message = "";
-      this.catalog = await this.panel.api("GET", "dashboard-studio");
+      this.operation = "refresh";
+      this.panel.render();
+      this.catalog = await this.loadCatalog();
     } catch (error) { this.error = this.formatError(error); }
     finally {
-      this.busy = false; this.panel.render();
+      this.busy = false; this.operation = ""; this.panel.render();
       const thread = this.panel.shadowRoot?.querySelector(".studio-thread");
       thread?.scrollTo?.({ top: thread.scrollHeight });
     }
@@ -161,12 +178,15 @@ export class DashboardStudio {
     let result = "";
     if (this.error) result += tag("div", { class: "studio-error", role: "alert" }, escape(this.error) + " " + button("Reload Studio", { "data-studio-action": "reload", disabled: this.busy }));
     if (this.notice) result += tag("div", { class: "banner success", role: "status" }, escape(this.notice));
+    if (this.busy) {
+      const label = { load: "Opening Studio…", open: "Opening your design…", chat: "Designing your dashboard…", refresh: "Refreshing your designs…", settings: "Saving AI connection…", apply: "Saving dashboard to Home Assistant…", undo_apply: "Restoring the previous dashboard…", undo_draft: "Restoring the previous draft…", remove: "Removing Studio design…" }[this.operation] || "Working on your dashboard…";
+      result += tag("div", { class: "studio-busy", role: "status", style: "margin-bottom:16px" }, '<span class="spinner"></span>' + escape(label));
+    }
     if (this.screen === "connection") return result + this.renderConnection();
     const options = tag("option", { value: "" }, "Choose a dashboard…") + (c?.dashboards || []).map((row, index) => tag("option", { value: index }, escape(row.title || row.url_path) + (row.mode === "yaml" ? " · YAML (read-only)" : ""))).join("");
     const status = w ? w.has_changes ? "Draft · not applied" : w.is_new ? "New design" : "In sync with HA" : "Your design workspace";
     result += tag("div", { class: "studio-toolbar" },
-      tag("div", { class: "studio-status" }, tag("span", { class: "badge " + (w?.has_changes ? "update" : "online") }, status) +
-        (this.busy ? tag("span", { class: "studio-busy", role: "status" }, '<span class="spinner"></span>' + (w ? "Working on your dashboard…" : "Opening Studio…")) : "")) +
+      tag("div", { class: "studio-status" }, tag("span", { class: "badge " + (w?.has_changes ? "update" : "online") }, status)) +
       tag("div", { class: "studio-toolbar-actions" }, tag("label", {}, "Edit an existing dashboard" + tag("select", { "data-studio-dashboard": "", disabled: this.busy || !c }, options)) +
         button(this.panel.renderIcon("cog-outline") + " AI connection", { "data-studio-action": "settings", disabled: this.busy || !c }) +
         button(this.panel.renderIcon("plus") + " New design", { "data-studio-action": "new", disabled: this.busy || !c })));

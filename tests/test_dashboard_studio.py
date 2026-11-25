@@ -306,6 +306,21 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.studio.open(USER, workspace_id=row["id"])), row)
         self.assertEqual(self.designer.design.await_count, 1 + studio.MAX_DESIGN_ATTEMPTS)
 
+    async def test_ambiguous_cards_get_card_specific_model_repair(self):
+        incomplete = config()
+        incomplete["views"][0]["sections"][0]["cards"] = [{"name": "Office"}]
+        self.designer.design.side_effect = [
+            {"message": "Draft", "config": incomplete},
+            {"message": "Typed cards", "config": config()},
+        ]
+        row = await self.design()
+        self.assertEqual(row["config"], config())
+        self.assertEqual(self.designer.design.await_count, 2)
+        feedback = self.designer.design.call_args.args[0][-1]["content"]
+        self.assertIn("Card 1 needs a card type", feedback)
+        self.assertIn("including nested grids/stacks", feedback)
+        self.assertEqual(self.gateway.calls, [])
+
     async def test_discussion_does_not_replace_the_draft(self):
         row = await self.design()
         self.designer.design.return_value = {
@@ -420,6 +435,60 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_missing_types_in_nested_cards_are_repaired_without_rewriting_entity_rows(self):
+        proposed = config()
+        rows = [{"entity": "light.office", "name": "Keep this row"}]
+        tap = {"action": "more-info"}
+        proposed["views"][0]["sections"][0]["cards"] = [
+            {
+                "cards": [
+                    "light.office",
+                    {
+                        "entity": "sensor.office_temperature",
+                        "name": "Temperature",
+                        "tap_action": tap,
+                    },
+                    {"heading": "Office"},
+                    {"entities": rows},
+                    {"content": "A comfortable room"},
+                ]
+            }
+        ]
+        original = deepcopy(proposed)
+        fixed = studio.normalize_config(proposed)
+        grid = fixed["views"][0]["sections"][0]["cards"][0]
+        self.assertEqual(grid["type"], "grid")
+        cards = grid["cards"]
+        self.assertEqual(
+            [card["type"] for card in cards], ["tile", "tile", "heading", "entities", "markdown"]
+        )
+        self.assertEqual(cards[0]["entity"], "light.office")
+        self.assertEqual(cards[1]["tap_action"], tap)
+        self.assertEqual(cards[3]["entities"], rows)
+        self.assertNotIn("type", cards[3]["entities"][0])
+        self.assertEqual(proposed, original)
+        self.assertEqual(
+            studio.validate_config(fixed, {item["entity_id"] for item in INVENTORY}), []
+        )
+
+    def test_ambiguous_missing_card_types_are_not_guessed(self):
+        for card in (
+            {},
+            {"name": "Office"},
+            {"entity": "light.office", "content": "text"},
+            {"entity": "light.office", "camera_image": "camera.office"},
+        ):
+            proposed = config()
+            proposed["views"][0]["sections"][0]["cards"] = [card]
+            fixed = studio.normalize_config(proposed)
+            self.assertEqual(fixed, proposed)
+            self.assertTrue(
+                any(
+                    "card type" in error
+                    for error in studio.validate_config(fixed, {"light.office"})
+                )
+            )
+
     def test_normalization_preserves_section_options_and_all_card_content(self):
         proposal = config()
         view = proposal["views"][0]

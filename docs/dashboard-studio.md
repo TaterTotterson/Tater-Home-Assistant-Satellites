@@ -61,11 +61,21 @@ dashboards can be redesigned as explicit views; their previous configuration is
 backed up before publishing. Card structure, entity references, known card types,
 and domain-specific cards are checked before a proposal is accepted. Studio
 repairs unambiguous nesting mistakes, such as cards placed directly on a Sections
-view, without dropping content. Incomplete layouts get up to two model repair
+view, and missing card types for clear entity, heading, list, and grid cards.
+Entity rows stay unchanged, and ambiguous card shapes go back to the model for
+repair. Incomplete layouts get up to two model repair
 attempts with concrete examples and validation feedback, within the same overall
 request timeout. Empty layouts are not filled with invented devices just to pass
 validation. These checks are not a full replacement for Home Assistant's frontend
 card validation.
+
+## Loading and progress
+
+**Opening Studio** loads the workspace data; **Designing your dashboard** means
+the language model is working. The chat opens as soon as the design is created,
+including on the first request. Design generation and repair can take longer on
+local models. If a connection stalls, Studio ends the spinner and offers
+**Reload Studio** to check the latest saved design before trying again.
 
 ## Design and implementation references
 

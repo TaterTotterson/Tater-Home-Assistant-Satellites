@@ -334,7 +334,7 @@ class WakeWordCatalogTests(unittest.TestCase):
         self.assertIn("class TrainerSettingsView", http)
         self.assertIn('settings/verifier"', http)
         self.assertIn('settings/trainer"', http)
-        self.assertIn('this.api("GET", "wake-word/catalog")', panel)
+        self.assertIn('this.api("GET", "wake-word/catalog"', panel)
         self.assertIn('this.api("POST", "settings/verifier"', panel)
         self.assertIn('this.api("POST", "settings/trainer"', panel)
         self.assertIn("pickSettings(this._globalDraft, VOICE_DEFAULT_SETTING_KEYS)", panel)

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.28
+
+- Show the first design's chat and accurate AI progress while the model runs,
+  instead of leaving Studio on an "Opening Studio" spinner.
+- Bound Studio reads and requests so a stalled connection releases the controls
+  and offers Reload Studio. Wait for the HA frontend connection before loading
+  and refresh bridge/Studio data after it reconnects. Limit the optional wake
+  catalog's delay during initial panel loading.
+- Repair clear missing card types, including nested cards and bare entity IDs,
+  without rewriting entity rows or guessing ambiguous card layouts. Give the
+  model explicit card-type feedback when automatic repair is not possible.
+
 ## 1.4.27
 
 - Fix Dashboard Studio stopping with "Sections view needs sections" for generated

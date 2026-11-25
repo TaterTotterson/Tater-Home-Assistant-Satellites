@@ -988,3 +988,80 @@ test('Studio connection has its own workspace and preserves the design and pendi
   assert.equal(panel._studio.workspace,workspace);
   assert.doesNotMatch(panel._studio.render(),/new-secret/);
 });
+
+test('Studio opening times out, releases controls and ignores a late catalog response', async context => {
+  context.mock.timers.enable({apis:['setTimeout']});
+  const panel = fixture();
+  let finish;
+  panel._hass = {callApi:() => new Promise(resolve => {finish=resolve;})};
+  const loading = panel._studio.load();
+  assert.match(panel._studio.render(),/Opening Studio/);
+  context.mock.timers.tick(15000);
+  await loading;
+  assert.equal(panel._studio.busy,false);
+  assert.equal(panel._studio.operation,'');
+  assert.match(panel._studio.error,/could not finish loading/);
+  assert.match(panel._studio.render(),/Reload Studio/);
+  finish({model_ready:true,dashboards:[]});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(panel._studio.catalog,null);
+});
+
+test('Studio switches from opening to the design chat while the first model request runs', async () => {
+  const panel = fixture();
+  panel._studio.catalog = {model_ready:true,dashboards:[],home:{}};
+  let opened, designed;
+  panel.api = async (method,path,body) => {
+    if(method==='GET') return panel._studio.catalog;
+    if(body.action==='open') return new Promise(resolve => {opened=resolve;});
+    if(body.action==='chat') return new Promise(resolve => {designed=resolve;});
+    throw new Error('Unexpected write');
+  };
+  const running = panel._studio.send('Design my home');
+  assert.match(panel._studio.render(),/Opening your design/);
+  const workspace = {id:'first',title:'My home',revision:0,url_path:null,config:{views:[]},messages:[]};
+  opened({workspace});
+  await new Promise(resolve => setImmediate(resolve));
+  const html = panel._studio.render();
+  assert.match(html,/Designing your dashboard/);
+  assert.match(html,/class="studio-workspace"/);
+  assert.doesNotMatch(html,/Opening Studio/);
+  designed({workspace:{...workspace,revision:1}});
+  await running;
+  assert.equal(panel._studio.busy,false);
+  assert.equal(panel._studio.workspace.revision,1);
+});
+
+test('Bridge waits for HA readiness and reloads Studio after the frontend connects', async () => {
+  const panel = fixture();
+  panel._tab='dashboard-studio';
+  let mainLoads=0, studioLoads=0;
+  panel.load=async()=>{mainLoads++;};
+  panel.hass=undefined;
+  assert.equal(mainLoads,0);
+  assert.equal(panel._error,'');
+  const hass={callApi:async(method,path)=>{
+    assert.equal(path,'tater/satellite/v1/dashboard-studio');
+    studioLoads++;
+    return {model_ready:true,dashboards:[],home:{}};
+  }};
+  panel.hass=hass;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(mainLoads,1);
+  assert.equal(studioLoads,1);
+  assert.equal(panel._studio.busy,false);
+  assert.equal(panel._studio.catalog.model_ready,true);
+  panel.hass=hass;
+  assert.equal(mainLoads,1);
+  assert.equal(studioLoads,1);
+});
+
+test('Studio clears its busy state if the initial render fails', async () => {
+  const panel=fixture();
+  let renders=0;
+  panel.render=()=>{if(++renders===1) throw new Error('Render failed');};
+  await panel._studio.load();
+  assert.equal(panel._studio.busy,false);
+  assert.equal(panel._studio.error,'Render failed');
+  assert.equal(renders,2);
+});

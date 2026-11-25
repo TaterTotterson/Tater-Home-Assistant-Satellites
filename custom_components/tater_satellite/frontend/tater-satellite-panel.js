@@ -241,11 +241,19 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   set hass(value) {
+    const wasReady = typeof this._hass?.callApi === "function";
     this._hass = value;
     const darkMode = value?.themes?.darkMode;
     this.style?.setProperty("color-scheme", typeof darkMode === "boolean" ? darkMode ? "dark" : "light" : "light dark");
-    if (!this._data && !this._loading) this.load();
-    if (this._tab === "dashboard-studio") this._studio.updateHass(value);
+    if (typeof value?.callApi !== "function") {
+      if (!this._data) this.render();
+      return;
+    }
+    if ((!this._data || !wasReady) && !this._loading) this.load(Boolean(this._data));
+    if (this._tab === "dashboard-studio") {
+      this._studio.updateHass(value);
+      if (!wasReady && this._data && !this._studio.catalog && !this._studio.busy) this._studio.load();
+    }
   }
 
   set panel(value) {
@@ -253,7 +261,8 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this._hass && !this._data) this.load();
+    if (typeof this._hass?.callApi === "function" && !this._data) this.load();
+    else if (!this._data) this.render();
     if (!this._pollTimer) {
       this._pollTimer = window.setInterval(() => {
         if (document.hidden || this.hasActiveInput() || this._tab === "dashboard-studio") return;
@@ -273,9 +282,16 @@ class TaterSatellitePanel extends HTMLElement {
     if (this._recovery?.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
   }
 
-  async api(method, path, body) {
-    if (!this._hass) throw new Error("Home Assistant is not ready");
-    return this._hass.callApi(method, `${API}/${path}`, body);
+  async api(method, path, body, { timeoutMs = 0, timeoutMessage = "Home Assistant did not respond in time. Refresh the workspace and try again." } = {}) {
+    if (typeof this._hass?.callApi !== "function") throw new Error("Connecting to Home Assistant. Please try again once it reconnects.");
+    const request = this._hass.callApi(method, `${API}/${path}`, body);
+    if (!timeoutMs) return request;
+    let timer;
+    try {
+      return await Promise.race([request, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      })]);
+    } finally { clearTimeout(timer); }
   }
 
   hasActiveInput() {
@@ -454,11 +470,11 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   async load(background = false) {
-    if (this._loading) return;
+    if (this._loading || typeof this._hass?.callApi !== "function") return;
     this._loading = true;
-    if (!background) this.render();
     try {
-      const data = await this.api("GET", "manage");
+      if (!background) this.render();
+      const data = await this.api("GET", "manage", undefined, { timeoutMs: 15000 });
       const catalogOptions = this._wakeWordCatalog?.options;
       const catalogUnavailable =
         !Array.isArray(catalogOptions) || catalogOptions.length === 0;
@@ -467,7 +483,7 @@ class TaterSatellitePanel extends HTMLElement {
       if (!this._wakeWordCatalog || (catalogUnavailable && catalogRetryDue)) {
         this._wakeWordCatalogLastAttempt = Date.now();
         try {
-          this._wakeWordCatalog = await this.api("GET", "wake-word/catalog");
+          this._wakeWordCatalog = await this.api("GET", "wake-word/catalog", undefined, { timeoutMs: 5000 });
         } catch (error) {
           this._wakeWordCatalog = {
             options: [],
@@ -478,6 +494,7 @@ class TaterSatellitePanel extends HTMLElement {
       this._data = data;
       this._error = "";
       this.syncDrafts(data);
+      if (this._tab === "dashboard-studio" && !this._studio.catalog && !this._studio.busy) this._studio.load();
     } catch (error) {
       this._error = formatApiError(error);
     } finally {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.27
+
+- Fix Dashboard Studio stopping with "Sections view needs sections" for generated
+  layouts. Describe views, sections, and cards explicitly in the model output
+  schema and prompt instead of accepting an unspecified view object.
+- Repair unambiguous card-nesting mistakes without dropping cards or view options.
+  Give incomplete designs up to two repair passes with the previous response,
+  concrete layout examples, and validation feedback. Keep validation checks and
+  the existing overall request timeout.
+
 ## 1.4.26
 
 - Add Dashboard Studio, a workspace at the bottom of Your home in both assistant

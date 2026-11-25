@@ -209,6 +209,92 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         repair = self.designer.design.call_args.args[0][-1]["content"]
         self.assertIn("Unknown entities", repair)
 
+    async def test_sections_cards_are_nested_without_losing_views_or_options(self):
+        proposal = {"views": []}
+        for name in ("Home", "Office", "Comfort"):
+            view = config(name)["views"][0]
+            view["path"] = name.lower()
+            view["cards"] = view.pop("sections")[0]["cards"]
+            view["badges"] = [{"type": "entity", "entity": "light.office"}]
+            proposal["views"].append(view)
+        original = deepcopy(proposal)
+        self.designer.design.return_value = {"message": "Three views", "config": proposal}
+        row = await self.design()
+        self.assertEqual(self.designer.design.await_count, 1)
+        self.assertEqual(proposal, original)
+        self.assertEqual(len(row["config"]["views"]), 3)
+        for view in row["config"]["views"]:
+            self.assertNotIn("cards", view)
+            self.assertEqual(view["sections"][0]["cards"], original["views"][0]["cards"])
+            self.assertEqual(view["badges"], original["views"][0]["badges"])
+            self.assertEqual(view["max_columns"], 2)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_three_missing_sections_views_get_concrete_repairs_before_stopping(self):
+        incomplete = {
+            "views": [
+                {"title": title, "path": title.lower(), "type": "sections"}
+                for title in ("Home", "Office", "Comfort")
+            ]
+        }
+        self.designer.design.side_effect = [
+            {"message": "Outline", "config": incomplete},
+            {"message": "Still an outline", "config": incomplete},
+            {"message": "Complete design", "config": config()},
+        ]
+        row = await self.design()
+        self.assertEqual(self.designer.design.await_count, 3)
+        self.assertEqual(row["config"], config())
+        messages = self.designer.design.call_args.args[0]
+        self.assertEqual(messages[-2]["role"], "assistant")
+        self.assertEqual(json.loads(messages[-2]["content"])["config"], incomplete)
+        feedback = messages[-1]["content"]
+        for number in (1, 2, 3):
+            self.assertIn(f"Sections view {number} needs sections", feedback)
+        self.assertIn('"sections_view_example"', feedback)
+        self.assertIn('"type": "grid"', feedback)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_native_tater_base_output_uses_detailed_view_schema_and_repair(self):
+        del self.designer.design  # Exercise the real OpenAI-compatible tool-response parser.
+        self.manager.data[studio.STORE_KEY]["settings"]["model"] = "tater/base"
+        incomplete = {"views": [{"title": "Office", "type": "sections"}]}
+
+        def completion(proposal):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "dashboard_design",
+                                        "arguments": json.dumps(
+                                            {"message": "Office dashboard", "config": proposal}
+                                        ),
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+        self.designer._post = AsyncMock(side_effect=[completion(incomplete), completion(config())])
+        row = await self.design()
+        self.assertEqual(row["config"], config())
+        self.assertEqual(self.designer._post.await_count, 2)
+        payload = self.designer._post.call_args.args[1]
+        self.assertEqual(payload["model"], "tater/base")
+        view_schema = payload["tools"][0]["function"]["parameters"]["properties"]["config"][
+            "properties"
+        ]["views"]["items"]
+        sections = view_schema["properties"]["sections"]
+        self.assertEqual(sections["minItems"], 1)
+        self.assertEqual(sections["items"]["required"], ["type", "cards"])
+        self.assertIn("type", sections["items"]["properties"]["cards"]["items"]["required"])
+        self.assertEqual(self.gateway.calls, [])
+
     async def test_failed_design_preserves_the_previous_draft_and_history(self):
         row = await self.design()
         self.designer.design.return_value = {
@@ -218,6 +304,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "another revision"):
             await self.studio.chat(USER, row["id"], row["revision"], "Change it")
         self.assertEqual((await self.studio.open(USER, workspace_id=row["id"])), row)
+        self.assertEqual(self.designer.design.await_count, 1 + studio.MAX_DESIGN_ATTEMPTS)
 
     async def test_discussion_does_not_replace_the_draft(self):
         row = await self.design()
@@ -333,6 +420,50 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_normalization_preserves_section_options_and_all_card_content(self):
+        proposal = config()
+        view = proposal["views"][0]
+        section = view["sections"][0]
+        section.pop("type")
+        section["visibility"] = [{"condition": "state", "entity": "light.office", "state": "on"}]
+        view["sections"] = section  # One section instead of a list.
+        view["cards"] = [{"type": "tile", "entity": "sensor.office_temperature"}]
+        normalized = studio.normalize_config(proposal)
+        self.assertEqual(len(normalized["views"][0]["sections"]), 2)
+        self.assertEqual(normalized["views"][0]["sections"][0]["visibility"], section["visibility"])
+        self.assertEqual(normalized["views"][0]["sections"][0]["cards"], section["cards"])
+        self.assertEqual(normalized["views"][0]["sections"][1]["cards"], view["cards"])
+        self.assertEqual(
+            studio.validate_config(normalized, {row["entity_id"] for row in INVENTORY}), []
+        )
+
+    def test_normalization_does_not_invent_content_or_weaken_entity_validation(self):
+        empty = {"views": [{"type": "sections", "sections": []}]}
+        self.assertEqual(studio.normalize_config(empty), empty)
+        self.assertTrue(studio.validate_config(studio.normalize_config(empty), set()))
+        malformed = {
+            "views": [
+                {
+                    "type": "sections",
+                    "sections": "bad",
+                    "cards": [{"type": "tile", "entity": "light.office"}],
+                }
+            ]
+        }
+        self.assertEqual(studio.normalize_config(malformed), malformed)
+        self.assertTrue(
+            studio.validate_config(studio.normalize_config(malformed), {"light.office"})
+        )
+        unknown = {
+            "views": [{"type": "sections", "cards": [{"type": "tile", "entity": "light.invented"}]}]
+        }
+        self.assertTrue(
+            any(
+                "Unknown entities" in error
+                for error in studio.validate_config(studio.normalize_config(unknown), set())
+            )
+        )
+
     def test_native_sections_unknown_entities_and_custom_cards(self):
         ids = {"light.office"}
         self.assertEqual(studio.validate_config(config(), ids), [])

@@ -27,6 +27,7 @@ MAX_MESSAGES = 40
 MAX_BACKUPS = 5
 MAX_DRAFT_UNDO = 5
 MAX_ENTITIES_IN_PROMPT = 200
+MAX_DESIGN_ATTEMPTS = 3
 _UNSET = object()
 NATIVE_CARDS = frozenset(
     (
@@ -88,6 +89,50 @@ WS_COMMANDS = frozenset(
         "lovelace/config/delete",
     }
 )
+DESIGN_CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "description": "Native HA card type, such as tile or heading."},
+        "entity": {"type": "string", "description": "An actual supplied entity ID, when needed."},
+        "name": {"type": "string"},
+        "heading": {"type": "string"},
+        "content": {"type": "string"},
+    },
+    "required": ["type"],
+    "additionalProperties": True,
+}
+DESIGN_SECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "description": "Use grid for a new manual section."},
+        "cards": {"type": "array", "items": DESIGN_CARD_SCHEMA},
+    },
+    "required": ["type", "cards"],
+    "additionalProperties": True,
+}
+DESIGN_VIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "path": {"type": "string", "description": "A unique, short path within this dashboard."},
+        "type": {"type": "string", "description": "Prefer sections for new views."},
+        "max_columns": {"type": "integer"},
+        "sections": {
+            "type": "array",
+            "minItems": 1,
+            "items": DESIGN_SECTION_SCHEMA,
+            "description": "Required for type sections. Each section contains its own cards array.",
+        },
+        "cards": {
+            "type": "array",
+            "items": DESIGN_CARD_SCHEMA,
+            "description": "For masonry, panel or sidebar views only; sections views put cards inside sections.",
+        },
+        "strategy": {"type": "object", "description": "Preserve an existing automatic view only."},
+    },
+    "anyOf": [{"required": ["sections"]}, {"required": ["cards"]}, {"required": ["strategy"]}],
+    "additionalProperties": True,
+}
 DESIGN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -99,7 +144,14 @@ DESIGN_SCHEMA = {
         "config": {
             "type": ["object", "null"],
             "description": "Complete Lovelace config, preserving untouched views/cards. Null for discussion only.",
-            "properties": {"views": {"type": "array", "items": {"type": "object"}}},
+            "properties": {
+                "views": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 30,
+                    "items": DESIGN_VIEW_SCHEMA,
+                }
+            },
             "required": ["views"],
         },
         "suggestions": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
@@ -116,6 +168,12 @@ Use the user's language. Match the household, room names and actual devices.
 Design principles:
 - Prefer native sections views with max_columns 3 (desktop), 2 (tablet), or 1
   (phone). Each section is type grid with cards. Give views unique short paths.
+  Every sections view MUST have a nonempty sections array. Nest cards at
+  views[i].sections[j].cards, never directly at views[i].cards. Include real
+  card content, not just view titles, a summary, or an outline of the design.
+  Minimal structure (replace the heading and add cards using supplied entities):
+  {"views":[{"title":"Home","path":"home","type":"sections","max_columns":2,
+    "sections":[{"type":"grid","cards":[{"type":"heading","heading":"Home"}]}]}]}
 - Start with a calm overview, then room or task sections. Use heading cards,
   tile cards, entity badges, and room subviews when useful. Keep the most useful
   controls first. Avoid a huge wall of diagnostics or every entity in the house.
@@ -185,6 +243,37 @@ def _references(config: Any) -> set[str]:
                 if isinstance(value, str) and re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", value):
                     found.add(value)
     return found
+
+
+def normalize_config(config: Any) -> Any:
+    """Repair unambiguous model nesting errors without dropping cards or options.
+
+    Missing content is left for the model to repair; never fabricate an empty
+    dashboard just to pass validation.
+    """
+    if not isinstance(config, dict):
+        return config
+    result = deepcopy(config)
+    views = result.get("views")
+    if not isinstance(views, list):
+        return result
+    for view in views:
+        if not isinstance(view, dict) or view.get("type") != "sections":
+            continue
+        sections = view.get("sections")
+        if isinstance(sections, dict) and isinstance(sections.get("cards"), list):
+            sections = view["sections"] = [sections]
+        cards = view.get("cards")
+        if isinstance(cards, list) and cards:
+            if sections is None:
+                sections = view["sections"] = []
+            if isinstance(sections, list) and all(isinstance(item, dict) for item in sections):
+                sections.append({"type": "grid", "cards": view.pop("cards")})
+        if isinstance(sections, list):
+            for section in sections:
+                if isinstance(section, dict) and isinstance(section.get("cards"), list):
+                    section.setdefault("type", "grid")
+    return result
 
 
 def validate_config(config: Any, entity_ids: set[str], original: Any = None) -> list[str]:
@@ -649,9 +738,10 @@ class DashboardStudio:
             response = {}
             errors = []
             async with asyncio.timeout(180):
-                for attempt in range(2):
+                for attempt in range(MAX_DESIGN_ATTEMPTS):
                     response = await self.provider.design(messages, settings, DESIGN_SCHEMA)
-                    proposal = response.get("config")
+                    proposal = normalize_config(response.get("config"))
+                    response = {**response, "config": proposal}
                     errors = (
                         validate_config(
                             proposal, {item["entity_id"] for item in inventory}, row["draft"]
@@ -661,14 +751,32 @@ class DashboardStudio:
                     )
                     if not errors:
                         break
+                    if attempt == MAX_DESIGN_ATTEMPTS - 1:
+                        break
+                    messages.append(
+                        {"role": "assistant", "content": json.dumps(response, ensure_ascii=False)}
+                    )
                     messages.append(
                         {
                             "role": "user",
-                            "content": "Correct this proposal before presenting it: "
+                            "content": "Repair your previous design and return the complete corrected config. "
+                            "Keep every intended view and card. For EACH view whose type is sections, "
+                            "include a nonempty sections array, each with type grid and a cards array. "
+                            "Do not repeat the invalid outline or omit the layout. "
                             + json.dumps(
                                 {
                                     "validation_errors": errors,
-                                    "invalid_proposal": proposal,
+                                    "sections_view_example": {
+                                        "title": "Home",
+                                        "path": "home",
+                                        "type": "sections",
+                                        "sections": [
+                                            {
+                                                "type": "grid",
+                                                "cards": [{"type": "heading", "heading": "Home"}],
+                                            }
+                                        ],
+                                    },
                                 }
                             ),
                         }

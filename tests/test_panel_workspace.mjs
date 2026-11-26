@@ -1191,6 +1191,88 @@ test('Dashboard Studio keeps a separate workspace and escapes model text', () =>
   assert.equal(panel._studio.workspace.id, 'private-design');
 });
 
+test('saved Studio designs have direct deletion and remain reachable after hitting the limit', () => {
+  const panel = fixture();
+  panel._tab = 'dashboard-studio';
+  const rows = Array.from({ length: 12 }, (_, index) => ({ id: `design-${index}`, title: `Design ${index}`, revision: index, url_path: null }));
+  panel._studio.catalog = { model_ready: false, workspaces: rows };
+  panel._studio.error = 'Studio has 12 saved designs. Open All designs and delete an unused Studio design before creating another.';
+  let html = panel._studio.render();
+  assert.equal((html.match(/data-studio-remove=/g) || []).length, 12);
+  assert.match(html, /12 saved/);
+  assert.ok(html.indexOf('Your designs') < html.indexOf('A dashboard that feels like your home.'));
+  assert.match(html, /Dashboards saved in Home Assistant stay in place/);
+  panel._studio.workspace = { ...rows[0], config: { views: [] } };
+  html = panel._studio.render();
+  assert.ok(html.indexOf('All designs') < html.indexOf('studio-workspace'));
+  assert.ok(html.indexOf('data-studio-action="remove"') < html.indexOf('studio-workspace'));
+  assert.match(html, /Manage designs/);
+  const home = { dataset: { studioAction: 'home' } };
+  controls(panel, {}, { '[data-studio-action]': [home] });
+  panel._studio.message = 'Keep my next design brief';
+  home.listeners.click();
+  assert.equal(panel._studio.workspace, null);
+  assert.equal(panel._studio.error, '');
+  assert.equal(panel._studio.message, 'Keep my next design brief');
+  assert.equal((panel._studio.render().match(/data-studio-remove=/g) || []).length, 12);
+});
+
+test('deleting a saved Studio design confirms first and sends its exact id and revision', async () => {
+  const panel = fixture();
+  panel._tab = 'dashboard-studio';
+  const row = { id: 'unused-draft', revision: 7, title: 'Office <draft>', url_path: 'dashboard-office' };
+  panel._studio.catalog = { model_ready: false, workspaces: [row] };
+  panel._studio.message = 'Keep my next design brief';
+  const calls = [];
+  panel.api = async (method, path, body) => {
+    calls.push({ method, path, body });
+    return method === 'GET' ? { model_ready: false, workspaces: [] } : { ok: true };
+  };
+  const remove = { dataset: { studioRemove: row.id } };
+  controls(panel, {}, { '[data-studio-remove]': [remove] });
+  remove.listeners.click();
+  assert.equal(calls.length, 0);
+  assert.match(panel._confirmation.message, /Office <draft>/);
+  assert.match(panel._confirmation.message, /Home Assistant dashboard will stay as it is/);
+  assert.doesNotMatch(panel._studio.render(), /Office <draft>/);
+  const confirmed = panel._confirmation.action;
+  panel._confirmation = null;
+  await confirmed();
+  assert.deepEqual(calls[0], { method: 'POST', path: 'dashboard-studio', body: { action: 'remove', workspace_id: row.id, revision: row.revision } });
+  assert.equal(calls.length, 2);
+  assert.equal(panel._studio.catalog.workspaces.length, 0);
+  assert.equal(panel._studio.workspace, null);
+  assert.equal(panel._studio.message, 'Keep my next design brief');
+  assert.match(panel._studio.notice, /design deleted/);
+});
+
+test('Studio does not delete while busy or for an unknown row, and a failed delete keeps the design', async () => {
+  const panel = fixture();
+  panel._tab = 'dashboard-studio';
+  const row = { id: 'active-draft', revision: 4, title: 'My design', url_path: null, config: { views: [] } };
+  panel._studio.catalog = { model_ready: true, workspaces: [row] };
+  panel._studio.workspace = row;
+  const remove = { dataset: { studioRemove: 'missing-draft' } };
+  controls(panel, {}, { '[data-studio-remove]': [remove] });
+  remove.listeners.click();
+  assert.equal(panel._confirmation, null);
+  remove.dataset.studioRemove = row.id;
+  panel._studio.busy = true;
+  remove.listeners.click();
+  assert.equal(panel._confirmation, null);
+  panel._studio.busy = false;
+  const currentRemove = { dataset: { studioAction: 'remove' } };
+  controls(panel, {}, { '[data-studio-action]': [currentRemove] });
+  currentRemove.listeners.click();
+  panel.api = async () => { throw new Error('Draft changed; reload it first.'); };
+  await panel._confirmation.action();
+  assert.equal(panel._studio.workspace, row);
+  assert.deepEqual(panel._studio.catalog.workspaces, [row]);
+  assert.match(panel._studio.error, /Draft changed/);
+  assert.equal(panel._studio.busy, false);
+  assert.equal(panel._studio.notice, '');
+});
+
 test('Studio design loop creates a draft and only calls its dedicated API', async () => {
   const panel = fixture();
   const calls = [];

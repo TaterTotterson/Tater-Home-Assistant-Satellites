@@ -24,7 +24,7 @@ export const studioStyles = [
   ".studio-start-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}",
   ".studio-start{padding:20px!important;text-align:left;display:grid;align-content:start;gap:10px;border-radius:18px!important;min-height:126px;background:var(--card-background-color)!important;border:1px solid var(--divider-color)!important;color:var(--primary-text-color)!important}",
   ".studio-start:hover{border-color:var(--tater-accent)!important;transform:translateY(-1px)}.studio-start ha-icon{color:var(--tater-accent)}.studio-start small{font-size:12px;line-height:1.5;color:var(--secondary-text-color)}",
-  ".studio-resume-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.studio-resume{padding:18px;border:1px solid var(--divider-color);border-radius:18px;display:flex;gap:12px;align-items:center;justify-content:space-between}.studio-resume strong{display:block}.studio-resume small{color:var(--secondary-text-color)}",
+  ".studio-designs{margin-bottom:24px}.studio-designs p{font-size:12px;color:var(--secondary-text-color)}.studio-resume-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.studio-resume{padding:18px;border:1px solid var(--divider-color);border-radius:18px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}.studio-resume-title{min-width:0;flex:1 1 140px;overflow-wrap:anywhere}.studio-resume strong{display:block}.studio-resume small{color:var(--secondary-text-color)}.studio-resume-actions{display:flex;flex-wrap:wrap;gap:8px}.studio-delete{color:var(--error-color,#c84444)!important}",
   ".studio-workspace{display:grid;grid-template-columns:minmax(300px,370px) minmax(0,1fr);gap:18px;align-items:start}.studio-chat{padding:0!important;overflow:hidden;position:sticky;top:0}",
   ".studio-chat-head{padding:20px;border-bottom:1px solid var(--divider-color)}.studio-chat-head h3{margin:5px 0;font-size:17px}.studio-chat-head p{font-size:12px;margin:0}",
   ".studio-thread{height:410px;overflow:auto;overscroll-behavior:contain;padding:20px;display:flex;flex-direction:column;gap:16px}",
@@ -41,7 +41,7 @@ export const studioStyles = [
   ".studio-preview-section{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px;align-content:start;min-width:0}.studio-native-card{grid-column:span 12;min-width:0}.studio-native-card>*{display:block}",
   ".studio-native-card[inert]{cursor:default}.studio-preview-empty{text-align:center;padding:85px 24px;color:var(--secondary-text-color)}.studio-preview-empty ha-icon{--mdc-icon-size:44px;color:var(--tater-accent);margin-bottom:14px}.studio-preview-empty strong{display:block;color:var(--primary-text-color);font-size:18px}",
   ".studio-preview-note{padding:12px 18px;border-top:1px solid var(--divider-color);font-size:11px;line-height:1.6;color:var(--secondary-text-color)}.studio-error{padding:13px 16px;border-radius:12px;background:color-mix(in srgb,var(--error-color,#c84444) 10%,var(--card-background-color));color:var(--error-color,#c84444);margin-bottom:14px;white-space:pre-wrap}",
-  ".studio-busy{display:flex;flex-wrap:wrap;gap:10px;align-items:center;color:var(--secondary-text-color);font-size:12px}.studio-busy .spinner{width:14px;height:14px;border-width:2px;margin:0}.studio-busy button{margin-left:auto}.studio-config{margin-top:16px}.studio-config summary{font-size:12px;color:var(--secondary-text-color)}.studio-remove{font-size:11px!important;color:var(--secondary-text-color)!important}.studio-apply-note{font-size:11px;color:var(--secondary-text-color);margin:9px 0 0}",
+  ".studio-busy{display:flex;flex-wrap:wrap;gap:10px;align-items:center;color:var(--secondary-text-color);font-size:12px}.studio-busy .spinner{width:14px;height:14px;border-width:2px;margin:0}.studio-busy button{margin-left:auto}.studio-config{margin-top:16px}.studio-config summary{font-size:12px;color:var(--secondary-text-color)}.studio-apply-note{font-size:11px;color:var(--secondary-text-color);margin:9px 0 0}",
   "@media(max-width:1100px){.studio-workspace{grid-template-columns:1fr}.studio-chat{position:static}.studio-thread{height:280px}}",
   "@media(max-width:650px){.studio-connection-grid{grid-template-columns:1fr}.studio-hero{padding:22px}.studio-hero h2{font-size:24px}.studio-start-grid{grid-template-columns:1fr 1fr}.studio-preview-scroll{padding:14px}.studio-toolbar-actions{width:100%}.studio-toolbar label{width:100%}.studio-toolbar select{max-width:none}.studio-thread{height:320px}}",
   "@media(prefers-reduced-motion:reduce){.studio-start:hover{transform:none}}",
@@ -192,13 +192,26 @@ export class DashboardStudio {
         this.allowCustom = this.workspace.allow_custom !== false;
         this.focus = null; this.previewConcept = "";
       }
-      if (action === "remove") this.workspace = null;
+      if (action === "remove") {
+        if (!values.workspace_id || values.workspace_id === this.workspace?.id) {
+          this.workspace = null; this.focus = null; this.previewConcept = "";
+        }
+        this.notice = "Studio design deleted.";
+      }
       this.catalog = await this.loadCatalog();
       if (action === "apply") this.notice = "Saved to Home Assistant. Your previous layout is backed up.";
       if (action === "undo_apply") this.notice = "The previous Home Assistant layout has been restored.";
       this.view = Math.min(this.view, Math.max(0, (this.workspace?.config?.views?.length || 1) - 1));
     } catch (error) { this.error = this.formatError(error); }
     finally { this.busy = false; this.operation = ""; this.panel.render(); }
+  }
+  removeDesign(row = this.workspace) {
+    if (this.busy || !row) return;
+    const { id, revision, title } = row;
+    return this.panel.confirmAction(
+      "Delete Studio design?", "Delete “" + title + "” and its Studio chat? The Home Assistant dashboard will stay as it is.",
+      "Delete design", () => this.act("remove", { workspace_id: id, revision }),
+    );
   }
   async send(text = this.message) {
     if (this.busy || !String(text).trim()) return;
@@ -293,7 +306,8 @@ export class DashboardStudio {
     const c = this.catalog, w = this.workspace;
     const ready = c?.model_ready;
     let result = "";
-    if (this.error) result += tag("div", { class: "studio-error", role: "alert" }, escape(this.error) + " " + button(this.failedDesign ? "Try design again" : "Reload Studio", { "data-studio-action": this.failedDesign ? "retry" : "reload", disabled: this.busy }));
+    if (this.error) result += tag("div", { class: "studio-error", role: "alert" }, escape(this.error) + " " + button(this.failedDesign ? "Try design again" : "Reload Studio", { "data-studio-action": this.failedDesign ? "retry" : "reload", disabled: this.busy }) +
+      (c?.workspaces?.length ? " " + button("Manage designs", { "data-studio-action": "home", disabled: this.busy }) : ""));
     if (this.notice) result += tag("div", { class: "banner success", role: "status" }, escape(this.notice));
     if (this.busy) {
       const label = this.operation === "concept" ? "Designing idea " + (this.conceptProgress || 1) + " of 3…" : { load: "Opening Studio…", open: "Opening your design…", chat: "Designing your dashboard…", refresh: "Refreshing your designs…", settings: "Saving AI connection…", apply: "Saving dashboard to Home Assistant…", undo_apply: "Restoring the previous dashboard…", undo_draft: "Restoring the previous draft…", remove: "Removing Studio design…" }[this.operation] || "Working on your dashboard…";
@@ -306,23 +320,32 @@ export class DashboardStudio {
     const options = tag("option", { value: "" }, "Choose a dashboard…") + (c?.dashboards || []).map((row, index) => tag("option", { value: index }, escape(row.title || row.url_path) + (row.mode === "yaml" ? " · YAML (read-only)" : ""))).join("");
     const status = w ? w.has_changes ? "Draft · not applied" : w.is_new ? "New design" : "In sync with HA" : "Your design workspace";
     result += tag("div", { class: "studio-toolbar" },
-      tag("div", { class: "studio-status" }, tag("span", { class: "badge " + (w?.has_changes ? "update" : "online") }, status)) +
+      tag("div", { class: "studio-status" }, (w ? button(this.panel.renderIcon("arrow-left") + " All designs", { "data-studio-action": "home", disabled: this.busy }) : "") + tag("span", { class: "badge " + (w?.has_changes ? "update" : "online") }, status)) +
       tag("div", { class: "studio-toolbar-actions" }, tag("label", {}, "Edit an existing dashboard" + tag("select", { "data-studio-dashboard": "", disabled: this.busy || !c }, options)) +
         button(this.panel.renderIcon("cog-outline") + " AI connection", { "data-studio-action": "settings", disabled: this.busy || !c }) +
         button(this.panel.renderIcon("view-dashboard-outline") + " Show me three ideas", { "data-studio-action": "ideas", disabled: this.busy || !ready }) +
-        button(this.panel.renderIcon("plus") + " New design", { "data-studio-action": "new", disabled: this.busy || !c })));
+        button(this.panel.renderIcon("plus") + " New design", { "data-studio-action": "new", disabled: this.busy || !c }) +
+        (w ? button(this.panel.renderIcon("delete-outline") + " Delete design", { "data-studio-action": "remove", class: "studio-delete", disabled: this.busy }) : "")));
     if (c && !ready) result += tag("div", { class: "verifier-note" }, "Choose AI connection to set up your dashboard designer. Your saved designs stay available here.");
+    if (w) return result + this.renderDirections(ready) + this.renderConcepts(ready) + this.renderWorkspace(ready);
+    result += this.renderSavedDesigns();
     if (c) result += this.renderDirections(ready);
-    if (w) return result + this.renderConcepts(ready) + this.renderWorkspace(ready);
     result += tag("section", { class: "studio-hero" }, '<span class="workspace-eyebrow">Your AI dashboard designer</span><h2>A dashboard that feels like your home.</h2><p class="muted">Describe what you want, or let your designer find a starting point. Shape the design together, preview it, and apply it when it feels right.</p>' +
       tag("div", { class: "studio-pills" }, [String(c?.home?.areas || 0) + " rooms", String(c?.home?.entities || 0) + " available entities", "Native Home Assistant cards", "Built-in undo"].map(label => tag("span", {}, label)).join("")));
     result += tag("div", { class: "studio-start-grid" }, this.starterButtons(ready));
     result += tag("div", { class: "studio-compose card" }, '<label for="studio-first-message"><strong>Or describe your own idea</strong></label>' + this.composer(ready, true));
-    if (c?.workspaces?.length) result += '<div class="workspace-section-heading" style="margin-top:26px"><div><span class="workspace-eyebrow">Pick up where you left off</span><h2>Your designs</h2></div></div>' +
-      tag("div", { class: "studio-resume-grid" }, c.workspaces.map(row => tag("article", { class: "studio-resume" },
-        tag("div", {}, tag("strong", {}, escape(row.title)) + tag("small", {}, row.url_path === null ? "New dashboard draft" : "Home Assistant dashboard")) +
-        button("Continue", { "data-studio-resume": row.id, disabled: this.busy }))).join(""));
     return result;
+  }
+  renderSavedDesigns() {
+    const rows = this.catalog?.workspaces || [];
+    if (!rows.length) return "";
+    return tag("section", { class: "studio-designs", "aria-labelledby": "studio-designs-title" },
+      '<div class="workspace-section-heading"><div><span class="workspace-eyebrow">Pick up where you left off</span><h2 id="studio-designs-title">Your designs</h2></div>' + tag("span", { class: "badge" }, rows.length + " saved") + '</div>' +
+      '<p>Deleting a Studio design removes its draft and chat. Dashboards saved in Home Assistant stay in place.</p>' +
+      tag("div", { class: "studio-resume-grid" }, rows.map(row => tag("article", { class: "studio-resume" },
+        tag("div", { class: "studio-resume-title" }, tag("strong", {}, escape(row.title)) + tag("small", {}, row.url_path === null ? "New dashboard draft" : "Home Assistant dashboard")) +
+        tag("div", { class: "studio-resume-actions" }, button("Continue", { "data-studio-resume": row.id, disabled: this.busy }) +
+          button(this.panel.renderIcon("delete-outline") + " Delete", { "data-studio-remove": row.id, class: "studio-delete", "aria-label": "Delete Studio design “" + row.title + "”", disabled: this.busy })))).join("")));
   }
   composer(ready, first = false) {
     return tag("textarea", { id: first ? "studio-first-message" : null, "data-studio-message": "", "aria-label": "Describe a dashboard change",
@@ -361,7 +384,7 @@ export class DashboardStudio {
       tag("div", { class: "studio-toolbar-actions" }, (w.url_path !== null ? tag("a", { class: "button", target: "_blank", rel: "noopener", href: "/" + (w.url_path || "lovelace") }, "Open in HA " + this.panel.renderIcon("open-in-new")) : "") +
         action("apply", this.panel.renderIcon("check") + (w.is_new ? " Create dashboard" : " Apply to HA"), !!this.previewConcept || !w.has_changes || !views.length, { class: "primary" })));
     const details = tag("details", { class: "studio-config" }, "<summary>Dashboard configuration</summary>" + tag("pre", {}, escape(JSON.stringify(draft.config, null, 2))) + action("export", "Download JSON"));
-    const bottom = tag("div", { class: "studio-toolbar", style: "margin-top:20px" }, action("home", this.panel.renderIcon("arrow-left") + " All designs") + action("remove", "Remove Studio design", false, { class: "studio-remove" }));
+    const bottom = tag("div", { class: "studio-toolbar", style: "margin-top:20px" }, action("home", this.panel.renderIcon("arrow-left") + " All designs"));
     return tag("div", { class: "studio-workspace" }, chat + tag("div", {}, preview + toolbar + '<p class="studio-apply-note">Drafts stay in Studio until you apply them. Every save keeps the previous HA layout for undo.</p>' + details + bottom));
   }
   bindEvents() {
@@ -378,16 +401,19 @@ export class DashboardStudio {
       if (action === "draft-preview") { this.previewConcept = ""; this.view = 0; this.panel.render(); return; }
       if (action === "reload") return this.workspace && this.screen === "design" ? this.act("open", { workspace_id: this.workspace.id }) : this.load();
       if (action === "new") return this.act("open", { workspace_id: "", url_path: null, title: "My home" });
-      if (action === "home") { this.workspace = null; this.panel.render(); return; }
+      if (action === "home") {
+        this.workspace = null; this.focus = null; this.previewConcept = ""; this.error = ""; this.notice = "";
+        this.screen = "design";
+        this.panel.render({ preserveView: false });
+        root.querySelector(".studio-designs")?.scrollIntoView?.({ block: "start" });
+        return;
+      }
       if (action === "export") {
         const url = URL.createObjectURL(new Blob([JSON.stringify(this.currentPreview().config, null, 2)], { type: "application/json" }));
         const link = document.createElement("a"); link.href = url; link.download = "dashboard.json"; link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000); return;
       }
-      if (action === "remove") return this.panel.confirmAction(
-        "Remove Studio design", "Remove this design and its chat? The Home Assistant dashboard will stay as it is.",
-        "Remove design", () => this.act(action),
-      );
+      if (action === "remove") return this.removeDesign();
       if (action === "undo_apply") return this.panel.confirmAction(
         "Restore last save", "Restore the previous Home Assistant layout? Your current Studio draft will be replaced.",
         "Restore layout", () => this.act(action),
@@ -434,6 +460,11 @@ export class DashboardStudio {
       return this.send(STARTERS[index][3]);
     }));
     root.querySelectorAll("[data-studio-suggestion]").forEach(control => control.addEventListener("click", () => this.send(this.workspace.suggestions[Number(control.dataset.studioSuggestion)])));
+    root.querySelectorAll("[data-studio-remove]").forEach(control => control.addEventListener("click", () => {
+      if (this.busy || control.disabled) return;
+      const row = this.catalog?.workspaces?.find(row => row.id === control.dataset.studioRemove);
+      if (row) return this.removeDesign(row);
+    }));
     root.querySelectorAll("[data-studio-resume]").forEach(control => control.addEventListener("click", () => this.act("open", { workspace_id: control.dataset.studioResume })));
     root.querySelectorAll("[data-studio-device]").forEach(control => control.addEventListener("click", () => { this.device = control.dataset.studioDevice; this.panel.render(); }));
     root.querySelectorAll("[data-studio-view]").forEach(control => control.addEventListener("click", () => { this.view = Number(control.dataset.studioView); this.focus = null; this.panel.render(); }));

@@ -120,11 +120,17 @@ class DashboardProvider:
         return value
 
     async def design(self, messages, settings, schema) -> dict[str, Any]:
+        repairing = "repairs" in schema.get("properties", {})
         tool = {
             "type": "function",
             "function": {
                 "name": "dashboard_design",
-                "description": "Propose a dashboard draft or discuss its design without saving to HA.",
+                "description": (
+                    "Complete the requested dashboard views. Return repairs with view_index and "
+                    "nonempty sections containing actual cards. Do not return an outline or discussion."
+                    if repairing
+                    else "Propose a dashboard draft or discuss its design without saving to HA."
+                ),
                 "parameters": schema,
             },
         }

@@ -120,6 +120,9 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[{}, {"content": json.dumps({"repairs": replies})}]
         )
         self.assertEqual((await self.client.design(MESSAGES, SETTINGS, schema))["repairs"], replies)
+        repair_tool = self.client._chat.await_args_list[0].args[2]["function"]
+        self.assertIn("Return repairs with view_index", repair_tool["description"])
+        self.assertNotIn("discuss its design", repair_tool["description"])
         fallback = self.client._chat.call_args.args[0][-1]["content"]
         self.assertIn(json.dumps(schema, ensure_ascii=False), fallback)
         self.assertIn('"required": ["repairs"]', fallback)

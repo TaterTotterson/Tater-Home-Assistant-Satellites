@@ -108,7 +108,9 @@ new dashboard. Studio keeps five previous saves and five draft undo steps.
 
 If a newer edit is detected, open the dashboard's latest version from the
 dashboard selector; the old Studio design remains available in **Your designs**.
-You can download a draft as JSON. **Remove Studio design** removes only the
+You can download a draft as JSON. **All designs** shows your saved designs with
+**Continue** and **Delete** on each one. **Delete design** is also available at
+the top of an open design. Deleting a Studio design removes only the
 private draft and its chat, not a published HA dashboard.
 
 YAML-managed dashboards are not edited here. Built-in automatically generated
@@ -118,14 +120,15 @@ and domain-specific cards are checked before a proposal is accepted. Studio
 repairs unambiguous nesting mistakes, such as cards placed directly on a Sections
 view, and missing card types for clear entity, heading, list, and grid cards.
 Entity rows stay unchanged, and ambiguous card shapes go back to the model for
-repair. Incomplete layouts get up to two model repair
-attempts with concrete examples and validation feedback. If whole-dashboard
-repair repeats missing Sections content, the final attempt asks only for those
-missing views and merges their sections while preserving completed views and
-options. Models that return plain JSON receive the same detailed output schema.
-All attempts share the same overall request timeout. Empty layouts are not filled with invented devices just to pass
-validation. These checks are not a full replacement for Home Assistant's frontend
-card validation.
+repair. Incomplete layouts get up to two model repair attempts with concrete
+examples and validation feedback. Studio asks for the affected views, keeps
+completed repairs, and asks only for the remaining content on the next attempt.
+If the model returns a complete dashboard instead of the requested repair format,
+Studio extracts the affected sections while preserving other views and options.
+Models that return plain JSON receive the same detailed output schema. All
+attempts share the same overall request timeout. Empty layouts are not filled
+with invented devices just to pass validation. These checks are not a full
+replacement for Home Assistant's frontend card validation.
 
 ## Loading and progress
 

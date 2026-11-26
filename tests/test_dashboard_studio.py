@@ -275,6 +275,69 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.designer.design.call_args.args[2]["required"], ["repairs"])
         self.assertEqual(self.gateway.calls, [])
 
+    async def test_full_config_repair_uses_completed_sections_and_preserves_other_views(self):
+        proposal = config("Keep this view")
+        proposal["views"][0]["path"] = "keep"
+        proposal["views"].append(
+            {"title": "Office", "path": "office", "type": "sections", "max_columns": 3}
+        )
+        corrected = deepcopy(proposal)
+        corrected["views"][0] = config("Do not replace this view")["views"][0]
+        corrected["views"][1] = config()["views"][0]
+        self.designer.design.side_effect = [
+            {"message": "A complete design", "config": proposal},
+            {"message": "Completed the Office", "config": corrected},
+        ]
+        row = await self.design()
+        self.assertEqual(self.designer.design.await_count, 2)
+        self.assertEqual(row["config"]["views"][0], proposal["views"][0])
+        expected = {**proposal["views"][1], "sections": corrected["views"][1]["sections"]}
+        self.assertEqual(row["config"]["views"][1], expected)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_partial_section_repairs_keep_progress_and_only_request_remaining_views(self):
+        proposal = {
+            "views": [
+                {"title": title, "path": title.lower(), "type": "sections"}
+                for title in ("Home", "Office")
+            ]
+        }
+        sections = config()["views"][0]["sections"]
+        self.designer.design.side_effect = [
+            {"message": "Two room views", "config": proposal},
+            {
+                "repairs": [
+                    {"view_index": 0, "sections": sections},
+                    {"view_index": 1, "sections": []},
+                ]
+            },
+            {"repairs": [{"view_index": 1, "sections": sections}]},
+        ]
+        row = await self.design()
+        self.assertEqual(self.designer.design.await_count, 3)
+        payload = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        self.assertEqual([item["view_index"] for item in payload["views_to_complete"]], [1])
+        self.assertEqual(payload["previous_repair"]["repairs"][1]["sections"], [])
+        for view in row["config"]["views"]:
+            self.assertEqual(view["sections"], sections)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_repair_example_has_real_sections_even_without_entities(self):
+        self.studio.inventory = lambda: []
+        sections = [{"type": "grid", "cards": [{"type": "markdown", "content": "Welcome home"}]}]
+        self.designer.design.side_effect = [
+            {"message": "A welcome view", "config": {"views": [{"type": "sections"}]}},
+            {"repairs": [{"view_index": 0, "sections": sections}]},
+        ]
+        row = await self.design()
+        payload = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        example = payload["example"]["repairs"][0]
+        self.assertEqual(example["view_index"], 0)
+        self.assertTrue(example["sections"][0]["cards"])
+        self.assertNotIn("entity", json.dumps(example))
+        self.assertEqual(row["config"]["views"][0]["sections"], sections)
+        self.assertEqual(self.gateway.calls, [])
+
     async def test_native_tater_base_output_uses_detailed_view_schema_and_repair(self):
         del self.designer.design  # Exercise the real OpenAI-compatible tool-response parser.
         self.manager.data[studio.STORE_KEY]["settings"]["model"] = "tater/base"
@@ -918,6 +981,30 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.gateway.calls, [])
         self.assertIn("dashboard-office", self.gateway.configs)
 
+    async def test_delete_frees_a_full_studio_slot_without_changing_other_designs_or_ha(self):
+        rows = [
+            await self.studio.open(USER, title=f"Design {index}")
+            for index in range(studio.MAX_WORKSPACES)
+        ]
+        with self.assertRaisesRegex(ValueError, "Open All designs"):
+            await self.studio.open(USER, title="One too many")
+        row = rows[3]
+        self.assertEqual((await self.studio.open(USER, workspace_id=row["id"]))["id"], row["id"])
+        with self.assertRaisesRegex(ValueError, "could not be found"):
+            await self.studio.remove(OTHER, row["id"], row["revision"])
+        with self.assertRaises(studio.StudioConflict):
+            await self.studio.remove(USER, row["id"], row["revision"] + 1)
+        self.assertEqual(len((await self.studio.snapshot(USER))["workspaces"]), 12)
+        await self.studio.remove(USER, row["id"], row["revision"])
+        new = await self.studio.open(USER, title="Replacement")
+        saved = (await self.studio.snapshot(USER))["workspaces"]
+        self.assertEqual(
+            {item["id"] for item in saved},
+            {item["id"] for item in rows if item != row} | {new["id"]},
+        )
+        self.assertEqual(self.gateway.calls, [])
+        self.assertIn("dashboard-office", self.gateway.configs)
+
     async def test_yaml_dashboard_is_rejected_without_a_write(self):
         self.gateway.dashboards = AsyncMock(
             return_value=[{"url_path": "yaml-home", "title": "YAML", "mode": "yaml"}]
@@ -965,26 +1052,58 @@ class ValidationTests(unittest.TestCase):
             studio.STYLE_PALETTES["natural"][0],
         )
 
-    def test_focused_repairs_must_cover_exactly_the_missing_views_with_content(self):
+    def test_focused_repairs_reject_ambiguous_indices(self):
         outline = {
             "views": [{"type": "sections", "path": "one"}, {"type": "sections", "path": "two"}]
         }
         section = config()["views"][0]["sections"]
         for repairs in (
             [],
-            [{"view_index": 0, "sections": section}],
             [{"view_index": 0, "sections": section}, {"view_index": 0, "sections": section}],
             [{"view_index": 0, "sections": section}, {"view_index": 9, "sections": section}],
             [{"view_index": 0, "sections": section}, {"view_index": True, "sections": section}],
-            [
-                {"view_index": 0, "sections": section},
-                {"view_index": 1, "sections": [{"type": "grid", "cards": []}]},
-            ],
         ):
             with self.subTest(repairs=repairs):
                 self.assertEqual(
                     studio.merge_section_repairs(outline, {"repairs": repairs}, [0, 1]), outline
                 )
+
+    def test_focused_repairs_decode_structural_json_and_single_view_output(self):
+        outline = {"views": [{"type": "sections", "path": "office", "max_columns": 3}]}
+        sections = config()["views"][0]["sections"]
+        expected = {"views": [{**outline["views"][0], "sections": sections}]}
+        for response in (
+            {"repairs": json.dumps([{"view_index": 0, "sections": json.dumps(sections)}])},
+            {
+                "repairs": [
+                    {
+                        "view_index": 0,
+                        "sections": {"type": "grid", "cards": json.dumps(sections[0]["cards"])},
+                    }
+                ]
+            },
+            {"sections": sections},
+            {"cards": sections[0]["cards"]},
+            {"config": json.dumps(config())},
+            config(),
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(studio.merge_section_repairs(outline, response, [0]), expected)
+        self.assertNotIn("sections", outline["views"][0])
+
+    def test_full_config_repair_cannot_target_a_different_room_or_add_views(self):
+        outline = {"views": [{"type": "sections", "path": "office"}]}
+        wrong_room = config()
+        wrong_room["views"][0]["path"] = "kitchen"
+        extra_views = config()
+        extra_views["views"].append(deepcopy(extra_views["views"][0]))
+        for response in (
+            {"config": wrong_room},
+            {"config": extra_views},
+            {"sections": [], "view_index": 0},
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(studio.merge_section_repairs(outline, response, [0]), outline)
 
     def test_themes_must_be_installed_or_preserved_from_the_original(self):
         themed = config()

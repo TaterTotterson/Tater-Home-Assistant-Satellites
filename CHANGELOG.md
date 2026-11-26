@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.37
+
+- Put saved Studio designs near the top of the start page, with Continue and
+  Delete actions on each design. Add All designs and Delete design at the top
+  of an open workspace, and a Manage designs shortcut when an error occurs.
+  Confirm deletion and keep Home Assistant dashboards intact.
+- Keep usable sections when a model answers a focused repair with a full
+  dashboard or JSON-encoded layout. Merge only requested sections and preserve
+  completed views and options. Keep partial progress across views instead of
+  discarding all repairs when one view is still incomplete.
+- Give subsequent repairs their previous response and exact missing-field paths.
+  Make the repair tool describe the required sections rather than a discussion,
+  and include a nonempty structural example even when no entities are available.
+
 ## 1.4.36
 
 - Give Dashboard Studio an explicit capability guide from its supported native

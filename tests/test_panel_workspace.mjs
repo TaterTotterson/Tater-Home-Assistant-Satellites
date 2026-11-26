@@ -72,6 +72,70 @@ function panelPolling(context) {
   return () => poll?.();
 }
 
+test('HA properties assigned before element definition are recovered on first attachment', async context => {
+  panelPolling(context);
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  const connection = haConnection();
+  const paths = [];
+  const hass = { connection, callApi: async (_, path) => {
+    paths.push(path);
+    return path.endsWith('/manage') ? data : { options: [{ value: 'hey_tater' }] };
+  }};
+  const configuration = { title: 'Tater Satellites' };
+  // An undefined custom element keeps HA's assignments as own properties.
+  // Browser upgrade retains them, shadowing the class's hass and panel setters.
+  Object.defineProperties(panel, {
+    hass: { value: hass, configurable: true, writable: true },
+    panel: { value: configuration, configurable: true, writable: true },
+  });
+  assert.equal(panel.hassReady(), false);
+  panel.connectedCallback();
+  await settle();
+  assert.equal(Object.hasOwn(panel, 'hass'), false);
+  assert.equal(Object.hasOwn(panel, 'panel'), false);
+  assert.equal(panel._hass, hass);
+  assert.equal(panel._panel, configuration);
+  assert.equal(panel._data, data);
+  assert.equal(paths.filter(path => path.endsWith('/manage')).length, 1);
+  assert.equal(connection.listenerCount('ready'), 1);
+  assert.doesNotMatch(panel.renderLoading(), /Connecting to Home Assistant/);
+  const updatedHass = { ...hass, themes: { darkMode: true } };
+  panel.hass = updatedHass;
+  assert.equal(panel._hass, updatedHass, 'future HA updates must reach the setter');
+  panel.disconnectedCallback();
+  panel.connectedCallback();
+  await settle();
+  assert.equal(paths.filter(path => path.endsWith('/manage')).length, 1);
+  assert.equal(connection.listenerCount('ready'), 1);
+  panel.disconnectedCallback();
+});
+
+test('an early HA handoff still waits for a disconnected connection and recovers without navigation', async context => {
+  panelPolling(context);
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  const connection = haConnection(false);
+  let reads = 0;
+  const hass = { connection, callApi: async (_, path) => {
+    if (path.endsWith('/manage')) { reads++; return data; }
+    return { options: [] };
+  }};
+  Object.defineProperty(panel, 'hass', { value: hass, configurable: true, writable: true });
+  panel.connectedCallback();
+  assert.equal(reads, 0);
+  assert.equal(connection.listenerCount('ready'), 1);
+  assert.match(panel.renderLoading(), /Connecting to Home Assistant/);
+  connection.connected = true;
+  connection.emit('ready');
+  await settle();
+  assert.equal(reads, 1);
+  assert.equal(panel._data, data);
+  panel.disconnectedCallback();
+});
+
 test('bridge loads when HA becomes ready without another hass assignment and cleans up listeners', async context => {
   panelPolling(context);
   const panel = fixture();

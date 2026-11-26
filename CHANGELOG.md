@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.34
+
+- Fix the bridge getting stuck on "Connecting to Home Assistant" on first open
+  while Dashboard Studio's module loads. Recover HA connection and panel
+  properties assigned before the UI component is defined, so settings load
+  without navigating away and back. Keep reconnect handling and saved drafts.
+
 ## 1.4.33
 
 - Count repeated automatic retries of an unchanged incorrect satellite code as

@@ -308,6 +308,14 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   connectedCallback() {
+    // HA can assign these while the Studio import still delays element definition.
+    // Replay early own properties through the setters after the browser upgrades us.
+    for (const property of ["panel", "hass"]) {
+      if (!Object.prototype.hasOwnProperty.call(this, property)) continue;
+      const value = this[property];
+      delete this[property];
+      this[property] = value;
+    }
     this.bindHaConnection(this._hass?.connection);
     this._haReady = this.hassReady();
     if (this._haReady && !this._data) this.load();

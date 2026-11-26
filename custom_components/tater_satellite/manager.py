@@ -23,6 +23,7 @@ from homeassistant.components.assist_pipeline import (
     async_get_pipelines,
 )
 from homeassistant.components.assist_pipeline.error import PipelineNotFound
+from homeassistant.components.http.ban import process_wrong_login
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -41,6 +42,7 @@ from .const import (
     MAX_AUDIO_QUEUE_CHUNKS,
     MAX_TEXT_MESSAGE_BYTES,
     PAIRING_CODE_TTL_SECONDS,
+    PAIRING_MAX_FAILED_ATTEMPTS,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
@@ -62,6 +64,7 @@ from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .pairing import (
     PAIRING_RETRY_GRACE_SECONDS,
     normalize_hardware_id,
+    normalize_pairing_code,
     pairing_retry_token,
 )
 from .protocol import (
@@ -880,6 +883,7 @@ class TaterSatelliteManager:
         self._save_lock = asyncio.Lock()
         self._pairing_code = ""
         self._pairing_expires = 0.0
+        self._pairing_failed_attempts = 0
         self._pairing_claimed_device = ""
         self._pairing_claimed_hardware = ""
         self._pairing_retry_device_token = ""
@@ -1161,6 +1165,7 @@ class TaterSatelliteManager:
         code = f"{secrets.randbelow(1_000_000):06d}"
         self._pairing_code = code
         self._pairing_expires = time.time() + PAIRING_CODE_TTL_SECONDS
+        self._pairing_failed_attempts = 0
         self._pairing_claimed_device = ""
         self._pairing_claimed_hardware = ""
         self._pairing_retry_device_token = ""
@@ -1183,7 +1188,7 @@ class TaterSatelliteManager:
         }
 
     def _pairing_matches(self, supplied: str) -> bool:
-        normalized = "".join(ch for ch in supplied if ch.isdigit())
+        normalized = normalize_pairing_code(supplied)
         return bool(
             self._pairing_code
             and self._pairing_expires > time.time()
@@ -1199,6 +1204,24 @@ class TaterSatelliteManager:
         if auth.lower().startswith("bearer "):
             return auth[7:].strip()
         return ""
+
+    async def _reject_authentication(self, request: web.Request) -> tuple[bool, str]:
+        """Limit guesses across connections and report invalid satellite credentials."""
+        if self._pairing_code:
+            self._pairing_failed_attempts += 1
+            if self._pairing_failed_attempts >= PAIRING_MAX_FAILED_ATTEMPTS:
+                # Invalidate before awaiting HA, including the first-handoff retry.
+                self._pairing_code = ""
+                self._pairing_expires = 0.0
+                self._pairing_retry_device_token = ""
+                self._pairing_retry_expires = 0.0
+                _LOGGER.warning(
+                    "Satellite pairing code invalidated after %s failed attempts; "
+                    "start a new pairing session in Tater Satellites",
+                    PAIRING_MAX_FAILED_ATTEMPTS,
+                )
+        await process_wrong_login(request)
+        return False, ""
 
     async def _authenticate(
         self,
@@ -1233,10 +1256,10 @@ class TaterSatelliteManager:
             )
             if retry_token:
                 return True, retry_token
-            return False, ""
+            return await self._reject_authentication(request)
 
         if not self._pairing_matches(supplied):
-            return False, ""
+            return await self._reject_authentication(request)
 
         new_token = secrets.token_urlsafe(32)
         payload = message_payload(hello)

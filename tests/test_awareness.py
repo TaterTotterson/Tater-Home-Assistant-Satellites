@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import base64
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import importlib.util
 from pathlib import Path
@@ -148,27 +149,31 @@ class AwarenessTests(unittest.IsolatedAsyncioTestCase):
             "homeassistant.components.camera",
             "homeassistant.components.http",
             "homeassistant.components.http.auth",
+            "homeassistant.components.http.const",
             "homeassistant.core",
             "homeassistant.helpers",
             "homeassistant.helpers.event",
+            "homeassistant.helpers.http",
             "homeassistant.helpers.entity_registry",
         ):
             modules[name] = ModuleType(name)
         modules["homeassistant.core"].callback = lambda func: func
+        modules["homeassistant.components.http.const"].KEY_HASS_REFRESH_TOKEN_ID = (
+            "hass_refresh_token_id"
+        )
+        self.current_request = ContextVar("test_ha_request", default=None)
+        modules["homeassistant.helpers.http"].current_request = self.current_request
         modules["homeassistant.components.camera"].async_get_image = self.camera
         modules["homeassistant.components.http.auth"].async_sign_path = (
             lambda hass, path, expiration: path + "?authSig=test"
         )
         modules["homeassistant.helpers.event"].async_track_state_change_event = listen
         modules["homeassistant.helpers.event"].async_track_time_interval = (
-            lambda hass, callback, interval: self.periodic.append(callback)
-            or (lambda: None)
+            lambda hass, callback, interval: self.periodic.append(callback) or (lambda: None)
         )
-        modules["homeassistant.helpers.entity_registry"].async_get = (
-            lambda hass: SimpleNamespace(
-                async_get=lambda entity_id: (
-                    SimpleNamespace(device_id="front") if "front" in entity_id else None
-                )
+        modules["homeassistant.helpers.entity_registry"].async_get = lambda hass: SimpleNamespace(
+            async_get=lambda entity_id: (
+                SimpleNamespace(device_id="front") if "front" in entity_id else None
             )
         )
         self.module_patch = patch.dict(sys.modules, modules)
@@ -394,6 +399,30 @@ class AwarenessTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(sign.call_count, 1)
 
+    async def test_admin_thumbnails_never_reuse_background_or_other_session_signatures(self):
+        saved = await self.save()
+        signer = sys.modules["homeassistant.components.http.auth"]
+
+        def sign_for_session(hass, path, expires):
+            request = self.current_request.get()
+            session = request["hass_refresh_token_id"] if request is not None else "content"
+            return path + "?authSig=" + session
+
+        with patch.object(signer, "async_sign_path", side_effect=sign_for_session) as sign:
+            background = await self.coordinator.async_test(saved["id"])
+            self.assertTrue(background["image_url"].endswith("authSig=content"))
+            for session in ("admin-one", "admin-two"):
+                context = self.current_request.set({"hass_refresh_token_id": session})
+                try:
+                    first = self.coordinator.snapshot()["history"][0]["image_url"]
+                    self.assertTrue(first.endswith("authSig=" + session))
+                    self.assertEqual(self.coordinator.snapshot()["history"][0]["image_url"], first)
+                finally:
+                    self.current_request.reset(context)
+            self.assertEqual(sign.call_count, 3)
+        await self.coordinator.async_cleanup()
+        self.assertEqual(len(self.coordinator._image_urls), 3)
+
     async def test_camera_and_vision_failures_are_recorded_without_fake_alerts(self):
         saved = await self.save()
         for stage, stub in (
@@ -539,6 +568,7 @@ class AwarenessHttpTests(unittest.IsolatedAsyncioTestCase):
             "API_BASE_PATH": "/api/tater/satellite/v1",
             "_json_body": body,
             "_manager": lambda request: manager,
+            "_require_admin": lambda request: None,
         }
         future = ast.ImportFrom(
             module="__future__", names=[ast.alias(name="annotations")], level=0

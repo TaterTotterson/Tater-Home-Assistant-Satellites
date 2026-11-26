@@ -5,13 +5,12 @@ from __future__ import annotations
 import hmac
 from typing import Any
 
-
 PAIRING_RETRY_GRACE_SECONDS = 30.0
 
 
 def normalize_pairing_code(value: Any) -> str:
-    """Return only the decimal characters accepted by satellite setup."""
-    return "".join(ch for ch in str(value or "") if ch.isdigit())
+    """Return the ASCII digits accepted by satellite setup and constant-time checks."""
+    return "".join(ch for ch in str(value or "") if ch in "0123456789")
 
 
 def normalize_hardware_id(value: Any) -> str:

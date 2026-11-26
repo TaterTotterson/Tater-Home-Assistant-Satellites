@@ -185,7 +185,8 @@ class IdentifyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_panel_identify_endpoint_returns_success_after_playback(self):
         post = load_method(
-            "http.py", "IdentifyView", "post", _manager=lambda request: self.manager
+            "http.py", "IdentifyView", "post", _manager=lambda request: self.manager,
+            _require_admin=lambda request: None,
         )
         self.manager.async_identify = AsyncMock()
         view = SimpleNamespace(json=lambda body: body)
@@ -200,6 +201,7 @@ class IdentifyTests(unittest.IsolatedAsyncioTestCase):
         post = load_method(
             "http.py", "IdentifyView", "post",
             _manager=lambda request: self.manager,
+            _require_admin=lambda request: None,
             web=SimpleNamespace(HTTPBadRequest=HTTPBadRequest),
         )
         self.manager.async_identify = AsyncMock(side_effect=RuntimeError("No TTS engine"))

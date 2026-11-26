@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.32
+
+- Require a Home Assistant administrator for every bridge management API,
+  including settings and status reads, provider keys, Dashboard Studio,
+  pairing, Bluetooth, uploads, firmware installation, and device removal.
+  Reject unauthorized requests before parsing their bodies or running actions.
+- Invalidate satellite pairing codes after five failed authentication attempts
+  across connections, device IDs, and addresses. Apply the same limit to the
+  pending first-connection credential retry, and report rejected authentication
+  to Home Assistant's login-ban system. Existing paired device tokens still work.
+- Cache signed Awareness preview links separately for each HA session so
+  administrator-only image access keeps working after background camera events.
+
 ## 1.4.31
 
 - Open bridge settings as soon as HA responds, without waiting for the optional

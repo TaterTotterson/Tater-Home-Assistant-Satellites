@@ -1,14 +1,14 @@
-# Tater Satellite 1.4.31
+# Tater Satellite 1.4.32
 
 ## What's changed
 
-- **Faster bridge opening:** Show settings and device status as soon as Home Assistant responds. The optional wake-word catalog loads separately in the background, so a slow catalog request cannot hold the page on “Connecting to your satellites.”
-- **Automatic connection recovery:** Load when HA's frontend connection becomes ready and recover after reconnecting. Ignore late responses from an old connection or a closed panel.
-- **Clear retry controls:** Retry initial settings reads up to three times. If a read fails or times out, show the error and a **Retry connection** button so you can recover without navigating away.
-- **Preserve active work:** Keep unsaved settings and focused editors intact during background updates. Reconnecting never repeats a settings save or satellite command.
+- **Administrator-only management:** Require an HA administrator for all 39 bridge management handlers, matching the panel's existing access restriction. Protect settings and status reads, provider connections and keys, Dashboard Studio, pairing, Bluetooth, uploads, firmware installation, and device removal. Reject unauthorized requests before reading their bodies or running actions.
+- **Pairing attempt limits:** Invalidate the six-digit satellite pairing code after five failed authentication attempts across connections, device IDs, and addresses. Apply the same limit to the pending first-connection credential retry. An administrator can select **Add Satellite** to generate a new code.
+- **Home Assistant login-ban support:** Report rejected satellite authentication to HA's login-ban system so configured IP-ban rules apply.
+- **Awareness preview compatibility:** Cache signed camera preview links separately for each HA session so administrator-only image access continues working after background camera events.
 
-All **576 automated tests** pass, including eight new frontend regression checks. Delayed connections, stalled catalog loading, and retry recovery were also checked in the browser.
+All **589 automated tests** pass, including authorization checks for every management handler, pairing limits and concurrent attempts, WebSocket rejection and login reporting, existing device reconnection, and signed preview caching.
 
-Update through Marketplace or HACS, restart Home Assistant, then refresh the bridge page. **No satellite firmware update is required.**
+Update through Marketplace or HACS, restart Home Assistant, then refresh the bridge page. **Existing paired satellites keep their credentials, and no satellite firmware update is required.**
 
-[Full changelog](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/compare/v1.4.30...v1.4.31)
+[Full changelog](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/compare/v1.4.31...v1.4.32)

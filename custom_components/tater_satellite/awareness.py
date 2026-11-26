@@ -137,7 +137,7 @@ class AwarenessCoordinator:
         self._image_lock = asyncio.Lock()
         self._last_started: dict[str, float] = {}
         self._active_images: set[str] = set()
-        self._image_urls: dict[str, tuple[float, str]] = {}
+        self._image_urls: dict[tuple[str, str], tuple[float, str]] = {}
         self._stopping = False
         media_dirs = getattr(self.hass.config, "media_dirs", {}) or {}
         source = "local" if media_dirs.get("local") else next(iter(media_dirs), "")
@@ -483,11 +483,18 @@ class AwarenessCoordinator:
 
     def _public_event(self, row: dict[str, Any]) -> dict[str, Any]:
         public = {key: value for key, value in row.items() if key != "image_filename"}
-        if (
-            row.get("image_filename")
-            and float(row.get("expires_at") or 0) > time.time()
-        ):
-            cached = self._image_urls.get(row["id"])
+        if row.get("image_filename") and float(row.get("expires_at") or 0) > time.time():
+            from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
+            from homeassistant.helpers.http import current_request
+
+            request = current_request.get()
+            refresh_token_id = (
+                request.get(KEY_HASS_REFRESH_TOKEN_ID) if request is not None else None
+            )
+            # Background events use HA's content user; never reuse those signed
+            # links for a management request that requires an administrator.
+            cache_key = (row["id"], refresh_token_id or "")
+            cached = self._image_urls.get(cache_key)
             if cached is None or cached[0] <= time.time():
                 from homeassistant.components.http.auth import async_sign_path
 
@@ -496,7 +503,7 @@ class AwarenessCoordinator:
                     f"/api/tater/satellite/v1/awareness/images/{row['id']}",
                     timedelta(minutes=5),
                 )
-                cached = self._image_urls[row["id"]] = (time.time() + 240, url)
+                cached = self._image_urls[cache_key] = (time.time() + 240, url)
             public["image_url"] = cached[1]
         return public
 
@@ -538,7 +545,9 @@ class AwarenessCoordinator:
             row["id"] for row in self.history if float(row.get("expires_at") or 0) > now
         }
         self._image_urls = {
-            key: value for key, value in self._image_urls.items() if key in retained_ids
+            key: value
+            for key, value in self._image_urls.items()
+            if key[0] in retained_ids and value[0] > now
         }
 
         def clean() -> None:

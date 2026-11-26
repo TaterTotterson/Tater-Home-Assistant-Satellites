@@ -7,6 +7,7 @@ from typing import Any
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.exceptions import Unauthorized
 
 from .const import (
     API_BASE_PATH,
@@ -17,6 +18,13 @@ from .const import (
 )
 from .manager import TaterSatelliteManager
 from .dashboard_studio import StudioConflict
+
+
+def _require_admin(request: web.Request) -> None:
+    """Restrict management APIs to the same administrators as the panel."""
+    user = request.get("hass_user")
+    if user is None or not user.is_admin:
+        raise Unauthorized()
 
 
 def _manager(request: web.Request) -> TaterSatelliteManager:
@@ -60,6 +68,7 @@ class ManageView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Return current settings and devices."""
+        _require_admin(request)
         return self.json(_manager(request).snapshot())
 
 
@@ -72,6 +81,7 @@ class PairingView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Generate a pairing code."""
+        _require_admin(request)
         return self.json(_manager(request).start_pairing())
 
 
@@ -83,6 +93,7 @@ class BluetoothScanView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
+        _require_admin(request)
         body = await _json_body(request)
         try:
             return self.json(await _manager(request).bluetooth.async_scan(
@@ -101,6 +112,7 @@ class BluetoothPairView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Connect and bond using the peripheral's six-digit PIN."""
+        _require_admin(request)
         body = await _json_body(request)
         try:
             device = await _manager(request).bluetooth.async_pair(
@@ -122,6 +134,7 @@ class BluetoothUnpairView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Forget a paired Bluetooth peripheral."""
+        _require_admin(request)
         body = await _json_body(request)
         try:
             await _manager(request).bluetooth.async_unpair(
@@ -142,6 +155,7 @@ class GlobalSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Save global settings."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -162,6 +176,7 @@ class TaterAssistantSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Save provider, home-control, and Hydra settings."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -181,6 +196,7 @@ class VisionSettingsView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings", body)
         if not isinstance(values, dict):
@@ -203,6 +219,7 @@ class DoorbellsView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
+        _require_admin(request)
         body = await _json_body(request)
         try:
             saved = await _manager(request).doorbell.async_save_doorbell(
@@ -219,6 +236,7 @@ class DoorbellView(HomeAssistantView):
     requires_auth = True
 
     async def delete(self, request: web.Request, doorbell_id: str) -> web.Response:
+        _require_admin(request)
         try:
             await _manager(request).doorbell.async_delete_doorbell(doorbell_id)
         except (KeyError, ValueError, RuntimeError) as err:
@@ -232,6 +250,7 @@ class DoorbellTestView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request, doorbell_id: str) -> web.Response:
+        _require_admin(request)
         try:
             result = await _manager(request).doorbell.async_test(doorbell_id)
         except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
@@ -247,6 +266,7 @@ class AwarenessMonitorsView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
+        _require_admin(request)
         body = await _json_body(request)
         try:
             saved = await _manager(request).awareness.async_save_monitor(
@@ -263,6 +283,7 @@ class AwarenessMonitorView(HomeAssistantView):
     requires_auth = True
 
     async def delete(self, request: web.Request, monitor_id: str) -> web.Response:
+        _require_admin(request)
         try:
             await _manager(request).awareness.async_delete_monitor(monitor_id)
         except (KeyError, ValueError, RuntimeError) as err:
@@ -276,6 +297,7 @@ class AwarenessTestView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request: web.Request, monitor_id: str) -> web.Response:
+        _require_admin(request)
         try:
             result = await _manager(request).awareness.async_test(monitor_id)
         except (KeyError, ValueError, RuntimeError, TimeoutError) as err:
@@ -291,6 +313,7 @@ class AwarenessImageView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request, event_id: str) -> web.Response:
+        _require_admin(request)
         image = await _manager(request).awareness.async_image(event_id)
         if image is None:
             raise web.HTTPNotFound(text="This Awareness image has expired")
@@ -307,6 +330,7 @@ class TaterAssistantTestView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Send a test message through Vision and Hydra without STT or TTS."""
+        _require_admin(request)
         body = await _json_body(request)
         text = str(body.get("text") or "").strip()
         images = body.get("images")
@@ -339,6 +363,7 @@ class DashboardStudioView(HomeAssistantView):
         return user
 
     async def get(self, request):
+        _require_admin(request)
         user = self._user(request)
         try:
             return self.json(await _manager(request).dashboard_studio.snapshot(user))
@@ -346,6 +371,7 @@ class DashboardStudioView(HomeAssistantView):
             raise web.HTTPBadRequest(text=str(err)) from err
 
     async def post(self, request):
+        _require_admin(request)
         user = self._user(request)
         body = await _json_body(request)
         studio = _manager(request).dashboard_studio
@@ -401,6 +427,7 @@ class TaterHydraClearView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Clear ledger entries, conversation history, or both."""
+        _require_admin(request)
         body = await _json_body(request)
         return self.json(
             await _manager(request).tater_assistant.async_clear_hydra(
@@ -439,6 +466,7 @@ class TrainerSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Save trainer settings."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -459,6 +487,7 @@ class WakeArbitrationSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Persist host settings; no firmware update or settings push needed."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings", body)
         try:
@@ -477,6 +506,7 @@ class WakeVerifierSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Save STT wake-check settings."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -497,6 +527,7 @@ class WakeFamilySettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request, family: str) -> web.Response:
         """Save the shared wake profile through a legacy family route."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -521,6 +552,7 @@ class SharedWakeSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Save the shared MWW, OWW-where-supported, or Dual wake profile."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -541,6 +573,7 @@ class DeviceSettingsView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         """Save per-device settings."""
+        _require_admin(request)
         body = await _json_body(request)
         values = body.get("settings")
         if not isinstance(values, dict):
@@ -574,6 +607,7 @@ class DeviceIdentityView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         """Wait for persistent firmware confirmation before reporting success."""
+        _require_admin(request)
         body = await _json_body(request)
         try:
             device = await _manager(request).async_set_device_identity(device_id, body)
@@ -591,6 +625,7 @@ class DeviceSettingsResetView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         """Reset overrides."""
+        _require_admin(request)
         try:
             device = await _manager(request).async_reset_device_settings(device_id)
         except (KeyError, RuntimeError) as err:
@@ -607,6 +642,7 @@ class TrainerPairingView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Generate a one-use trainer pairing code."""
+        _require_admin(request)
         return self.json(_manager(request).trainer.start_pairing())
 
 
@@ -619,6 +655,7 @@ class TrainerAdminUnlinkView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Unlink the trainer as a Home Assistant administrator."""
+        _require_admin(request)
         return self.json(await _manager(request).trainer.async_unlink(admin=True))
 
 
@@ -690,6 +727,7 @@ class AssetUploadView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Store a validated custom wake asset."""
+        _require_admin(request)
         body = await _json_body(request)
         try:
             asset = await _manager(request).async_upload_asset(
@@ -738,6 +776,7 @@ class WakeWordCatalogView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Load cached catalog choices, refreshing them when expired."""
+        _require_admin(request)
         catalog = await _manager(request).wake_word_catalog.async_refresh()
         return self.json(catalog)
 
@@ -751,6 +790,7 @@ class FirmwareRefreshView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Force a release catalog refresh."""
+        _require_admin(request)
         try:
             result = await _manager(request).firmware.async_refresh(force=True)
         except (ValueError, RuntimeError) as err:
@@ -767,6 +807,7 @@ class FirmwareInstallView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         """Start an OTA update."""
+        _require_admin(request)
         try:
             result = await _manager(request).async_install_firmware(device_id)
         except (KeyError, ValueError, RuntimeError) as err:
@@ -783,6 +824,7 @@ class FirmwareRecoveryView(HomeAssistantView):
 
     async def post(self, request: web.Request, board: str) -> web.Response:
         """Prepare a signed factory or keep-settings ESP Web Tools manifest."""
+        _require_admin(request)
         manager = _manager(request)
         body = await _json_body(request)
         flash_kind = str(body.get("flash_kind") or "factory").strip().lower()
@@ -864,6 +906,7 @@ class IdentifyView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         """Speak the identify message."""
+        _require_admin(request)
         try:
             await _manager(request).async_identify(device_id)
         except (KeyError, RuntimeError) as err:
@@ -880,6 +923,7 @@ class SettingsResyncView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         """Send settings while firmware confirmation continues asynchronously."""
+        _require_admin(request)
         try:
             device = await _manager(request).async_resync_settings(device_id)
         except (KeyError, RuntimeError) as err:
@@ -896,6 +940,7 @@ class StereoPairView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Save a left/right satellite pair."""
+        _require_admin(request)
         manager = _manager(request)
         body = await _json_body(request)
         values = body.get("pair") if isinstance(body.get("pair"), dict) else body
@@ -917,6 +962,7 @@ class StereoPairDeleteView(HomeAssistantView):
 
     async def delete(self, request: web.Request, pair_id: str) -> web.Response:
         """Remove a stereo pair and its virtual media player."""
+        _require_admin(request)
         manager = _manager(request)
         try:
             await manager.media.async_remove_pair(pair_id)
@@ -934,6 +980,7 @@ class ForgetView(HomeAssistantView):
 
     async def delete(self, request: web.Request, device_id: str) -> web.Response:
         """Remove a device credential."""
+        _require_admin(request)
         manager = _manager(request)
         try:
             await manager.async_forget(device_id)

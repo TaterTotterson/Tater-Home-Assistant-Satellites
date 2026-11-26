@@ -215,11 +215,30 @@ class TaterSatellitePanel extends HTMLElement {
     this._pipelineDraft = "";
     this._dirty = false;
     this._loading = false;
+    this._activeLoad = null;
+    this._startupAttempts = 0;
+    this._haReady = false;
+    this._haConnection = null;
+    this._onHaReady = connection => {
+      if (connection !== this._haConnection || this._haReady || !this.hassReady()) return;
+      this._haReady = true;
+      this.invalidateLoads();
+      this._startupAttempts = 0;
+      this.load(Boolean(this._data));
+      if (this._tab === "dashboard-studio" && this._data && !this._studio.busy) this._studio.load();
+    };
+    this._onHaDisconnected = connection => {
+      if (connection !== this._haConnection) return;
+      this._haReady = false;
+      this.invalidateLoads();
+      if (!this._data) this.render();
+    };
     this._recovery = null;
     this._recoveryBoard = "";
     this._recoveryFlashKind = "factory";
     this._wakeWordCatalog = null;
     this._wakeWordCatalogLastAttempt = 0;
+    this._wakeWordCatalogRequest = null;
     this._pollTimer = null;
     this._backgroundRenderPending = false;
     this._renderRevision = 0;
@@ -241,15 +260,18 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   set hass(value) {
-    const wasReady = typeof this._hass?.callApi === "function";
+    const wasReady = this._haReady;
     this._hass = value;
+    const connectionChanged = this.bindHaConnection(value?.connection);
+    this._haReady = this.hassReady();
     const darkMode = value?.themes?.darkMode;
     this.style?.setProperty("color-scheme", typeof darkMode === "boolean" ? darkMode ? "dark" : "light" : "light dark");
-    if (typeof value?.callApi !== "function") {
+    if (!this._haReady) {
+      if (wasReady) this.invalidateLoads();
       if (!this._data) this.render();
       return;
     }
-    if ((!this._data || !wasReady) && !this._loading) this.load(Boolean(this._data));
+    if ((connectionChanged || !wasReady || (!this._data && this._startupAttempts === 0)) && !this._loading) this.load(Boolean(this._data));
     if (this._tab === "dashboard-studio") {
       this._studio.updateHass(value);
       if (!wasReady && this._data && !this._studio.catalog && !this._studio.busy) this._studio.load();
@@ -260,12 +282,44 @@ class TaterSatellitePanel extends HTMLElement {
     this._panel = value;
   }
 
+  hassReady() {
+    return typeof this._hass?.callApi === "function" && this._hass?.connection?.connected !== false;
+  }
+
+  bindHaConnection(connection) {
+    connection = connection || null;
+    if (connection === this._haConnection) return false;
+    this._haConnection?.removeEventListener?.("ready", this._onHaReady);
+    this._haConnection?.removeEventListener?.("disconnected", this._onHaDisconnected);
+    this._haConnection = connection;
+    connection?.addEventListener?.("ready", this._onHaReady);
+    connection?.addEventListener?.("disconnected", this._onHaDisconnected);
+    this.invalidateLoads();
+    return true;
+  }
+
+  invalidateLoads() {
+    // Only invalidate reads. A save or command must never be replayed on reconnect.
+    if (this._activeLoad) {
+      this._activeLoad = null;
+      this._loading = false;
+    }
+    this._wakeWordCatalogRequest = null;
+  }
+
   connectedCallback() {
-    if (typeof this._hass?.callApi === "function" && !this._data) this.load();
-    else if (!this._data) this.render();
+    this.bindHaConnection(this._hass?.connection);
+    this._haReady = this.hassReady();
+    if (this._haReady && !this._data) this.load();
+    else this.render();
     if (!this._pollTimer) {
       this._pollTimer = window.setInterval(() => {
-        if (document.hidden || this.hasActiveInput() || this._tab === "dashboard-studio") return;
+        if (document.hidden) return;
+        if (!this._data) {
+          if (this._startupAttempts < 3) this.load(true);
+          return;
+        }
+        if (this.hasActiveInput() || this._tab === "dashboard-studio") return;
         if (this._backgroundRenderPending) {
           this._backgroundRenderPending = false;
           this.render();
@@ -279,11 +333,13 @@ class TaterSatellitePanel extends HTMLElement {
   disconnectedCallback() {
     if (this._pollTimer) window.clearInterval(this._pollTimer);
     this._pollTimer = null;
+    this.bindHaConnection(null);
+    this._haReady = false;
     if (this._recovery?.blobUrl) URL.revokeObjectURL(this._recovery.blobUrl);
   }
 
   async api(method, path, body, { timeoutMs = 0, timeoutMessage = "Home Assistant did not respond in time. Refresh the workspace and try again." } = {}) {
-    if (typeof this._hass?.callApi !== "function") throw new Error("Connecting to Home Assistant. Please try again once it reconnects.");
+    if (!this.hassReady()) throw new Error("Connecting to Home Assistant. Please try again once it reconnects.");
     const request = this._hass.callApi(method, `${API}/${path}`, body);
     if (!timeoutMs) return request;
     let timer;
@@ -470,40 +526,60 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   async load(background = false) {
-    if (this._loading || typeof this._hass?.callApi !== "function") return;
+    if (this._loading || !this.hassReady()) return;
+    if (!background) this._startupAttempts = 0;
+    if (!this._data) this._startupAttempts++;
+    const request = {};
+    this._activeLoad = request;
     this._loading = true;
     try {
       if (!background) this.render();
       const data = await this.api("GET", "manage", undefined, { timeoutMs: 15000 });
-      const catalogOptions = this._wakeWordCatalog?.options;
-      const catalogUnavailable =
-        !Array.isArray(catalogOptions) || catalogOptions.length === 0;
-      const catalogRetryDue =
-        Date.now() - this._wakeWordCatalogLastAttempt >= 30_000;
-      if (!this._wakeWordCatalog || (catalogUnavailable && catalogRetryDue)) {
-        this._wakeWordCatalogLastAttempt = Date.now();
-        try {
-          this._wakeWordCatalog = await this.api("GET", "wake-word/catalog", undefined, { timeoutMs: 5000 });
-        } catch (error) {
-          this._wakeWordCatalog = {
-            options: [],
-            warning: formatApiError(error),
-          };
-        }
-      }
+      if (this._activeLoad !== request) return;
       this._data = data;
       this._error = "";
       this.syncDrafts(data);
+      this._startupAttempts = 0;
       if (this._tab === "dashboard-studio" && !this._studio.catalog && !this._studio.busy) this._studio.load();
     } catch (error) {
-      this._error = formatApiError(error);
+      if (this._activeLoad === request) this._error = formatApiError(error);
     } finally {
-      this._loading = false;
-      if (!background || !this.hasActiveInput()) {
-        this._backgroundRenderPending = false;
-        this.render();
-      } else {
-        this._backgroundRenderPending = true;
+      if (this._activeLoad === request) {
+        this._activeLoad = null;
+        this._loading = false;
+        this.renderLoadResult(background);
+        // Settings are usable immediately. Remote catalog discovery is optional.
+        if (this._data) this.loadWakeWordCatalog();
+      }
+    }
+  }
+
+  renderLoadResult(background = true) {
+    if (!background || !this.hasActiveInput()) {
+      this._backgroundRenderPending = false;
+      this.render();
+    } else {
+      this._backgroundRenderPending = true;
+    }
+  }
+
+  async loadWakeWordCatalog() {
+    if (this._wakeWordCatalogRequest || !this.hassReady()) return;
+    const options = this._wakeWordCatalog?.options;
+    const unavailable = !Array.isArray(options) || options.length === 0;
+    if (this._wakeWordCatalog && (!unavailable || Date.now() - this._wakeWordCatalogLastAttempt < 30_000)) return;
+    const request = {};
+    this._wakeWordCatalogRequest = request;
+    this._wakeWordCatalogLastAttempt = Date.now();
+    try {
+      const catalog = await this.api("GET", "wake-word/catalog", undefined, { timeoutMs: 5000 });
+      if (this._wakeWordCatalogRequest === request) this._wakeWordCatalog = catalog;
+    } catch (error) {
+      if (this._wakeWordCatalogRequest === request) this._wakeWordCatalog = { options: [], warning: formatApiError(error) };
+    } finally {
+      if (this._wakeWordCatalogRequest === request) {
+        this._wakeWordCatalogRequest = null;
+        if (this._data) this.renderLoadResult();
       }
     }
   }
@@ -1462,6 +1538,8 @@ class TaterSatellitePanel extends HTMLElement {
   }
 
   renderLoading() {
+    if (this._error && !this._loading) return `<div class="workspace-loading" role="status"><strong>Bridge settings couldn't load</strong><span class="muted">You can retry here without leaving this page.</span><button type="button" class="primary" data-action="refresh">Retry connection</button></div>`;
+    if (!this.hassReady()) return `<div class="workspace-loading" role="status"><div class="spinner"></div><strong>Connecting to Home Assistant</strong><span class="muted">Bridge settings will load automatically when HA reconnects.</span></div>`;
     return `<div class="workspace-loading" role="status"><div class="spinner"></div><strong>Connecting to your satellites</strong><span class="muted">Loading bridge settings and device status.</span></div>`;
   }
 

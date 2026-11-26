@@ -349,7 +349,6 @@ class WakeWordCatalogTests(unittest.TestCase):
         )
         self.assertIn("new URL(import.meta.url).searchParams.get(\"v\")", panel)
         self.assertIn("customElements.define(PANEL_ELEMENT_NAME", panel)
-        self.assertIn("catalogUnavailable && catalogRetryDue", panel)
 
 
 class WakeWordCatalogRuntimeTests(unittest.IsolatedAsyncioTestCase):

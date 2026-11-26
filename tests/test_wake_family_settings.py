@@ -458,7 +458,8 @@ class WakeFamilySettingsTests(unittest.TestCase):
         self.assertIn("this._backgroundRenderPending = false", panel)
         self.assertIn("hasActiveInput()", panel)
         self.assertIn("this.shadowRoot?.activeElement", panel)
-        self.assertIn("document.hidden || this.hasActiveInput()", panel)
+        self.assertIn("if (document.hidden) return", panel)
+        self.assertIn('this.hasActiveInput() || this._tab === "dashboard-studio"', panel)
         self.assertIn("this._backgroundRenderPending = true", panel)
         self.assertIn("!background || !this.hasActiveInput()", panel)
 

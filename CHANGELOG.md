@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.31
+
+- Open bridge settings as soon as HA responds, without waiting for the optional
+  remote wake-word catalog. Keep catalog discovery in the background without
+  interrupting active settings edits.
+- Recover panel startup when HA's connection becomes ready or reconnects, and
+  ignore late responses from an old connection or a closed panel. Retry initial
+  reads up to three times and offer Retry connection after a timeout or failure.
+  Reconnecting never repeats a settings save or satellite command.
+
 ## 1.4.30
 
 - Add working composition examples for bento, editorial, room-navigation,

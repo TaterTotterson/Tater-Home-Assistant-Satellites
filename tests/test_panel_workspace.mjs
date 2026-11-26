@@ -36,6 +36,280 @@ function controls(panel, selectors, collections = {}) {
   panel.bindEvents();
 }
 
+const settle = () => new Promise(resolve => setImmediate(resolve));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function haConnection(connected = true) {
+  const listeners = new Map();
+  return {
+    connected,
+    addEventListener(event, callback) {
+      if (!listeners.has(event)) listeners.set(event, new Set());
+      listeners.get(event).add(callback);
+    },
+    removeEventListener(event, callback) { listeners.get(event)?.delete(callback); },
+    emit(event) { for (const callback of listeners.get(event) || []) callback(this); },
+    listenerCount(event) { return listeners.get(event)?.size || 0; },
+  };
+}
+function panelPolling(context) {
+  const oldDocument = globalThis.document;
+  const oldInterval = window.setInterval;
+  const oldClear = window.clearInterval;
+  let poll;
+  globalThis.document = { hidden: false };
+  window.setInterval = callback => { poll = callback; return 1; };
+  window.clearInterval = () => { poll = null; };
+  context.after(() => {
+    if (oldDocument === undefined) delete globalThis.document;
+    else globalThis.document = oldDocument;
+    window.setInterval = oldInterval;
+    window.clearInterval = oldClear;
+  });
+  return () => poll?.();
+}
+
+test('bridge loads when HA becomes ready without another hass assignment and cleans up listeners', async context => {
+  panelPolling(context);
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  const connection = haConnection(false);
+  const calls = [];
+  const hass = { connection, callApi: async (method, path) => {
+    calls.push(path);
+    assert.equal(method, 'GET');
+    return path.endsWith('/manage') ? data : { options: [{ value: 'hey_tater' }] };
+  }};
+  panel.hass = hass;
+  panel.connectedCallback();
+  assert.deepEqual(calls, []);
+  assert.match(panel.renderLoading(), /Connecting to Home Assistant/);
+  assert.equal(connection.listenerCount('ready'), 1);
+  connection.connected = true;
+  connection.emit('ready');
+  await settle();
+  assert.equal(panel._data, data);
+  assert.equal(panel._loading, false);
+  assert.equal(calls.filter(path => path.endsWith('/manage')).length, 1);
+  panel.hass = hass;
+  connection.emit('ready');
+  await settle();
+  assert.equal(calls.length, 2, 'steady HA updates must not restart either load');
+  panel.disconnectedCallback();
+  assert.equal(connection.listenerCount('ready'), 0);
+  assert.equal(connection.listenerCount('disconnected'), 0);
+  panel.connectedCallback();
+  assert.equal(connection.listenerCount('ready'), 1);
+  panel.disconnectedCallback();
+});
+
+test('settings open before optional wake catalog finishes and its timeout preserves active edits', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  const catalog = deferred();
+  let catalogCalls = 0, renders = 0;
+  panel.render = () => { renders++; };
+  panel._hass = { callApi: async (method, path) => {
+    if (path.endsWith('/manage')) return data;
+    assert.ok(path.endsWith('/wake-word/catalog'));
+    catalogCalls++;
+    return catalog.promise;
+  }};
+  await panel.load();
+  assert.equal(panel._data, data, 'usable settings must not wait for the catalog');
+  assert.equal(panel._loading, false);
+  assert.equal(panel._wakeWordCatalog, null);
+  const input = { type: 'range', dataset: { scope: 'global', setting: 'wake_verifier_timeout_ms' }, value: '1500' };
+  controls(panel, {}, { '[data-setting]': [input] });
+  input.listeners.change();
+  panel.hasActiveInput = () => true;
+  const before = renders;
+  await panel.load(true);
+  assert.equal(catalogCalls, 1, 'polls must share the pending catalog request');
+  context.mock.timers.tick(5000);
+  await settle();
+  assert.match(panel._wakeWordCatalog.warning, /did not respond in time/);
+  assert.equal(panel._loading, false);
+  assert.equal(panel._error, '', 'optional discovery errors must not hide settings');
+  assert.equal(panel._globalDraft.wake_verifier_timeout_ms, 1500);
+  assert.equal(panel.isScopeDirty('verifier'), true);
+  assert.equal(renders, before, 'a background catalog must not interrupt typing');
+  assert.equal(panel._backgroundRenderPending, true);
+  catalog.resolve({ options: [{ value: 'late' }] });
+  await settle();
+  assert.deepEqual(panel._wakeWordCatalog.options, []);
+});
+
+test('empty catalogs retry after the cooldown while a loaded catalog is reused', async () => {
+  const panel = fixture();
+  let calls = 0;
+  panel._hass = { callApi: async () => ({ options: ++calls === 1 ? [] : [{ value: 'hey_tater' }] }) };
+  await panel.loadWakeWordCatalog();
+  await panel.loadWakeWordCatalog();
+  assert.equal(calls, 1);
+  panel._wakeWordCatalogLastAttempt = Date.now() - 30001;
+  await panel.loadWakeWordCatalog();
+  assert.equal(calls, 2);
+  assert.equal(panel._wakeWordCatalog.options[0].value, 'hey_tater');
+  panel._wakeWordCatalogLastAttempt = Date.now() - 30001;
+  await panel.loadWakeWordCatalog();
+  assert.equal(calls, 2);
+});
+
+test('ordinary polling still leaves active settings editors and Studio untouched', context => {
+  const poll = panelPolling(context);
+  const panel = fixture();
+  let reads = 0, renders = 0;
+  panel.load = async () => { reads++; };
+  panel.render = () => { renders++; };
+  panel.connectedCallback();
+  renders = 0;
+  panel.hasActiveInput = () => true;
+  poll();
+  assert.equal(reads, 0);
+  panel.hasActiveInput = () => false;
+  panel._tab = 'dashboard-studio';
+  poll();
+  assert.equal(reads, 0);
+  panel._tab = 'satellites';
+  document.hidden = true;
+  poll();
+  assert.equal(reads, 0);
+  document.hidden = false;
+  panel._backgroundRenderPending = true;
+  poll();
+  assert.equal(renders, 1);
+  assert.equal(reads, 0);
+  poll();
+  assert.equal(reads, 1);
+  panel.disconnectedCallback();
+});
+
+test('replacing the HA connection ignores old responses and detached panel reads', async context => {
+  panelPolling(context);
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  const old = deferred(), current = deferred(), detached = deferred();
+  const first = haConnection(), second = haConnection();
+  panel.hass = { connection: first, callApi: () => old.promise };
+  panel.hass = { connection: second, callApi: (_, path) => path.endsWith('/manage') ? current.promise : Promise.resolve({ options: [] }) };
+  assert.equal(first.listenerCount('ready'), 0);
+  old.resolve({ ...data, source: 'old' });
+  await settle();
+  assert.equal(panel._data, null);
+  assert.equal(panel._loading, true, 'a stale completion must not unlock the newer read');
+  current.resolve({ ...data, source: 'current' });
+  await settle();
+  assert.equal(panel._data.source, 'current');
+  panel._hass.callApi = () => detached.promise;
+  const pending = panel.load(true);
+  panel.disconnectedCallback();
+  detached.resolve({ ...data, source: 'detached' });
+  await pending;
+  assert.equal(panel._data.source, 'current');
+  assert.equal(second.listenerCount('ready'), 0);
+});
+
+test('HA reconnect retries a pending startup and ignores the old request failure', async () => {
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  const connection = haConnection();
+  const stale = deferred();
+  let reads = 0;
+  panel.hass = { connection, callApi: async (_, path) => {
+    if (!path.endsWith('/manage')) return { options: [] };
+    return ++reads === 1 ? stale.promise : data;
+  }};
+  connection.connected = false;
+  connection.emit('disconnected');
+  assert.equal(panel._loading, false);
+  assert.match(panel.renderLoading(), /Connecting to Home Assistant/);
+  connection.connected = true;
+  connection.emit('ready');
+  await settle();
+  stale.reject(new Error('Old connection failed'));
+  await settle();
+  assert.equal(reads, 2);
+  assert.equal(panel._data, data);
+  assert.equal(panel._loading, false);
+  assert.equal(panel._error, '');
+  panel.disconnectedCallback();
+});
+
+test('startup timeouts offer a working retry and auto retries stay bounded even on Studio', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const poll = panelPolling(context);
+  const panel = fixture();
+  const data = panel._data;
+  panel._data = null;
+  panel._tab = 'dashboard-studio';
+  let reads = 0, studioLoads = 0, recovered = false;
+  panel._studio.load = async () => { studioLoads++; };
+  const hass = { callApi: async (_, path) => {
+    if (!path.endsWith('/manage')) return { options: [] };
+    reads++;
+    if (recovered) return data;
+    if (reads === 1) return new Promise(() => {});
+    throw new Error('Home Assistant is not ready');
+  }};
+  panel.hass = hass;
+  panel.connectedCallback();
+  context.mock.timers.tick(15000);
+  await settle();
+  assert.equal(panel._loading, false);
+  assert.match(panel._error, /did not respond in time/);
+  assert.match(panel.renderLoading(), /Retry connection/);
+  assert.doesNotMatch(panel.renderLoading(), /spinner/);
+  for (let i = 0; i < 5; i++) panel.hass = hass;
+  assert.equal(reads, 1, 'HA state pushes must not hammer a failed startup');
+  for (let i = 0; i < 5; i++) { poll(); await settle(); }
+  assert.equal(reads, 3, 'startup recovery needs a bounded retry budget');
+  assert.equal(studioLoads, 0);
+  recovered = true;
+  const retry = {};
+  controls(panel, {}, { '[data-action="refresh"]': [retry] });
+  await retry.listeners.click();
+  assert.equal(reads, 4);
+  assert.equal(studioLoads, 1);
+  assert.equal(panel._data, data);
+  assert.equal(panel._error, '');
+  panel.disconnectedCallback();
+});
+
+test('reconnecting during a settings save never replays the write or unlocks its controls', async () => {
+  const panel = fixture();
+  const connection = haConnection();
+  let reads = 0, writes = 0;
+  panel.hass = { connection, callApi: async (_, path) => {
+    if (path.endsWith('/manage')) { reads++; return panel._data; }
+    return { options: [{ value: 'hey_tater' }] };
+  }};
+  await settle();
+  const saved = deferred();
+  const saving = panel.run(async () => { writes++; await saved.promise; }, 'Saved');
+  connection.connected = false;
+  connection.emit('disconnected');
+  connection.connected = true;
+  connection.emit('ready');
+  assert.equal(panel._loading, true);
+  assert.equal(writes, 1);
+  assert.equal(reads, 1);
+  saved.resolve();
+  await saving;
+  assert.equal(writes, 1);
+  assert.equal(reads, 2, 'only a settings read follows a completed save');
+  assert.equal(panel._loading, false);
+  panel.disconnectedCallback();
+});
+
 test('wake arbitration is available in both modes and saves its own draft without touching satellite settings', async () => {
   const panel = fixture();
   for (const mode of ['home_assistant', 'tater']) {

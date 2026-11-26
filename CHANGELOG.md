@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.36
+
+- Give Dashboard Studio an explicit capability guide from its supported native
+  cards, installed community cards, layout rules, card requirements and limits.
+  Constrain card-type choices in design and repair schemas while retaining
+  original layouts, styling and existing custom cards.
+- Repair malformed card/section layouts with focused view repairs and precise
+  field paths, preserving complete views and view options. Explain formatting
+  errors without assuming the model needs more context.
+- Decode complete JSON-encoded layout containers without changing card text or
+  guessing broken fragments. Keep entity, component and style validation intact,
+  and leave the saved draft unchanged if the model cannot produce a valid repair.
+
 ## 1.4.35
 
 - Allow up to ten minutes for each dashboard design or alternative idea,

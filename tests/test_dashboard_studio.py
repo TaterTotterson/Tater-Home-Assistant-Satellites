@@ -124,9 +124,18 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tater_conversations", self.manager.data)
         arguments = self.designer.design.call_args
         self.assertEqual(arguments.args[1]["model"], "designer")
-        self.assertEqual(arguments.args[2], studio.DESIGN_SCHEMA)
+        self.assertEqual(arguments.args[2]["required"], ["message", "config"])
+        card_types = arguments.args[2]["properties"]["config"]["properties"]["views"]["items"][
+            "properties"
+        ]["sections"]["items"]["properties"]["cards"]["items"]["properties"]["type"]["enum"]
+        self.assertIn("tile", card_types)
+        self.assertNotIn("custom:invented", card_types)
         payload = json.loads(arguments.args[0][-1]["content"])
         self.assertEqual(payload["available_entities"], INVENTORY)
+        self.assertEqual(
+            payload["designer_capabilities"]["native_card_types"],
+            sorted(studio.NATIVE_CARDS | {"weather-forecast"}),
+        )
         self.assertNotIn("secret", json.dumps(arguments.args[0]))
 
     async def test_admin_ownership_and_missing_revision_are_enforced_in_both_modes(self):
@@ -269,9 +278,11 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_tater_base_output_uses_detailed_view_schema_and_repair(self):
         del self.designer.design  # Exercise the real OpenAI-compatible tool-response parser.
         self.manager.data[studio.STORE_KEY]["settings"]["model"] = "tater/base"
-        incomplete = {"views": [{"title": "Office", "type": "sections"}]}
+        incomplete = {
+            "views": [{"title": "Office", "path": "office", "type": "sections", "max_columns": 2}]
+        }
 
-        def completion(proposal):
+        def completion(result):
             return {
                 "choices": [
                     {
@@ -280,9 +291,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
                                 {
                                     "function": {
                                         "name": "dashboard_design",
-                                        "arguments": json.dumps(
-                                            {"message": "Office dashboard", "config": proposal}
-                                        ),
+                                        "arguments": json.dumps(result),
                                     }
                                 }
                             ]
@@ -291,11 +300,18 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
 
-        self.designer._post = AsyncMock(side_effect=[completion(incomplete), completion(config())])
+        self.designer._post = AsyncMock(
+            side_effect=[
+                completion({"message": "Office dashboard", "config": incomplete}),
+                completion(
+                    {"repairs": [{"view_index": 0, "sections": config()["views"][0]["sections"]}]}
+                ),
+            ]
+        )
         row = await self.design()
         self.assertEqual(row["config"], config())
         self.assertEqual(self.designer._post.await_count, 2)
-        payload = self.designer._post.call_args.args[1]
+        payload = self.designer._post.await_args_list[0].args[1]
         self.assertEqual(payload["model"], "tater/base")
         view_schema = payload["tools"][0]["function"]["parameters"]["properties"]["config"][
             "properties"
@@ -304,6 +320,8 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sections["minItems"], 1)
         self.assertEqual(sections["items"]["required"], ["type", "cards"])
         self.assertIn("type", sections["items"]["properties"]["cards"]["items"]["required"])
+        repair_schema = self.designer._post.call_args.args[1]["tools"][0]["function"]["parameters"]
+        self.assertEqual(repair_schema["required"], ["repairs"])
         self.assertEqual(self.gateway.calls, [])
 
     async def test_visual_direction_and_installed_theme_are_saved_in_the_real_config(self):
@@ -663,15 +681,138 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         incomplete["views"][0]["sections"][0]["cards"] = [{"name": "Office"}]
         self.designer.design.side_effect = [
             {"message": "Draft", "config": incomplete},
-            {"message": "Typed cards", "config": config()},
+            {"repairs": [{"view_index": 0, "sections": config()["views"][0]["sections"]}]},
         ]
         row = await self.design()
         self.assertEqual(row["config"], config())
         self.assertEqual(self.designer.design.await_count, 2)
         feedback = self.designer.design.call_args.args[0][-1]["content"]
         self.assertIn("Card 1 needs a card type", feedback)
-        self.assertIn("including nested grids/stacks", feedback)
+        self.assertIn("config.views[0].sections[0].cards[0]", feedback)
         self.assertEqual(self.gateway.calls, [])
+
+    async def test_malformed_card_names_and_missing_cards_get_a_focused_repair(self):
+        broken = config()
+        broken["views"][0]["background"] = "#223344"
+        broken["views"][0]["sections"] = [
+            {"type": "grid"},
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "entity}],type:", "entity": "light.office"},
+                    {"type": 'entities"}],type:', "entities": ["light.office"]},
+                ],
+            },
+        ]
+        complete = config("Comfort", "sensor.office_temperature")["views"][0]
+        complete["path"] = "comfort"
+        broken["views"].append(complete)
+        self.designer.design.side_effect = [
+            {"message": "A distinctive layout", "config": broken},
+            {"repairs": [{"view_index": 0, "sections": config()["views"][0]["sections"]}]},
+        ]
+        row = await self.design()
+        self.assertEqual(self.designer.design.await_count, 2)
+        self.assertEqual(row["config"]["views"][1], complete)
+        self.assertEqual(row["config"]["views"][0]["background"], "#223344")
+        request = json.loads(self.designer.design.call_args.args[0][-1]["content"])
+        self.assertEqual([item["view_index"] for item in request["views_to_complete"]], [0])
+        self.assertTrue(
+            any(
+                "config.views[0].sections[0].cards" in error
+                for error in request["validation_errors"]
+            )
+        )
+        self.assertTrue(any("JSON syntax" in error for error in request["validation_errors"]))
+        self.assertIn("entity", request["designer_capabilities"]["native_card_types"])
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_failed_layout_repair_keeps_the_saved_workspace_and_explains_the_error(self):
+        row = await self.studio.open(USER)
+        broken = config()
+        broken["views"][0]["sections"][0]["cards"][0]["type"] = "entity}],type:"
+        repair = {"repairs": [{"view_index": 0, "sections": broken["views"][0]["sections"]}]}
+        self.designer.design.side_effect = [{"message": "Draft", "config": broken}, repair, repair]
+        with self.assertRaisesRegex(ValueError, "still returned an invalid design") as error:
+            await self.studio.chat(USER, row["id"], row["revision"], "Make an original design")
+        self.assertIn("JSON syntax", str(error.exception))
+        self.assertNotIn("more context", str(error.exception))
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_capabilities_and_schema_include_only_available_and_preserved_custom_cards(self):
+        self.gateway.components = AsyncMock(
+            return_value=[
+                {
+                    "id": "mushroom",
+                    "label": "Mushroom",
+                    "types": ["custom:mushroom-light-card"],
+                    "guidance": "Requires a light entity.",
+                    "resource_url": "/local/mushroom.js",
+                }
+            ]
+        )
+        row = await self.design()
+        arguments = self.designer.design.call_args
+        request = json.loads(arguments.args[0][-1]["content"])
+        capabilities = request["designer_capabilities"]
+        self.assertEqual(
+            capabilities["installed_custom_card_types"], ["custom:mushroom-light-card"]
+        )
+        self.assertTrue(any("Invent original layouts" in item for item in capabilities["can"]))
+        self.assertTrue(any("Install components" in item for item in capabilities["cannot"]))
+        self.assertEqual(capabilities["limits"]["cards"], 300)
+        schema = arguments.args[2]
+        card = schema["properties"]["config"]["properties"]["views"]["items"]["properties"][
+            "sections"
+        ]["items"]["properties"]["cards"]["items"]
+        self.assertIn("custom:mushroom-light-card", card["properties"]["type"]["enum"])
+        self.assertNotIn("custom:bubble-card", card["properties"]["type"]["enum"])
+        self.assertIn(
+            "custom:mushroom-light-card",
+            card["properties"]["cards"]["items"]["properties"]["type"]["enum"],
+        )
+        self.assertNotIn(
+            "enum",
+            studio.DESIGN_CARD_SCHEMA["properties"]["type"],
+            "global schema must stay independent between homes",
+        )
+        preserved = config()
+        preserved["views"][0]["sections"][0]["cards"][0]["type"] = "custom:already-present"
+        caps = studio.designer_capabilities([], preserved)
+        self.assertEqual(caps["preserve_existing_card_types"], ["custom:already-present"])
+        self.assertEqual(row["config"], config())
+
+    async def test_encoded_layout_arrays_are_decoded_without_an_extra_model_request(self):
+        proposed = config()
+        proposed["views"][0]["sections"][0]["cards"] = json.dumps(
+            proposed["views"][0]["sections"][0]["cards"]
+        )
+        self.designer.design.return_value = {"message": "My layout", "config": proposed}
+        row = await self.design()
+        self.assertEqual(row["config"], config())
+        self.designer.design.assert_awaited_once()
+
+    def test_layout_decoding_preserves_text_and_rejects_ambiguous_card_type_fragments(self):
+        proposed = config()
+        text = '{"cards":[{"type":"imaginary"}]}'
+        cards = [
+            {"type": "markdown", "content": text},
+            {"type": "entities", "entities": [{"entity": "light.office"}]},
+        ]
+        proposed["views"][0]["sections"][0]["cards"] = json.dumps(cards)
+        normalized = studio.normalize_config(json.dumps(proposed))
+        self.assertEqual(normalized["views"][0]["sections"][0]["cards"], cards)
+        self.assertEqual(studio.validate_config(normalized, {"light.office"}), [])
+        malformed = config()
+        malformed["views"][0]["sections"][0]["cards"][0]["type"] = "entity}],type:"
+        self.assertEqual(studio.normalize_config(malformed), malformed)
+        self.assertTrue(
+            any(
+                "JSON syntax" in error
+                for error in studio.validate_config(malformed, {"light.office"})
+            )
+        )
 
     async def test_discussion_does_not_replace_the_draft(self):
         row = await self.design()

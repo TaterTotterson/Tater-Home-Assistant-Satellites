@@ -23,6 +23,11 @@ current attempt and keep your prompt, saved draft, and completed ideas. A timeou
 also closes the model request. Use an updated Tater app when connecting Studio
 to `tater/base` so cancellation stops its local llama.cpp generation as well.
 
+The designer receives the supported card types, installed community components,
+layout requirements and Studio's limits with each request. It can invent an
+original composition within those capabilities. Invalid layouts get focused
+repair requests; your saved draft stays unchanged if a repair cannot be validated.
+
 Start with **Choose for me**, **Room by room**, **Wall tablet**,
 **Energy & comfort**, or **Security overview**. Your designer considers the home's
 actual HA areas, entities, and device capabilities and proposes a focused layout. You

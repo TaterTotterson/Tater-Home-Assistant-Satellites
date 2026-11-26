@@ -1,13 +1,14 @@
-# Tater Satellite 1.4.35
+# Tater Satellite 1.4.36
 
 ## What's changed
 
-- **More time for detailed dashboards:** Allow up to **10 minutes** for a design or alternative idea, including layout repairs. Keep the page waiting for the result and explain that detailed designs can take longer.
-- **Cancel a running design:** Add a **Cancel** button that ends the current attempt while keeping your prompt, saved draft, and completed ideas. A cancellation applies only to that attempt; it cannot stop a newer design or another user's work.
-- **Clean up abandoned requests:** Close the model connection when a design is cancelled, reaches its deadline, or loses its browser connection. Completed drafts finish saving safely. Use **Tater 3.0.11 or newer** when connecting to Tater's API so cancellation also stops the matching local llama.cpp generation.
+- **Tell the designer what Studio supports:** Supply an explicit guide to native cards, installed community components, layout rules, required card fields, and design limits with every request. Keep freedom to create original compositions within those capabilities.
+- **Constrain card names:** Give the model explicit supported card-type choices in design and repair schemas. Preserve existing custom cards and avoid treating fragments of JSON as card names.
+- **Repair the affected layout:** Target missing or malformed sections and cards with precise field paths, preserving complete views and view options. Explain invalid output without assuming a model needs more context.
+- **Recover encoded layout containers:** Decode complete JSON-encoded views, sections, and cards while preserving card text and entity rows. Keep validation in place and leave the saved draft unchanged if repair fails.
 
-All **606 bridge tests** pass, including longer designs, cancellation, disconnects, deadline cleanup, and saved-draft protection. Browser checks verify the Cancel control and preservation of the design brief.
+All **611 automated tests** pass, including the reported malformed card-name shapes, focused repairs, supported-component choices, encoded layouts, and saved-draft protection.
 
 Update through Marketplace or HACS, restart Home Assistant, then refresh the bridge page. **No satellite firmware update is required.**
 
-[Full changelog](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/compare/v1.4.34...v1.4.35)
+[Full changelog](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/compare/v1.4.35...v1.4.36)

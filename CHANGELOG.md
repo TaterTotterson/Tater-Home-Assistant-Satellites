@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.33
+
+- Count repeated automatic retries of an unchanged incorrect satellite code as
+  one guess per pairing session and one HA login failure per source/credential.
+  Normalize spaces and hyphens in six-digit codes, and keep rejecting every
+  unauthorized connection. Five different guesses still invalidate the code.
+- Keep the guess limit independent from login-report retry tracking, so cached
+  credentials cannot bypass a new pairing session's limit. Bound retry tracking
+  to 512 entries, expire entries after 30 minutes without retries, and refresh
+  active entries so continuous reconnects do not periodically add failures.
+- Reset HA's failed-login counter on a successful satellite connection, including
+  first pairing, interrupted credential handoff recovery, and device-token reuse.
+
 ## 1.4.32
 
 - Require a Home Assistant administrator for every bridge management API,

@@ -23,7 +23,7 @@ from homeassistant.components.assist_pipeline import (
     async_get_pipelines,
 )
 from homeassistant.components.assist_pipeline.error import PipelineNotFound
-from homeassistant.components.http.ban import process_wrong_login
+from homeassistant.components.http.ban import process_success_login, process_wrong_login
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -62,10 +62,12 @@ from .media import TaterMediaCoordinator
 from .network import network_snapshot
 from .ota import OTA_VERIFY_TIMEOUT_SECONDS, OtaState
 from .pairing import (
+    AuthFailureTracker,
     PAIRING_RETRY_GRACE_SECONDS,
     normalize_hardware_id,
     normalize_pairing_code,
     pairing_retry_token,
+    rejected_credential_key,
 )
 from .protocol import (
     envelope,
@@ -884,6 +886,8 @@ class TaterSatelliteManager:
         self._pairing_code = ""
         self._pairing_expires = 0.0
         self._pairing_failed_attempts = 0
+        self._pairing_failed_guesses: set[bytes] = set()
+        self._auth_failures = AuthFailureTracker()
         self._pairing_claimed_device = ""
         self._pairing_claimed_hardware = ""
         self._pairing_retry_device_token = ""
@@ -1166,6 +1170,7 @@ class TaterSatelliteManager:
         self._pairing_code = code
         self._pairing_expires = time.time() + PAIRING_CODE_TTL_SECONDS
         self._pairing_failed_attempts = 0
+        self._pairing_failed_guesses.clear()
         self._pairing_claimed_device = ""
         self._pairing_claimed_hardware = ""
         self._pairing_retry_device_token = ""
@@ -1206,8 +1211,10 @@ class TaterSatelliteManager:
         return ""
 
     async def _reject_authentication(self, request: web.Request) -> tuple[bool, str]:
-        """Limit guesses across connections and report invalid satellite credentials."""
-        if self._pairing_code:
+        """Limit distinct guesses and avoid reporting unchanged reconnects as new logins."""
+        credential_key = rejected_credential_key(self._auth_token(request))
+        if self._pairing_code and credential_key not in self._pairing_failed_guesses:
+            self._pairing_failed_guesses.add(credential_key)
             self._pairing_failed_attempts += 1
             if self._pairing_failed_attempts >= PAIRING_MAX_FAILED_ATTEMPTS:
                 # Invalidate before awaiting HA, including the first-handoff retry.
@@ -1216,11 +1223,17 @@ class TaterSatelliteManager:
                 self._pairing_retry_device_token = ""
                 self._pairing_retry_expires = 0.0
                 _LOGGER.warning(
-                    "Satellite pairing code invalidated after %s failed attempts; "
+                    "Satellite pairing code invalidated after %s different failed guesses; "
                     "start a new pairing session in Tater Satellites",
                     PAIRING_MAX_FAILED_ATTEMPTS,
                 )
-        await process_wrong_login(request)
+        # This cache survives a new pairing session, but the per-session guess
+        # budget above does not. Remember before awaiting HA so concurrent
+        # reconnects cannot report the same typo several times.
+        if self._auth_failures.is_new_failure(
+            request.remote or "", credential_key, now=time.monotonic()
+        ):
+            await process_wrong_login(request)
         return False, ""
 
     async def _authenticate(
@@ -1242,6 +1255,7 @@ class TaterSatelliteManager:
                 if self._pairing_claimed_device == device_id:
                     self._pairing_retry_device_token = ""
                     self._pairing_retry_expires = 0.0
+                process_success_login(request)
                 return True, ""
             retry_token = pairing_retry_token(
                 supplied_code=supplied,
@@ -1255,6 +1269,7 @@ class TaterSatelliteManager:
                 now=time.time(),
             )
             if retry_token:
+                process_success_login(request)
                 return True, retry_token
             return await self._reject_authentication(request)
 
@@ -1291,6 +1306,7 @@ class TaterSatelliteManager:
         await self.async_save()
         self._sync_firmware_room(runtime, runtime.room)
         self._add_runtime_entities(runtime)
+        process_success_login(request)
         return True, new_token
 
     def register_platform(

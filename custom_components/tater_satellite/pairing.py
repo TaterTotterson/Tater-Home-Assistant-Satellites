@@ -2,10 +2,50 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import hashlib
 import hmac
 from typing import Any
 
 PAIRING_RETRY_GRACE_SECONDS = 30.0
+AUTH_FAILURE_IDLE_SECONDS = 30 * 60
+AUTH_FAILURE_MAX_ENTRIES = 512
+
+
+def rejected_credential_key(credential: str) -> bytes:
+    """Fingerprint a rejected credential, treating formatted pairing codes equally."""
+    compact = "".join(credential.split()).replace("-", "")
+    if len(compact) == 6 and compact.isascii() and compact.isdigit():
+        credential = compact
+    return hashlib.sha256(credential.encode("utf-8")).digest()
+
+
+class AuthFailureTracker:
+    """Recognize unchanged retries without storing credentials or growing unbounded."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = AUTH_FAILURE_MAX_ENTRIES,
+        idle_seconds: float = AUTH_FAILURE_IDLE_SECONDS,
+    ) -> None:
+        if max_entries < 1 or idle_seconds <= 0:
+            raise ValueError("Authentication retry limits must be positive")
+        self._max_entries = max_entries
+        self._idle_seconds = idle_seconds
+        self._seen: OrderedDict[tuple[str, bytes], float] = OrderedDict()
+
+    def is_new_failure(self, source: str, credential_key: bytes, *, now: float) -> bool:
+        """Count once per source/credential while automatic retries keep arriving."""
+        while self._seen and now - next(iter(self._seen.values())) >= self._idle_seconds:
+            self._seen.popitem(last=False)
+        key = (source, credential_key)
+        is_new = key not in self._seen
+        self._seen[key] = now
+        self._seen.move_to_end(key)
+        if len(self._seen) > self._max_entries:
+            self._seen.popitem(last=False)
+        return is_new
 
 
 def normalize_pairing_code(value: Any) -> str:

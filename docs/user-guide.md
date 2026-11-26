@@ -375,8 +375,11 @@ and camera popups; it does not enable a paused doorbell.
 ## Pair a satellite
 
 The bridge workspace and its management APIs require a Home Assistant
-administrator. Pairing codes expire after 10 minutes or five failed attempts.
-If a code is invalidated, select **Add Satellite** to generate a new one.
+administrator. Pairing codes expire after 10 minutes or five different incorrect
+guesses. Automatic reconnects with the same incorrect code count once instead
+of repeatedly adding HA login failures. A successful connection resets HA's
+failed-login counter. If a code is invalidated, select **Add Satellite** to
+generate a new one.
 
 1. Open **Tater Satellites** in the Home Assistant sidebar.
 2. Select **Add Satellite** to generate a temporary pairing code.

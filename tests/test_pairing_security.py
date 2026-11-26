@@ -80,8 +80,10 @@ def load_manager():
         "normalize_pairing_code": pairing.normalize_pairing_code,
         "normalize_hardware_id": pairing.normalize_hardware_id,
         "pairing_retry_token": pairing.pairing_retry_token,
+        "rejected_credential_key": pairing.rejected_credential_key,
         "PAIRING_RETRY_GRACE_SECONDS": pairing.PAIRING_RETRY_GRACE_SECONDS,
         "process_wrong_login": AsyncMock(),
+        "process_success_login": Mock(),
         "SatelliteRuntime": lambda manager, device_id, record: SimpleNamespace(room=record["room"]),
     }
     module = ast.fix_missing_locations(
@@ -94,6 +96,8 @@ def load_manager():
     manager._pairing_code = ""
     manager._pairing_expires = 0
     manager._pairing_failed_attempts = 0
+    manager._pairing_failed_guesses = set()
+    manager._auth_failures = pairing.AuthFailureTracker()
     manager._pairing_claimed_device = ""
     manager._pairing_claimed_hardware = ""
     manager._pairing_retry_device_token = ""
@@ -122,7 +126,7 @@ class PairingSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def exhaust(self):
         for index in range(self.maximum):
             self.assertEqual(
-                await self.authenticate("wrong", f"guess-{index}", f"192.0.2.{index+1}"),
+                await self.authenticate(f"wrong-{index}", f"guess-{index}", f"192.0.2.{index+1}"),
                 (False, ""),
             )
 
@@ -139,8 +143,8 @@ class PairingSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_success_before_limit_keeps_normal_setup_and_same_device_retry(self):
         code = self.manager.start_pairing()["code"]
-        for _ in range(self.maximum - 1):
-            await self.authenticate("wrong")
+        for index in range(self.maximum - 1):
+            await self.authenticate(f"wrong-{index}")
         authorized, token = await self.authenticate(code)
         self.assertTrue(authorized)
         self.assertTrue(token)
@@ -156,8 +160,8 @@ class PairingSecurityTests(unittest.IsolatedAsyncioTestCase):
         authorized, token = await self.authenticate(code)
         self.assertTrue(authorized)
         self.assertEqual(await self.authenticate(code, "different-device"), (False, ""))
-        for _ in range(self.maximum - 1):
-            self.assertEqual(await self.authenticate("wrong"), (False, ""))
+        for index in range(self.maximum - 1):
+            self.assertEqual(await self.authenticate(f"wrong-{index}"), (False, ""))
         self.assertEqual(self.manager._pairing_retry_device_token, "")
         self.assertEqual(self.manager._pairing_retry_expires, 0)
         self.assertEqual(await self.authenticate(code), (False, ""))
@@ -204,8 +208,8 @@ class PairingSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalidation_happens_before_login_reporting_yields_to_other_requests(self):
         code = self.manager.start_pairing()["code"]
-        for _ in range(self.maximum - 1):
-            await self.authenticate("wrong")
+        for index in range(self.maximum - 1):
+            await self.authenticate(f"wrong-{index}")
         started, finish = asyncio.Event(), asyncio.Event()
 
         async def delayed_report(request):
@@ -237,7 +241,7 @@ class PairingSecurityTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_get("/ws", self.manager.async_handle_websocket)
         async with TestServer(app) as server, ClientSession() as session:
             for index in range(self.maximum + 1):
-                supplied = code if index == self.maximum else "wrong"
+                supplied = code if index == self.maximum else f"wrong-{index}"
                 async with session.ws_connect(
                     server.make_url("/ws"), headers={"X-Tater-Token": supplied}
                 ) as websocket:
@@ -254,6 +258,119 @@ class PairingSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(call.args[0].remote == "127.0.0.1" for call in self.ban.await_args_list)
         )
+        self.assertFalse(self.manager.data["devices"])
+
+    async def test_unchanged_typo_reconnects_count_once_and_correction_still_pairs(self):
+        code = self.manager.start_pairing()["code"]
+        for index in range(30):
+            self.assertEqual(await self.authenticate("typo", f"sat-{index}"), (False, ""))
+        self.assertEqual(self.manager._pairing_failed_attempts, 1)
+        self.assertTrue(self.manager.pairing_snapshot()["active"])
+        self.ban.assert_awaited_once()
+        request = self.request(code)
+        authorized, token = await self.manager._authenticate(request, "sat1", self.hello)
+        self.assertTrue(authorized)
+        self.assertTrue(token)
+        self.scope["process_success_login"].assert_called_once_with(request)
+
+    async def test_code_formatting_and_rotating_device_ids_do_not_create_new_guesses(self):
+        self.manager.start_pairing()
+        wrong_code = "000000" if self.manager._pairing_code != "000000" else "999999"
+        for index, code in enumerate(
+            (
+                wrong_code,
+                wrong_code[:3] + "-" + wrong_code[3:],
+                wrong_code[:3] + " " + wrong_code[3:],
+            )
+        ):
+            self.assertEqual(await self.authenticate(code, f"sat-{index}"), (False, ""))
+        self.assertEqual(self.manager._pairing_failed_attempts, 1)
+        self.ban.assert_awaited_once()
+
+    async def test_different_addresses_report_their_failures_but_share_the_distinct_guess_budget(
+        self,
+    ):
+        self.manager.start_pairing()
+        for index in range(3):
+            await self.authenticate("typo", f"sat-{index}", f"192.0.2.{index+1}")
+        self.assertEqual(self.ban.await_count, 3)
+        self.assertEqual(self.manager._pairing_failed_attempts, 1)
+        self.assertTrue(self.manager.pairing_snapshot()["active"])
+
+    async def test_a_new_session_counts_old_guesses_again_without_repeated_login_reports(self):
+        self.manager.start_pairing()
+        for index in range(self.maximum):
+            await self.authenticate(f"wrong-{index}")
+        self.assertFalse(self.manager.pairing_snapshot()["active"])
+        self.manager.start_pairing()
+        for index in range(self.maximum):
+            await self.authenticate(f"wrong-{index}")
+        self.assertFalse(
+            self.manager.pairing_snapshot()["active"],
+            "cached credentials must not bypass a new pairing session's limit",
+        )
+        self.assertEqual(self.ban.await_count, self.maximum)
+        self.assertEqual(len(self.manager._pairing_failed_guesses), self.maximum)
+        for _ in range(20):
+            await self.authenticate("wrong-0")
+        self.assertEqual(
+            self.ban.await_count,
+            self.maximum,
+            "invalidating a code must not restart login reporting for retries",
+        )
+        self.assertEqual(len(self.manager._pairing_failed_guesses), self.maximum)
+
+    async def test_concurrent_retries_report_one_failure_before_waiting_for_ha(self):
+        self.manager.start_pairing()
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def report(request):
+            started.set()
+            await finish.wait()
+
+        self.ban.side_effect = report
+        first = asyncio.create_task(self.authenticate("typo"))
+        await started.wait()
+        repeated = await asyncio.gather(
+            *(self.authenticate("typo", f"sat-{index}") for index in range(10))
+        )
+        self.assertEqual(repeated, [(False, "")] * 10)
+        self.assertEqual(self.manager._pairing_failed_attempts, 1)
+        self.ban.assert_awaited_once()
+        finish.set()
+        self.assertEqual(await first, (False, ""))
+
+    async def test_successful_pairing_retry_and_token_reconnect_reset_ha_login_failures(self):
+        code = self.manager.start_pairing()["code"]
+        await self.authenticate("typo")
+        _, token = await self.authenticate(code)
+        success = self.scope["process_success_login"]
+        success.assert_called_once()
+        request = self.request(code)
+        self.assertEqual(
+            await self.manager._authenticate(request, "sat1", self.hello), (True, token)
+        )
+        success.assert_called_with(request)
+        request = self.request(token)
+        self.assertEqual(await self.manager._authenticate(request, "sat1", self.hello), (True, ""))
+        success.assert_called_with(request)
+        self.assertEqual(success.call_count, 3)
+        self.ban.assert_awaited_once()
+
+    async def test_real_websocket_retries_do_not_accumulate_ha_login_failures(self):
+        self.manager.start_pairing()
+        app = web.Application()
+        app.router.add_get("/ws", self.manager.async_handle_websocket)
+        async with TestServer(app) as server, ClientSession() as session:
+            for _ in range(12):
+                async with session.ws_connect(
+                    server.make_url("/ws"), headers={"X-Tater-Token": "typo"}
+                ) as websocket:
+                    await websocket.send_json({"type": "hello", "payload": {"device_id": "sat1"}})
+                    self.assertFalse((await websocket.receive_json())["payload"]["ok"])
+                    self.assertEqual((await websocket.receive()).data, 1008)
+        self.ban.assert_awaited_once()
+        self.assertEqual(self.manager._pairing_failed_attempts, 1)
         self.assertFalse(self.manager.data["devices"])
 
 

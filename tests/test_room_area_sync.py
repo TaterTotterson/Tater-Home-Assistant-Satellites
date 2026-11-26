@@ -197,6 +197,7 @@ def build_manager(devices: FakeDeviceRegistry | None = None):
         "message_type": lambda message: message.get("type") or "",
         "normalize_hardware_id": text,
         "pairing_retry_token": Mock(return_value=""),
+        "process_success_login": Mock(),
         "PAIRING_RETRY_GRACE_SECONDS": 60,
         "SatelliteRuntime": fake_runtime,
     }

@@ -18,7 +18,7 @@ from typing import Any
 import uuid
 from urllib.parse import urlsplit
 
-from .dashboard_provider import DashboardProvider
+from .dashboard_provider import DashboardProvider, DESIGN_TIMEOUT_SECONDS
 from .dashboard_design import (
     LAYOUTS,
     composition_signature,
@@ -855,6 +855,80 @@ class DashboardStudio:
         self._locks: dict[str, asyncio.Lock] = {}
         self._create_lock = asyncio.Lock()
         self._publish_lock = asyncio.Lock()
+        self._design_requests = {}
+        self._cancelled_requests = {}
+        self._committing_designs = set()
+
+    def _design_key(self, user, workspace_id, operation_id):
+        self._workspace(user, workspace_id)
+        if not isinstance(operation_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,80}", operation_id
+        ):
+            raise ValueError("Choose a valid design request to cancel.")
+        return (user.id, workspace_id, operation_id)
+
+    def cancel_design(self, user, workspace_id, operation_id):
+        key = self._design_key(user, workspace_id, operation_id)
+        now = time.monotonic()
+        self._cancelled_requests = {
+            key: expires for key, expires in self._cancelled_requests.items() if expires > now
+        }
+        # A cancellation can arrive before its design request. Keep a short,
+        # bounded tombstone so that request cannot start afterwards.
+        self._cancelled_requests[key] = now + 60
+        while len(self._cancelled_requests) > 128:
+            self._cancelled_requests.pop(next(iter(self._cancelled_requests)))
+        task = self._design_requests.get(key)
+        if task and not task.done() and task not in self._committing_designs:
+            task.cancel()
+            return True
+        return False
+
+    async def run_design(self, user, workspace_id, operation_id, operation, *, transport=None):
+        key = self._design_key(user, workspace_id, operation_id or uuid.uuid4().hex)
+        if self._cancelled_requests.get(key, 0) > time.monotonic():
+            return {"cancelled": True}
+        if any(active[:2] == key[:2] for active in self._design_requests):
+            raise StudioConflict(
+                "This design is already running. Cancel it or wait for it to finish."
+            )
+        task = asyncio.create_task(operation())
+        self._design_requests[key] = task
+
+        async def watch_disconnect():
+            while True:
+                if (
+                    transport is not None
+                    and transport.is_closing()
+                    and task not in self._committing_designs
+                ):
+                    task.cancel()
+                    return
+                await asyncio.sleep(0.25)
+
+        watcher = asyncio.create_task(watch_disconnect())
+        try:
+            async with asyncio.timeout(DESIGN_TIMEOUT_SECONDS):
+                return {"workspace": await asyncio.shield(task)}
+        except asyncio.CancelledError:
+            # User cancellation cancels the child; shutdown can cancel this
+            # handler instead. Both close the provider's HTTP request.
+            if not asyncio.current_task().cancelling():
+                return {"cancelled": True}
+            raise
+        except TimeoutError:
+            if task in self._committing_designs:
+                return {"workspace": await asyncio.shield(task)}
+            raise ValueError(
+                "The dashboard design reached its 10-minute time limit. Your saved draft is unchanged. Try the design again or check the model server."
+            ) from None
+        finally:
+            watcher.cancel()
+            if not task.done() and task not in self._committing_designs:
+                task.cancel()
+            await asyncio.gather(watcher, task, return_exceptions=True)
+            self._design_requests.pop(key, None)
+            self._committing_designs.discard(task)
 
     def _store(self):
         return self.manager.data.setdefault(STORE_KEY, {"workspaces": {}})["workspaces"]
@@ -1097,6 +1171,8 @@ class DashboardStudio:
                 allow_custom=allow_custom,
                 focus=focus,
             )
+            if asyncio.current_task() in self._design_requests.values():
+                self._committing_designs.add(asyncio.current_task())
             message = response["message"]
             visual_style, theme = response["visual_style"], response["theme"]
             proposal = response.get("config")
@@ -1240,7 +1316,7 @@ class DashboardStudio:
         errors = []
         proposal = None
         try:
-            async with asyncio.timeout(180):
+            async with asyncio.timeout(DESIGN_TIMEOUT_SECONDS):
                 for attempt in range(MAX_DESIGN_ATTEMPTS):
                     incomplete = missing_sections(proposal)
                     if attempt == MAX_DESIGN_ATTEMPTS - 1 and incomplete:
@@ -1378,7 +1454,7 @@ class DashboardStudio:
                     )
         except TimeoutError:
             raise ValueError(
-                "The dashboard design reached its time limit. Your saved draft is unchanged. Try a smaller request or a faster model."
+                "The dashboard design reached its time limit (10 minutes). Your saved draft is unchanged. Try the design again or check the model server."
             ) from None
         if errors:
             raise ValueError(
@@ -1467,6 +1543,8 @@ class DashboardStudio:
                 raise ValueError(
                     "The designer discussed an idea without building it. Try this idea again."
                 )
+            if asyncio.current_task() in self._design_requests.values():
+                self._committing_designs.add(asyncio.current_task())
             idea = {
                 "id": uuid.uuid4().hex,
                 "title": _text(response.get("title"), 80) or LAYOUTS[layout]["label"],

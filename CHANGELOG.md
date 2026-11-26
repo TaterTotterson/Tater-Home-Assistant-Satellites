@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.35
+
+- Allow up to ten minutes for each dashboard design or alternative idea,
+  including layout repairs, and keep the browser waiting for the result.
+- Add Cancel while designing. Cancel only that attempt, preserve its prompt,
+  saved draft and completed ideas, and close the model request on cancellation,
+  timeout or browser disconnect. Do not interrupt a completed draft being saved.
+
 ## 1.4.34
 
 - Fix the bridge getting stuck on "Connecting to Home Assistant" on first open

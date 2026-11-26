@@ -8,6 +8,8 @@ from typing import Any
 
 import aiohttp
 
+DESIGN_TIMEOUT_SECONDS = 600
+
 
 class ProviderError(RuntimeError):
     def __init__(self, status, detail):
@@ -37,7 +39,8 @@ class DashboardProvider:
             headers["Authorization"] = f"Bearer {key}"
         try:
             async with self._session().post(
-                endpoint, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)
+                endpoint, headers=headers, json=payload,
+                timeout=aiohttp.ClientTimeout(total=DESIGN_TIMEOUT_SECONDS)
             ) as response:
                 if response.status >= 400:
                     try:
@@ -54,7 +57,7 @@ class DashboardProvider:
                 data = await response.json()
         except TimeoutError:
             raise RuntimeError(
-                "The dashboard model took too long to respond. Your saved draft is unchanged. Try a smaller request or check the model server."
+                "The dashboard model reached the 10-minute design limit. Your saved draft is unchanged. Check the model server or try the design again."
             ) from None
         except aiohttp.ClientError:
             raise RuntimeError(

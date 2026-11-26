@@ -41,7 +41,7 @@ export const studioStyles = [
   ".studio-preview-section{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px;align-content:start;min-width:0}.studio-native-card{grid-column:span 12;min-width:0}.studio-native-card>*{display:block}",
   ".studio-native-card[inert]{cursor:default}.studio-preview-empty{text-align:center;padding:85px 24px;color:var(--secondary-text-color)}.studio-preview-empty ha-icon{--mdc-icon-size:44px;color:var(--tater-accent);margin-bottom:14px}.studio-preview-empty strong{display:block;color:var(--primary-text-color);font-size:18px}",
   ".studio-preview-note{padding:12px 18px;border-top:1px solid var(--divider-color);font-size:11px;line-height:1.6;color:var(--secondary-text-color)}.studio-error{padding:13px 16px;border-radius:12px;background:color-mix(in srgb,var(--error-color,#c84444) 10%,var(--card-background-color));color:var(--error-color,#c84444);margin-bottom:14px;white-space:pre-wrap}",
-  ".studio-busy{display:flex;gap:10px;align-items:center;color:var(--secondary-text-color);font-size:12px}.studio-busy .spinner{width:14px;height:14px;border-width:2px;margin:0}.studio-config{margin-top:16px}.studio-config summary{font-size:12px;color:var(--secondary-text-color)}.studio-remove{font-size:11px!important;color:var(--secondary-text-color)!important}.studio-apply-note{font-size:11px;color:var(--secondary-text-color);margin:9px 0 0}",
+  ".studio-busy{display:flex;flex-wrap:wrap;gap:10px;align-items:center;color:var(--secondary-text-color);font-size:12px}.studio-busy .spinner{width:14px;height:14px;border-width:2px;margin:0}.studio-busy button{margin-left:auto}.studio-config{margin-top:16px}.studio-config summary{font-size:12px;color:var(--secondary-text-color)}.studio-remove{font-size:11px!important;color:var(--secondary-text-color)!important}.studio-apply-note{font-size:11px;color:var(--secondary-text-color);margin:9px 0 0}",
   "@media(max-width:1100px){.studio-workspace{grid-template-columns:1fr}.studio-chat{position:static}.studio-thread{height:280px}}",
   "@media(max-width:650px){.studio-connection-grid{grid-template-columns:1fr}.studio-hero{padding:22px}.studio-hero h2{font-size:24px}.studio-start-grid{grid-template-columns:1fr 1fr}.studio-preview-scroll{padding:14px}.studio-toolbar-actions{width:100%}.studio-toolbar label{width:100%}.studio-toolbar select{max-width:none}.studio-thread{height:320px}}",
   "@media(prefers-reduced-motion:reduce){.studio-start:hover{transform:none}}",
@@ -73,6 +73,9 @@ export class DashboardStudio {
     this.connectionDraft = null;
     this.screen = "design";
     this._designViewState = null;
+    this._designRequest = null;
+    this._cancelRequested = false;
+    this._cancelling = null;
   }
   formatError(error) {
     return String(error?.body?.message || error?.body || error?.message || "The design could not be completed. Please try again.");
@@ -91,12 +94,46 @@ export class DashboardStudio {
     });
   }
   async request(action, values = {}) {
-    return this.panel.api("POST", "dashboard-studio", {
-      action, workspace_id: this.workspace?.id, revision: this.workspace?.revision, ...values,
-    }, {
-      timeoutMs: ["chat", "concept"].includes(action) ? 195000 : 60000,
-      timeoutMessage: "Studio lost track of this request. Reload Studio to check the latest saved design before trying again.",
-    });
+    const designing = ["chat", "concept"].includes(action);
+    const attempt = designing ? {
+      id: globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+      workspaceId: this.workspace?.id,
+    } : null;
+    if (attempt) this._designRequest = attempt;
+    try {
+      if (attempt) this.panel.render();
+      const result = await this.panel.api("POST", "dashboard-studio", {
+        action, workspace_id: this.workspace?.id, revision: this.workspace?.revision, ...values,
+        ...(attempt ? { operation_id: attempt.id } : {}),
+      }, {
+        timeoutMs: designing ? 615000 : 60000,
+        timeoutMessage: "Studio lost track of this request. Reload Studio to check the latest saved design before trying again.",
+      });
+      if (result.cancelled) throw Object.assign(new Error("Design cancelled. Your saved draft is unchanged."), { designCancelled: true });
+      return result;
+    } catch (error) {
+      // A frontend deadline must also stop the server request. Keep the exact
+      // attempt ID so a delayed cancel cannot stop a newer design.
+      if (attempt && /lost track/i.test(this.formatError(error))) {
+        this.panel.api("POST", "dashboard-studio", { action: "cancel", workspace_id: attempt.workspaceId, operation_id: attempt.id }, { timeoutMs: 15000 }).catch(() => {});
+      }
+      throw error;
+    } finally {
+      if (this._designRequest === attempt) this._designRequest = null;
+    }
+  }
+  async cancel() {
+    const attempt = this._designRequest;
+    if (!attempt || this._cancelling === attempt) return;
+    this._cancelRequested = true;
+    this._cancelling = attempt;
+    try {
+      this.panel.render();
+      await this.panel.api("POST", "dashboard-studio", {
+        action: "cancel", workspace_id: attempt.workspaceId, operation_id: attempt.id,
+      }, { timeoutMs: 15000, timeoutMessage: "Studio could not confirm cancellation. Try Cancel again." });
+    } catch (error) { if (this._designRequest === attempt) this.error = this.formatError(error); }
+    finally { if (this._cancelling === attempt) this._cancelling = null; this.panel.render(); }
   }
   async saveConnection() {
     if (this.busy || !this.connectionDraft) return;
@@ -168,6 +205,7 @@ export class DashboardStudio {
     if (this.previewConcept) { this.notice = "Choose Use this idea to refine it, or return to your current draft."; this.panel.render(); return; }
     const pending = String(text).trim();
     this.message = pending;
+    this._cancelRequested = false;
     this.busy = true; this.operation = this.workspace ? "chat" : "open"; this.error = ""; this.notice = ""; this.failedDesign = false;
     try {
       this.panel.render();
@@ -180,7 +218,10 @@ export class DashboardStudio {
       this.operation = "refresh";
       this.panel.render();
       this.catalog = await this.loadCatalog();
-    } catch (error) { this.error = this.formatError(error); this.failedDesign = this.operation === "chat" && !/lost track|timed? ?out|timeout/i.test(this.error); }
+    } catch (error) {
+      if (error.designCancelled) this.notice = this.formatError(error);
+      else { this.error = this.formatError(error); this.failedDesign = this.operation === "chat" && !/lost track/i.test(this.error); }
+    }
     finally {
       this.busy = false; this.operation = ""; this.panel.render();
       const thread = this.panel.shadowRoot?.querySelector(".studio-thread");
@@ -200,19 +241,25 @@ export class DashboardStudio {
     if (this.busy) return;
     const pending = this.message.trim() || "Design a useful, creative dashboard for my home.";
     const start = resume ? this.workspace?.concepts?.length || 0 : 0;
+    this._cancelRequested = false;
     this.busy = true; this.operation = "concept"; this.error = ""; this.notice = ""; this.failedDesign = false;
     try {
       this.panel.render();
       if (!this.workspace) this.workspace = (await this.request("open", { workspace_id: "", title: "My home" })).workspace;
       for (let index = start; index < 3; index++) {
+        if (this._cancelRequested) break;
         this.conceptProgress = index + 1; this.panel.render();
         this.workspace = (await this.request("concept", { index, text: pending, visual_style: this.visualStyle, theme: this.theme, allow_custom: this.allowCustom })).workspace;
         this.panel.render();
       }
       this.previewConcept = this.workspace.concepts?.[0]?.id || ""; this.focus = null; this.view = 0;
-      if (!resume && this.message.trim() === pending) this.message = "";
+      if (this._cancelRequested) this.notice = "Stopped the remaining ideas. Completed ideas are kept.";
+      if (!this._cancelRequested && !resume && this.message.trim() === pending) this.message = "";
       this.catalog = await this.loadCatalog();
-    } catch (error) { this.error = this.formatError(error); }
+    } catch (error) {
+      if (error.designCancelled) this.notice = "Design cancelled. Your saved draft and completed ideas are kept.";
+      else this.error = this.formatError(error);
+    }
     finally { this.busy = false; this.operation = ""; this.conceptProgress = 0; this.panel.render(); }
   }
   renderConcepts(ready) {
@@ -250,7 +297,10 @@ export class DashboardStudio {
     if (this.notice) result += tag("div", { class: "banner success", role: "status" }, escape(this.notice));
     if (this.busy) {
       const label = this.operation === "concept" ? "Designing idea " + (this.conceptProgress || 1) + " of 3…" : { load: "Opening Studio…", open: "Opening your design…", chat: "Designing your dashboard…", refresh: "Refreshing your designs…", settings: "Saving AI connection…", apply: "Saving dashboard to Home Assistant…", undo_apply: "Restoring the previous dashboard…", undo_draft: "Restoring the previous draft…", remove: "Removing Studio design…" }[this.operation] || "Working on your dashboard…";
-      result += tag("div", { class: "studio-busy", role: "status", style: "margin-bottom:16px" }, '<span class="spinner"></span>' + escape(label));
+      const designing = ["chat", "concept"].includes(this.operation);
+      const cancelling = this._designRequest && this._cancelling === this._designRequest;
+      result += tag("div", { class: "studio-busy", role: "status", style: "margin-bottom:16px" }, '<span class="spinner"></span>' + escape(cancelling ? "Cancelling your design…" : label) +
+        (designing ? '<span>Detailed designs can take up to 10 minutes.</span>' + button("Cancel", { "data-studio-action": "cancel", disabled: cancelling || !this._designRequest }) : ""));
     }
     if (this.screen === "connection") return result + this.renderConnection();
     const options = tag("option", { value: "" }, "Choose a dashboard…") + (c?.dashboards || []).map((row, index) => tag("option", { value: index }, escape(row.title || row.url_path) + (row.mode === "yaml" ? " · YAML (read-only)" : ""))).join("");
@@ -318,6 +368,7 @@ export class DashboardStudio {
     const root = this.panel.shadowRoot;
     root.querySelectorAll("[data-studio-action]").forEach(control => control.addEventListener("click", () => {
       const action = control.dataset.studioAction;
+      if (action === "cancel" && !control.disabled) return this.cancel();
       if (control.disabled || this.busy) return;
       if (action === "settings") return this.navigate("connection");
       if (action === "back-to-design") return this.navigate("design");

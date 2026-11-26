@@ -1209,6 +1209,89 @@ test('Studio design loop creates a draft and only calls its dedicated API', asyn
   assert.equal(calls.some(call => call.body?.action === 'apply'), false);
 });
 
+test('a detailed Studio design can finish after the old browser deadline', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const panel = fixture();
+  const waiting = deferred();
+  panel._studio.workspace = { id: 'large-design', revision: 0, config: { views: [] } };
+  panel._hass = { callApi: async (method, path, body) => {
+    if (body?.action === 'chat') return waiting.promise;
+    return { model_ready: true, workspaces: [] };
+  }};
+  const sending = panel._studio.send('Make the best dashboard you can');
+  await settle();
+  context.mock.timers.tick(590000);
+  await settle();
+  assert.equal(panel._studio.busy, true);
+  assert.equal(panel._studio.error, '');
+  waiting.resolve({ workspace: { id: 'large-design', revision: 1, config: { views: [] } } });
+  await sending;
+  assert.equal(panel._studio.workspace.revision, 1);
+  assert.equal(panel._studio.busy, false);
+});
+
+test('the Cancel control stops the exact active design and keeps the prompt', async () => {
+  const panel = fixture();
+  panel._tab = 'dashboard-studio';
+  const waiting = deferred();
+  const original = { id: 'cancel-design', revision: 0, config: { views: [] } };
+  panel._studio.workspace = original;
+  const calls = [];
+  panel.api = async (method, path, body, options) => {
+    calls.push({ body, options });
+    if (body?.action === 'chat') return waiting.promise;
+    if (body?.action === 'cancel') { waiting.resolve({ cancelled: true }); return { cancelled: true }; }
+    return { model_ready: true };
+  };
+  const sending = panel._studio.send('Keep this ambitious brief');
+  await settle();
+  assert.match(panel._studio.render(), /data-studio-action="cancel"/);
+  assert.match(panel._studio.render(), /up to 10 minutes/);
+  const cancel = { dataset: { studioAction: 'cancel' }, disabled: false };
+  controls(panel, {}, { '[data-studio-action]': [cancel] });
+  await cancel.listeners.click();
+  await sending;
+  const design = calls.find(call => call.body?.action === 'chat');
+  const cancelled = calls.find(call => call.body?.action === 'cancel');
+  assert.equal(design.options.timeoutMs, 615000);
+  assert.equal(cancelled.body.operation_id, design.body.operation_id);
+  assert.equal(cancelled.body.workspace_id, original.id);
+  assert.equal(panel._studio.workspace, original);
+  assert.equal(panel._studio.message, 'Keep this ambitious brief');
+  assert.match(panel._studio.notice, /cancelled/);
+  assert.equal(panel._studio.failedDesign, false);
+  assert.equal(panel._studio.busy, false);
+  assert.equal(calls.some(call => call.body?.action === 'apply'), false);
+});
+
+test('cancelling alternative ideas keeps completed ideas and does not start the next one', async () => {
+  const panel = fixture();
+  const original = { id: 'idea-cancel', revision: 0, config: { views: [] }, concepts: [] };
+  panel._studio.workspace = original;
+  panel._studio.message = 'An ambitious dashboard';
+  const pending = deferred();
+  const started = [];
+  panel.api = async (method, path, body) => {
+    if (body?.action === 'concept') {
+      started.push(body.index);
+      if (body.index === 0) return { workspace: { ...original, revision: 1, concepts: [{ id: 'first-idea', config: { views: [] } }] } };
+      return pending.promise;
+    }
+    if (body?.action === 'cancel') { pending.resolve({ cancelled: true }); return { cancelled: true }; }
+    return { model_ready: true };
+  };
+  const designing = panel._studio.showIdeas();
+  await settle();
+  assert.deepEqual(started, [0, 1]);
+  await panel._studio.cancel();
+  await designing;
+  assert.deepEqual(started, [0, 1]);
+  assert.equal(panel._studio.workspace.concepts.length, 1);
+  assert.equal(panel._studio.workspace.revision, 1);
+  assert.equal(panel._studio.message, 'An ambitious dashboard');
+  assert.match(panel._studio.notice, /completed ideas are kept/);
+});
+
 test('Studio preserves a failed request and Enter respects Shift and composition', async () => {
   const panel = fixture();
   panel._tab = 'dashboard-studio';

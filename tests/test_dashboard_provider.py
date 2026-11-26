@@ -62,6 +62,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, DESIGN)
         url, request = calls[0]
         self.assertEqual(url, "http://designer:8000/v1/chat/completions")
+        self.assertEqual(request["timeout"].total, 600)
         self.assertEqual(request["headers"]["Authorization"], "Bearer secret-key")
         self.assertEqual(request["json"]["model"], "studio-model")
         self.assertEqual(request["json"]["messages"], MESSAGES)
@@ -172,7 +173,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             raise TimeoutError("secret-key in low-level error")
 
         self.client._session = lambda: SimpleNamespace(post=post)
-        with self.assertRaisesRegex(RuntimeError, "took too long") as raised:
+        with self.assertRaisesRegex(RuntimeError, "10-minute") as raised:
             await self.client._post(SETTINGS, {})
         self.assertNotIn("secret-key", str(raised.exception))
 

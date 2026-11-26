@@ -382,28 +382,63 @@ class DashboardStudioView(HomeAssistantView):
             if action == "settings":
                 settings = await studio.save_settings(user, body.get("settings"))
                 return self.json({"ok": True, "settings": settings})
+            if action == "cancel":
+                cancelled = studio.cancel_design(user, workspace_id, body.get("operation_id"))
+                return self.json({"ok": True, "cancelled": cancelled})
             if action == "open":
                 result = await studio.open(
-                    user, workspace_id=workspace_id, url_path=body.get("url_path"),
+                    user,
+                    workspace_id=workspace_id,
+                    url_path=body.get("url_path"),
                     title=str(body.get("title") or ""),
                 )
             elif action == "chat":
-                result = await studio.chat(
-                    user, workspace_id, revision, body.get("text"),
-                    visual_style=body.get("visual_style"), theme=body.get("theme"),
-                    layout=body.get("layout"), allow_custom=body.get("allow_custom"),
-                    focus=body.get("focus"),
+                result = await studio.run_design(
+                    user,
+                    workspace_id,
+                    body.get("operation_id"),
+                    lambda: studio.chat(
+                        user,
+                        workspace_id,
+                        revision,
+                        body.get("text"),
+                        visual_style=body.get("visual_style"),
+                        theme=body.get("theme"),
+                        layout=body.get("layout"),
+                        allow_custom=body.get("allow_custom"),
+                        focus=body.get("focus"),
+                    ),
+                    transport=request.transport,
                 )
+                return self.json({"ok": True, **result})
             elif action == "concept":
-                result = await studio.concept(user, workspace_id, revision, body.get("index"),
-                    body.get("text"), visual_style=body.get("visual_style"),
-                    theme=body.get("theme"), allow_custom=body.get("allow_custom"))
+                result = await studio.run_design(
+                    user,
+                    workspace_id,
+                    body.get("operation_id"),
+                    lambda: studio.concept(
+                        user,
+                        workspace_id,
+                        revision,
+                        body.get("index"),
+                        body.get("text"),
+                        visual_style=body.get("visual_style"),
+                        theme=body.get("theme"),
+                        allow_custom=body.get("allow_custom"),
+                    ),
+                    transport=request.transport,
+                )
+                return self.json({"ok": True, **result})
             elif action == "choose_concept":
-                result = await studio.choose_concept(user, workspace_id, revision, body.get("concept_id"))
+                result = await studio.choose_concept(
+                    user, workspace_id, revision, body.get("concept_id")
+                )
             elif action == "apply":
                 result = await studio.apply(user, workspace_id, revision)
             elif action in {"undo_draft", "undo_apply"}:
-                result = await studio.undo(user, workspace_id, revision, applied=action == "undo_apply")
+                result = await studio.undo(
+                    user, workspace_id, revision, applied=action == "undo_apply"
+                )
             elif action == "remove":
                 await studio.remove(user, workspace_id, revision)
                 return self.json({"ok": True})

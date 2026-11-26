@@ -439,6 +439,111 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             await self.studio.chat(USER, row["id"], row["revision"], "Invent a layout")
         self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
 
+    async def test_cancel_closes_only_the_matching_generation_and_preserves_the_draft(self):
+        row = await self.studio.open(USER)
+        entered, closed = asyncio.Event(), asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                closed.set()
+
+        self.designer.design.side_effect = generate
+        task = asyncio.create_task(
+            self.studio.run_design(
+                USER,
+                row["id"],
+                "first",
+                lambda: self.studio.chat(USER, row["id"], 0, "My best dashboard"),
+            )
+        )
+        await entered.wait()
+        with self.assertRaises(ValueError):
+            self.studio.cancel_design(OTHER, row["id"], "first")
+        self.assertFalse(self.studio.cancel_design(USER, row["id"], "another-tab"))
+        self.assertFalse(task.done())
+        self.assertTrue(self.studio.cancel_design(USER, row["id"], "first"))
+        self.assertEqual(await task, {"cancelled": True})
+        self.assertTrue(closed.is_set())
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+        self.assertEqual(self.studio._design_requests, {})
+        self.assertEqual(self.gateway.calls, [])
+
+    async def test_cancel_arriving_before_a_design_prevents_it_starting(self):
+        row = await self.studio.open(USER)
+        self.assertFalse(self.studio.cancel_design(USER, row["id"], "early"))
+        operation = AsyncMock()
+        result = await self.studio.run_design(USER, row["id"], "early", operation)
+        self.assertEqual(result, {"cancelled": True})
+        operation.assert_not_awaited()
+        for index in range(200):
+            self.studio.cancel_design(USER, row["id"], f"cancel-{index}")
+        self.assertLessEqual(len(self.studio._cancelled_requests), 128)
+
+    async def test_design_deadline_closes_the_provider_and_releases_its_workspace(self):
+        row = await self.studio.open(USER)
+        closed = asyncio.Event()
+
+        async def generate(*args, **kwargs):
+            try:
+                await asyncio.Future()
+            finally:
+                closed.set()
+
+        self.designer.design.side_effect = generate
+        with patch.object(studio, "DESIGN_TIMEOUT_SECONDS", 0.02):
+            with self.assertRaisesRegex(ValueError, "10-minute"):
+                await self.studio.run_design(
+                    USER,
+                    row["id"],
+                    "deadline",
+                    lambda: self.studio.chat(USER, row["id"], 0, "Design"),
+                )
+        self.assertTrue(closed.is_set())
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+        self.assertEqual(self.studio._design_requests, {})
+
+    async def test_closed_browser_connection_cancels_generation(self):
+        row = await self.studio.open(USER)
+        transport = SimpleNamespace(is_closing=lambda: True)
+
+        async def generate(*args, **kwargs):
+            await asyncio.Future()
+
+        self.designer.design.side_effect = generate
+        result = await self.studio.run_design(
+            USER,
+            row["id"],
+            "disconnect",
+            lambda: self.studio.chat(USER, row["id"], 0, "Design"),
+            transport=transport,
+        )
+        self.assertEqual(result, {"cancelled": True})
+        self.assertEqual(await self.studio.open(USER, workspace_id=row["id"]), row)
+
+    async def test_cancel_after_generation_does_not_interrupt_saving_a_completed_draft(self):
+        row = await self.studio.open(USER)
+        saving, finish = asyncio.Event(), asyncio.Event()
+
+        async def save():
+            saving.set()
+            await finish.wait()
+
+        self.manager.async_save = save
+        task = asyncio.create_task(
+            self.studio.run_design(
+                USER, row["id"], "finishing", lambda: self.studio.chat(USER, row["id"], 0, "Design")
+            )
+        )
+        await saving.wait()
+        self.assertFalse(self.studio.cancel_design(USER, row["id"], "finishing"))
+        finish.set()
+        result = await task
+        self.assertEqual(result["workspace"]["config"], config())
+        self.assertEqual(self.studio._committing_designs, set())
+
     async def test_focused_view_cannot_create_a_conflicting_path_in_another_view(self):
         row = await self.design()
         stored = self.studio._store()[row["id"]]

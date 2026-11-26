@@ -18,6 +18,11 @@ Keys are stored on the HA server and never returned to the page. Leave the key
 field blank to keep a saved key, or select **Remove saved key when saving** to
 clear it. No MCP server or additional Home Assistant access token is needed.
 
+Detailed designs can take up to **10 minutes**. Choose **Cancel** to stop the
+current attempt and keep your prompt, saved draft, and completed ideas. A timeout
+also closes the model request. Use an updated Tater app when connecting Studio
+to `tater/base` so cancellation stops its local llama.cpp generation as well.
+
 Start with **Choose for me**, **Room by room**, **Wall tablet**,
 **Energy & comfort**, or **Security overview**. Your designer considers the home's
 actual HA areas, entities, and device capabilities and proposes a focused layout. You

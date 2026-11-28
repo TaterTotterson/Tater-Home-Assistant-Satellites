@@ -310,7 +310,7 @@ export class DashboardStudio {
       (c?.workspaces?.length ? " " + button("Manage designs", { "data-studio-action": "home", disabled: this.busy }) : ""));
     if (this.notice) result += tag("div", { class: "banner success", role: "status" }, escape(this.notice));
     if (this.busy) {
-      const label = this.operation === "concept" ? "Designing idea " + (this.conceptProgress || 1) + " of 3…" : { load: "Opening Studio…", open: "Opening your design…", chat: "Designing your dashboard…", refresh: "Refreshing your designs…", settings: "Saving AI connection…", apply: "Saving dashboard to Home Assistant…", undo_apply: "Restoring the previous dashboard…", undo_draft: "Restoring the previous draft…", remove: "Removing Studio design…" }[this.operation] || "Working on your dashboard…";
+      const label = this.operation === "concept" ? "Designing idea " + (this.conceptProgress || 1) + " of 3…" : { load: "Opening Studio…", open: "Opening your design…", chat: "Planning and building your dashboard…", refresh: "Refreshing your designs…", settings: "Saving AI connection…", apply: "Saving dashboard to Home Assistant…", undo_apply: "Restoring the previous dashboard…", undo_draft: "Restoring the previous draft…", remove: "Removing Studio design…" }[this.operation] || "Working on your dashboard…";
       const designing = ["chat", "concept"].includes(this.operation);
       const cancelling = this._designRequest && this._cancelling === this._designRequest;
       result += tag("div", { class: "studio-busy", role: "status", style: "margin-bottom:16px" }, '<span class="spinner"></span>' + escape(cancelling ? "Cancelling your design…" : label) +

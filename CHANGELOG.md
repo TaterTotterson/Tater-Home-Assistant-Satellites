@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.38
+
+- Rework Dashboard Studio into plan, edit and explain stages using its existing
+  model connection. Give the planner a compact home summary and natural-language
+  tasks, then execute each task with only the relevant draft nodes
+  and entities. Build the Lovelace container structure in code instead of asking
+  the model for a complete nested dashboard or full-dashboard repair.
+- Preserve original compositions, installed community cards, themes and styling.
+  Support targeted updates and reordering with automatic entity lookup while
+  retaining unrelated card options and content. Validate task boundaries and
+  reject unfinished new containers. Keep preview, concepts, Apply, Undo,
+  cancellation and saved-draft protection.
+
 ## 1.4.37
 
 - Put saved Studio designs near the top of the start page, with Continue and

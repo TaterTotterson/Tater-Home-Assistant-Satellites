@@ -39,8 +39,10 @@ class DashboardProvider:
             headers["Authorization"] = f"Bearer {key}"
         try:
             async with self._session().post(
-                endpoint, headers=headers, json=payload,
-                timeout=aiohttp.ClientTimeout(total=DESIGN_TIMEOUT_SECONDS)
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=DESIGN_TIMEOUT_SECONDS),
             ) as response:
                 if response.status >= 400:
                     try:
@@ -120,16 +122,14 @@ class DashboardProvider:
         return value
 
     async def design(self, messages, settings, schema) -> dict[str, Any]:
-        repairing = "repairs" in schema.get("properties", {})
+        name = schema.get("title", "dashboard_design")
         tool = {
             "type": "function",
             "function": {
-                "name": "dashboard_design",
-                "description": (
-                    "Complete the requested dashboard views. Return repairs with view_index and "
-                    "nonempty sections containing actual cards. Do not return an outline or discussion."
-                    if repairing
-                    else "Propose a dashboard draft or discuss its design without saving to HA."
+                "name": name,
+                "description": schema.get(
+                    "description",
+                    "Return the requested structured Studio result without saving to HA.",
                 ),
                 "parameters": schema,
             },
@@ -146,7 +146,7 @@ class DashboardProvider:
         if isinstance(calls, list):
             for call in calls:
                 function = call.get("function") if isinstance(call, dict) else None
-                if isinstance(function, dict) and function.get("name") == "dashboard_design":
+                if isinstance(function, dict) and function.get("name") == name:
                     try:
                         return self._object(function.get("arguments"))
                     except ValueError:
@@ -161,7 +161,7 @@ class DashboardProvider:
             + [
                 {
                     "role": "user",
-                    "content": "Return only a JSON object matching this output schema. Complete every required layout field with real content; do not return an outline. "
+                    "content": "Return only a JSON object matching this small output schema. "
                     + json.dumps(schema, ensure_ascii=False),
                 }
             ],

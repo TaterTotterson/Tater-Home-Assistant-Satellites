@@ -23,10 +23,14 @@ current attempt and keep your prompt, saved draft, and completed ideas. A timeou
 also closes the model request. Use an updated Tater app when connecting Studio
 to `tater/base` so cancellation stops its local llama.cpp generation as well.
 
-The designer receives the supported card types, installed community components,
-layout requirements and Studio's limits with each request. It can invent an
-original composition within those capabilities. Invalid layouts get focused
-repair requests; your saved draft stays unchanged if a repair cannot be validated.
+Studio designs in three stages: a short plan, small editing tasks, and an
+explanation of the completed draft. The model chooses the look and useful
+controls; the bridge builds Home Assistant's views, sections and card containers.
+It does not ask the model to rewrite the whole dashboard in one response.
+
+Each editing task gets a compact outline and the relevant devices or card
+properties from your home. Edits stay private until the complete
+draft passes validation; a failed or cancelled task keeps your saved draft intact.
 
 Start with **Choose for me**, **Room by room**, **Wall tablet**,
 **Energy & comfort**, or **Security overview**. Your designer considers the home's
@@ -62,9 +66,9 @@ you apply it. Saved designs remember their visual direction and theme choice.
 **Layout direction** is separate from the palette. Choose bento, editorial,
 room navigation, control center, or a media wall as a starting point. Choose
 **Invent an original design**, or the **Surprise me** starter, to let the AI
-create its own composition. Examples show working HA structure using actual
-entities; they are not fixed templates. The designer can combine patterns,
-vary card sizes, choose a focal point and invent a different layout.
+create its own composition. These choices steer the design without fixing it to
+a template. The designer can combine patterns, vary card sizes, choose a focal
+point and invent a different layout.
 
 When HA has supported registered resources, **Use supported community cards
 already installed in HA** lets the designer use Mushroom, Bubble Card, Button
@@ -84,9 +88,9 @@ publish it. If generation stops partway through, completed ideas stay saved and
 **Finish the three ideas** continues from the next one while the draft is unchanged.
 
 Select **Edit scope** in the preview, or **Edit only this section**, then describe
-the change in chat. Studio sends only the selected view or section to the model
-and merges that result back into the draft. Unselected views, sections and global
-options are preserved in code, even if the model tries to change them. Choose
+the change in chat. Studio restricts editing tasks to the selected view or
+section. Unselected views, sections and global options are preserved in code,
+even if the model tries to change them. Choose
 **Whole dashboard** to return to editing the full composition.
 
 ## Preview and apply
@@ -116,25 +120,20 @@ private draft and its chat, not a published HA dashboard.
 YAML-managed dashboards are not edited here. Built-in automatically generated
 dashboards can be redesigned as explicit views; their previous configuration is
 backed up before publishing. Card structure, entity references, known card types,
-and domain-specific cards are checked before a proposal is accepted. Studio
-repairs unambiguous nesting mistakes, such as cards placed directly on a Sections
-view, and missing card types for clear entity, heading, list, and grid cards.
-Entity rows stay unchanged, and ambiguous card shapes go back to the model for
-repair. Incomplete layouts get up to two model repair attempts with concrete
-examples and validation feedback. Studio asks for the affected views, keeps
-completed repairs, and asks only for the remaining content on the next attempt.
-If the model returns a complete dashboard instead of the requested repair format,
-Studio extracts the affected sections while preserving other views and options.
-Models that return plain JSON receive the same detailed output schema. All
-attempts share the same overall request timeout. Empty layouts are not filled
-with invented devices just to pass validation. These checks are not a full
-replacement for Home Assistant's frontend card validation.
+and domain-specific cards are checked before a proposal is accepted. Invalid
+task results get specific feedback and one retry for that task, without
+regenerating completed views. The bridge rejects edits outside the task's scope,
+unknown entities and unfinished new containers. Existing custom options remain
+in place unless edited. Providers without function calling use the same small
+task format as plain JSON. All stages share the same overall request
+timeout. These checks are not a full replacement for Home Assistant's frontend
+card validation.
 
 ## Loading and progress
 
-**Opening Studio** loads the workspace data; **Designing your dashboard** means
-the language model is working. The chat opens as soon as the design is created,
-including on the first request. Design generation and repair can take longer on
+**Opening Studio** loads the workspace data; **Planning and building your dashboard**
+means the language model is working through its tasks. The chat opens as soon as
+the design is created, including on the first request. Designing can take longer on
 local models. If a connection stalls, Studio ends the spinner and offers
 **Reload Studio** to check the latest saved design before trying again.
 If a model still returns an invalid design, the saved draft stays unchanged and

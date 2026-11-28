@@ -1536,7 +1536,7 @@ test('Studio switches from opening to the design chat while the first model requ
   opened({workspace});
   await new Promise(resolve => setImmediate(resolve));
   const html = panel._studio.render();
-  assert.match(html,/Designing your dashboard/);
+  assert.match(html,/Planning and building your dashboard/);
   assert.match(html,/class="studio-workspace"/);
   assert.doesNotMatch(html,/Opening Studio/);
   designed({workspace:{...workspace,revision:1}});

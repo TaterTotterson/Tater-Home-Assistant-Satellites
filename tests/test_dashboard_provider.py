@@ -105,27 +105,17 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tool_choice", calls[1])
         self.assertEqual(calls[1]["model"], "studio-model")
 
-    async def test_plain_json_fallback_gets_the_full_schema_including_focused_repairs(self):
-        from test_dashboard_studio import studio
+    async def test_plain_json_fallback_uses_the_same_small_editing_contract(self):
+        from test_dashboard_workflow import workflow, SECTION
 
-        schema = studio.section_repair_schema([1, 2])
-        replies = [
-            {
-                "view_index": index,
-                "sections": [{"type": "grid", "cards": [{"type": "heading", "heading": "Home"}]}],
-            }
-            for index in (1, 2)
-        ]
-        self.client._chat = AsyncMock(
-            side_effect=[{}, {"content": json.dumps({"repairs": replies})}]
-        )
-        self.assertEqual((await self.client.design(MESSAGES, SETTINGS, schema))["repairs"], replies)
-        repair_tool = self.client._chat.await_args_list[0].args[2]["function"]
-        self.assertIn("Return repairs with view_index", repair_tool["description"])
-        self.assertNotIn("discuss its design", repair_tool["description"])
+        schema = workflow.task_schema("add_section", {"tile"})
+        self.client._chat = AsyncMock(side_effect=[{}, {"content": json.dumps(SECTION)}])
+        self.assertEqual(await self.client.design(MESSAGES, SETTINGS, schema), SECTION)
+        tool = self.client._chat.await_args_list[0].args[2]["function"]
+        self.assertEqual(tool["name"], "dashboard_add_section")
         fallback = self.client._chat.call_args.args[0][-1]["content"]
         self.assertIn(json.dumps(schema, ensure_ascii=False), fallback)
-        self.assertIn('"required": ["repairs"]', fallback)
+        self.assertNotIn('"views"', fallback)
 
     async def test_unsupported_temperature_and_required_choice_are_retried(self):
         calls = []
